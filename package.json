@@ -1,0 +1,13 @@
+{
+  "name": "pi-dark-factory",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "foreman": "bun src/foreman.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}

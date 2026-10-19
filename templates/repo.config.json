@@ -1,0 +1,22 @@
+{
+  "_readme": "Reference repo config (written by `foreman onboard`, edited by hand). models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model — a hung stream is a host problem). required_checks: names of GitHub checks that must pass ([] = no CI gate). scenario.ports are RESERVED across all repos; runtime/holdout are file names relative to this directory. skip_labels: issues with any of these labels are never claimed. origin_url: override the clone URL (private repos with a token, or test fixtures).",
+  "repo": "OWNER/NAME",
+  "slug": "NAME",
+  "default_branch": "main",
+  "attempts": 3,
+  "merge": { "method": "squash", "required_checks": [], "delete_branch": true },
+  "models": {
+    "default": { "provider": "zai", "model": "glm-5.3", "thinking": "medium", "fallback": [] },
+    "implement": { "provider": "deepseek", "model": "deepseek-v4.1-flash", "fallback": ["zai/glm-5.3:high"] },
+    "review": {}
+  },
+  "timeouts": { "stage_minutes": 30, "checks_minutes": 30, "readiness_seconds": 120, "probe_ms": 10000 },
+  "scenario": { "ports": [8100, 8102], "runtime": "runtime.json", "holdout": "holdout.json" },
+  "skip_labels": ["factory:manual"],
+  "pi": {
+    "binary": "pi",
+    "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+    "plan_tools": ["read", "bash", "grep", "find", "ls"],
+    "extra_args": []
+  }
+}

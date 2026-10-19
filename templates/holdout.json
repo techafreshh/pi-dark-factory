@@ -1,0 +1,23 @@
+{
+  "_readme": "pi-dark-factory HOLDOUT scenario — adversarial edge cases on a second port, same contract as runtime.json. Same black-box rules: outside the repo, foreground start, deterministic probes. Write probes the implementer would NOT naturally handle: malformed JSON must get 4xx (never 500/hang), invalid enum values, unknown-resource lookups, script-tag escaping, boundary values, rapid sequential writes. Record the API's actual behavior where the spec is silent — only a 5xx, a hang, or corruption is a failure.",
+  "name": "holdout",
+  "port": 8102,
+  "setup": "echo 'replace with build/install steps if any'",
+  "start": "python3 -m http.server $PORT --bind 127.0.0.1",
+  "readiness_path": "/",
+  "teardown": "",
+  "probes": [
+    {
+      "id": "malformed-input-no-5xx",
+      "description": "garbage input gets 4xx, never a 500 and never a hang",
+      "command": "curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data '{not json' http://127.0.0.1:$PORT/",
+      "expect": "body_matches:^(4\\d\\d|3\\d\\d|200)$ max_ms:3000"
+    },
+    {
+      "id": "unknown-path-no-hang",
+      "description": "an unknown resource answers quickly (any status except 5xx)",
+      "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/definitely-not-a-real-resource",
+      "expect": "body_matches:^(4\\d\\d|3\\d\\d|200)$ max_ms:3000"
+    }
+  ]
+}
