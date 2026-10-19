@@ -2,6 +2,8 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { GhApi, } from "../gh";
 import { waitChecks } from "../gh";
+import { buildStageCmd } from "../env";
+import { sh } from "../sh";
 import { changedPaths, issueDir, lockfileOnly } from "../gitws";
 import { loadScenario, runScenario, type ScenarioResult } from "../scenario";
 import type { RepoConfig } from "../types";
@@ -55,11 +57,10 @@ export async function runVerify(
     if (!ci.pass) failures.push({ gate: "ci", detail: ci.detail });
   }
 
-  // 3. runtime + holdout scenarios (outside the repo by contract)
-  const scenarioOpts = {
-    readinessSeconds: cfg.timeouts.readiness_seconds,
-    defaultProbeMs: cfg.timeouts.probe_ms,
-  };
+  // 3. runtime + holdout scenarios (outside the repo by contract). Container
+  // mode: setup/start/teardown run in the product's worker container (PORT
+  // forwarded explicitly — docker does not inherit the client's env), probes
+  // stay host-side and black-box against the published ports.
   for (const [key, file] of [
     ["runtime", cfg.scenario.runtime],
     ["holdout", cfg.scenario.holdout],
@@ -75,7 +76,19 @@ export async function runVerify(
     }
     const scratch = join(issueDir(opts.stateDir, cfg.slug, opts.issue), key === "runtime" ? "verify" : "holdout");
     mkdirSync(join(scratch, ".."), { recursive: true });
-    const result = await runScenario(spec, scratch, scenarioOpts);
+    const envBuild =
+      cfg.env.mode === "compose"
+        ? buildStageCmd(cfg, opts.worktree, opts.stateDir, `pdf-${cfg.slug}-${opts.issue}-${key}`, {
+            extraEnv: { PORT: String(spec.port) },
+          })
+        : undefined;
+    const result = await runScenario(spec, scratch, {
+      readinessSeconds: cfg.timeouts.readiness_seconds,
+      defaultProbeMs: cfg.timeouts.probe_ms,
+      wrap: envBuild
+        ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
+        : undefined,
+    });
     scenarios.push(result);
     if (!result.pass) {
       failures.push({ gate: key, detail: summarizeScenario(result) });

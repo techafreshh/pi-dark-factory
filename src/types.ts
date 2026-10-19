@@ -47,6 +47,24 @@ export interface RepoConfig {
     runtime?: string;
     holdout?: string;
   };
+  /**
+   * Execution environment for agent stages. "host" = plain processes.
+   * "compose" = every stage runs via `docker compose run --rm <service>`
+   * (product-owned compose file in the worktree) or a fallback `docker run`
+   * image until the repo ships one — root inside, so pip/apt/go/npm install
+   * anything freely; the host stays clean.
+   */
+  env: {
+    mode: "host" | "compose";
+    /** repo-relative path of the product-owned compose file */
+    compose_file: string;
+    /** service in that compose file the factory runs stages in */
+    service: string;
+    /** fallback image when the repo has no compose file yet */
+    image: string;
+    /** host env vars forwarded into the container when present */
+    pass_env: string[];
+  };
   skip_labels: string[];
   pi: {
     binary: string;

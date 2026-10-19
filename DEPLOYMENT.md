@@ -1,9 +1,10 @@
 # VPS deployment runbook
 
-Tested shape: Ubuntu VPS, dedicated `factory` user, host-side git worktrees (no per-lap
-Docker — a per-repo container environment for install freedom is a planned opt-in), **one lap
-per repo per tick** (dependency chains dive issue by issue; repos run concurrently with each
-other, cap via `--concurrency N` / `PI_FACTORY_CONCURRENCY`).
+Tested shape: Ubuntu VPS, dedicated `factory` user, host-side git worktrees, **one lap per repo
+per tick** (dependency chains dive issue by issue; repos run concurrently with each other, cap
+via `--concurrency N` / `PI_FACTORY_CONCURRENCY`). Optional per-repo container mode gives agent
+stages root inside their own Docker environment (`env.mode: "compose"`) — install anything,
+host stays clean.
 
 ## 1. Factory user
 
@@ -133,7 +134,49 @@ project. The slicer's issue #1 is the end-to-end walking skeleton by prompt cont
   parallelism (each repo gets its own lap per tick); `--concurrency` caps total simultaneous
   laps if the host needs a breath.
 
-## 7. Troubleshooting
+## 7. Container mode (install freedom, per repo)
+
+Give the `factory` user docker access (non-sudo): `sudo usermod -aG docker factory` (re-login).
+Then per repo, in `~/state/repos/<slug>/config.json`:
+
+```json
+"env": { "mode": "compose", "service": "worker", "compose_file": "docker-compose.yml" }
+```
+
+**Worker service contract** (in the product repo): any built service — a copy of your dev/app
+service is fine. The factory only overrides the *command*: each stage becomes
+`docker compose -f <compose> run --rm --workdir <worktree> <service> pi …`, so:
+
+- the worker's image must contain the project's toolchain (or make the agent install it —
+  it can, it's root);
+- the compose file must **publish the two scenario ports** on `127.0.0.1` (the port pair
+  reserved at onboard time);
+- `depends_on` services (falkordb, postgres…) come up automatically for every stage —
+  runtime verification finally exercises real dependencies instead of `-m "not falkordb"`.
+
+Stages mount the worktree, the state dir, and the factory user's Pi install at identical
+container paths; `safe.directory=*` and `HOME=/root` are pre-set; `env.pass_env` forwards
+model keys when they exist on the host.
+
+**Repos without a compose file yet**: the factory falls back to `docker run --rm` from
+`env.image` (default `ubuntu:24.04`) with named cache volumes (`pdf-uv`, `pdf-pip`, `pdf-npm`)
+and publishes `scenario.ports` itself. The implementer can ship the repo's compose as an
+ordinary issue deliverable and you flip nothing — the factory picks the compose file up
+automatically once it exists in the worktree.
+
+Smoke check before the first container lap (run as `factory`):
+
+```sh
+docker run --rm -v ~/.pi:/root/.pi -v ~/.pi/agent/bin/pi:/usr/local/bin/pi:ro \
+  ubuntu:24.04 pi --version       # the mounted launcher works in a bare image
+```
+
+If the launcher refuses inside a bare image, pin `env.image` to an image with node, or install
+`@earendil-works/pi-coding-agent` in your worker Dockerfile. Cleanup is automatic: every stage
+and scenario start carries a unique `--name`, and `docker rm -f` follows it on success, timeout,
+or crash.
+
+## 8. Troubleshooting
 
 | Symptom | Meaning | Fix |
 |---|---|---|

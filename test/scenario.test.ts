@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { evalExpects, parseMaxMs, portBusy, runScenario, type ScenarioSpec } from "../src/scenario";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,6 +136,44 @@ describe("runScenario (real harness, python3 http server)", () => {
     expect(result.error).toContain("busy");
     hog.stop(true);
   });
+
+  test("container wrap: setup/start/teardown run through the prefix, cleanup runs", async () => {
+    const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = probeServer.port;
+    probeServer.stop(true);
+    // passthrough wrapper stands in for a `docker compose run` prefix
+    const wrapBin = join(scratchRoot, "wrap-exec.sh");
+    writeFileSync(wrapBin, "#!/usr/bin/env bash\nexec \"$@\"\n");
+    chmodSync(wrapBin, 0o755);
+    let cleanedUp = false;
+    const spec: ScenarioSpec = {
+      name: "wrap-test",
+      port,
+      start: "python3 -m http.server $PORT --bind 127.0.0.1",
+      readiness_path: "/",
+      probes: [
+        {
+          id: "root-200",
+          description: "root 200",
+          command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/",
+          expect: "status:200 max_ms:3000",
+        },
+      ],
+    };
+    const result = await runScenario(spec, join(scratchRoot, "wrapped"), {
+      readinessSeconds: 15,
+      defaultProbeMs: 5000,
+      wrap: {
+        argvPrefix: [wrapBin],
+        cleanup: async () => {
+          cleanedUp = true;
+        },
+      },
+    });
+    expect(result.pass).toBe(true);
+    expect(cleanedUp).toBe(true); // authoritative teardown in container mode
+    expect(await portBusy(port)).toBe(false);
+  }, 30000);
 
   test("failing setup fails the scenario", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });

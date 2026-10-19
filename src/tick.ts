@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
+import { buildStageCmd } from "./env";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { Ledger } from "./ledger";
@@ -21,6 +22,8 @@ export interface CallStageArgs {
   cwd: string;
   tools: string[];
   sessionDir: string;
+  /** unique docker --name / receipt key for this stage invocation */
+  name: string;
 }
 
 export type CallStageFn = (
@@ -32,9 +35,11 @@ export type CallStageFn = (
 const stageMinutes = (cfg: RepoConfig, stage: StageName): number =>
   (cfg.timeouts as any)[`${stage}_minutes`] ?? cfg.timeouts.stage_minutes;
 
-export function makeCallStage(cfg: RepoConfig): CallStageFn {
-  return (stage, a) =>
-    callPiWithFallback(
+export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
+  return (stage, a) => {
+    // container mode: pi runs inside the product's worker environment
+    const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name);
+    return callPiWithFallback(
       {
         binary: cfg.pi.binary,
         prompt: a.prompt,
@@ -44,9 +49,13 @@ export function makeCallStage(cfg: RepoConfig): CallStageFn {
         systemPrompt: a.systemPrompt,
         extraArgs: cfg.pi.extra_args,
         timeoutMs: stageMinutes(cfg, stage) * 60_000,
+        runnerPrefix: envBuild.containerized
+          ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }
+          : undefined,
       },
       a.models
     );
+  };
 }
 
 const modelStr = (m: ModelSpec) => `${m.provider}/${m.model}${m.thinking ? `:${m.thinking}` : ""}`;
@@ -177,6 +186,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   outer: for (let attempt = startAttempt; attempt <= cfg.attempts; attempt++) {
     deps.ledger.setIssue(cfg.repo, n, { attempts: attempt });
+    const runTag = `${attempt}-${Date.now().toString(36)}`;
     receipt(stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
 
     // ---- PLAN (once per issue; retries on later attempts if it failed)
@@ -189,6 +199,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         cwd: join(stateDir, "repos", cfg.slug, "source"),
         tools: cfg.pi.plan_tools,
         sessionDir: sessDir,
+        name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
       });
       recordStage("plan", attempt, models, res);
       if (res.outcome.kind !== "ok") {
@@ -220,6 +231,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       cwd: worktree,
       tools: cfg.pi.tools,
       sessionDir: sessDir,
+      name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
     });
     recordStage("implement", attempt, implModels, implRes);
     if (implRes.outcome.kind !== "ok") {
@@ -279,6 +291,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         cwd: worktree,
         tools: cfg.pi.plan_tools,
         sessionDir: sessDir,
+        name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
       });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);
@@ -394,7 +407,7 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
     const tasks: (() => Promise<void>)[] = [];
     for (const cfg of discoverConfigs(opts.stateDir, opts.repoSlug)) {
       try {
-        const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg) };
+        const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
         await prepareRepo(cfg, opts.stateDir, deps);
         const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
         // One lap per repo per tick — by design. The splice is a dependency

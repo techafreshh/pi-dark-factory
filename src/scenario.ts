@@ -184,13 +184,19 @@ async function ready(port: number, path: string, seconds: number): Promise<boole
  * Black-box verification harness. The scenario file lives OUTSIDE the
  * project repo by contract, so the implementing agent can never tune code
  * against its own acceptance. `start` runs in the foreground of a child
- * process; the harness owns its life and kills its process group no matter
- * what — `ownership: external` in the old factory's terms.
+ * process; the harness owns its life and kills it no matter what (host mode:
+ * process group; container mode: the wrapper's cleanup, e.g. docker rm -f).
+ * Probes always run host-side, black-box, against published ports.
  */
 export async function runScenario(
   spec: ScenarioSpec,
   scratchDir: string,
-  opts: { readinessSeconds: number; defaultProbeMs: number }
+  opts: {
+    readinessSeconds: number;
+    defaultProbeMs: number;
+    /** container mode: prefix for setup/start/teardown + authoritative cleanup */
+    wrap?: { argvPrefix: string[]; cleanup: () => Promise<void> | void };
+  }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
     name: spec.name,
@@ -199,6 +205,8 @@ export async function runScenario(
     error,
   });
 
+  // a container-mode port check still makes sense: another lap or a stray
+  // host process on the published port breaks deterministic verification
   if (await portBusy(spec.port)) {
     return mkResults(false, `port ${spec.port} is busy (another server is listening)`);
   }
@@ -206,16 +214,17 @@ export async function runScenario(
   rmSync(scratchDir, { recursive: true, force: true });
   mkdirSync(scratchDir, { recursive: true });
   const env = { ...process.env, PORT: String(spec.port) };
+  const raw = (cmd: string) => (opts.wrap ? [...opts.wrap.argvPrefix, "bash", "-c", cmd] : ["bash", "-c", cmd]);
 
   if (spec.setup) {
-    const res = await sh(["bash", "-c", spec.setup], { cwd: scratchDir, env, timeoutMs: 300000, killGroup: true });
+    const res = await sh(raw(spec.setup), { cwd: scratchDir, env, timeoutMs: 600000, killGroup: !opts.wrap });
     if (res.code !== 0) {
       return mkResults(false, `setup failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300)}`);
     }
   }
 
-  // foreground server under its own session — group kill on teardown
-  const full = process.platform === "linux" ? ["setsid", "bash", "-c", spec.start] : ["bash", "-c", spec.start];
+  // foreground server under its own session (host) or named container (wrap)
+  const full = opts.wrap ? raw(spec.start) : ["setsid", "bash", "-c", spec.start];
   const server = Bun.spawn(full, {
     cwd: scratchDir,
     env,
@@ -259,8 +268,9 @@ export async function runScenario(
     }
     return { name: spec.name, pass, results };
   } finally {
-    // authoritative teardown: kill the server group first, then run the
-    // scenario's own teardown (best-effort) — cancellation never skips the kill
+    // authoritative teardown: kill the server first (process group in host
+    // mode, docker client + rm -f in container mode), then run the
+    // scenario's own teardown (best-effort) — cancellation never skips it
     try {
       process.kill(-server.pid, "SIGKILL");
     } catch {
@@ -271,8 +281,11 @@ export async function runScenario(
     await Promise.race([server.exited, new Promise((r) => setTimeout(r, 5000))]).catch(() => {});
     await pump.catch(() => {});
     try { logSink.end(); } catch {} // FileSink.end() is sync in Bun
+    if (opts.wrap) {
+      await Promise.resolve(opts.wrap.cleanup()).catch(() => {});
+    }
     if (spec.teardown) {
-      await sh(["bash", "-c", spec.teardown], { cwd: scratchDir, env, timeoutMs: 60000, killGroup: true });
+      await sh(raw(spec.teardown), { cwd: scratchDir, env, timeoutMs: 60000, killGroup: !opts.wrap });
     }
   }
 }

@@ -40,6 +40,30 @@ Model bindings are read fresh at each spawn, so provider switching never wedges 
 the SQLite ledger is WAL and single-writer-per-process-safe; per-repo git operations
 (fetch/worktree add/worktree remove) are mutexed even under manual concurrency.
 
+## Environment & install freedom (container mode)
+
+`env.mode: "compose"` runs **every agent stage as root inside the product's own Docker
+environment** — `docker compose -f <compose in the worktree> run --rm <service> pi …` — so
+`pip install`, `apt-get`, compilers, anything: ordinary work, and its mess dies with the
+container (`docker rm -f` follows every stage, timeout or crash included). The host stays clean.
+
+- **The product repo owns its compose file and Dockerfiles.** A stage joins the compose network,
+  so `falkordb`, `postgres`, caches and friends are simply *there* — the fix for the old
+  factory's "factory host has no Docker → real-database tests excluded by marker" failure mode.
+  Contract: the compose file must publish the two scenario ports on `127.0.0.1`.
+- **No compose file yet?** The factory falls back to a generic `docker run` per stage from
+  `env.image` (default `ubuntu:24.04`) with named cache volumes (`pdf-uv`, `pdf-pip`, `pdf-npm`)
+  so installs replay cheap, and publishes `scenario.ports` itself. Switch the moment the repo
+  ships its compose.
+- **Host↔container mirroring**: worktree, state dir, and the factory user's Pi install are
+  bind-mounted at identical container paths — prompts, cwds, session dirs and git forensics
+  need no translation. `safe.directory=*` is pre-set; `pass_env` forwards selected host env
+  vars (model keys) when present.
+- Verification stays black-box: scenario `setup`/`start`/`teardown` execute inside the container,
+  probes run from the host harness against the published ports.
+
+Default `env.mode` is `"host"` (plain processes) — flip it per repo when you want the cage.
+
 ## Lifecycle (one lap, per tick)
 
 1. **Intake** — deterministic: oldest open issue with no ledger row, no foreign PR claiming it,

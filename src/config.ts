@@ -6,6 +6,13 @@ const DEFAULTS = {
   merge: { method: "squash" as const, required_checks: [] as string[], delete_branch: true },
   timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
   skip_labels: [] as string[],
+  env: {
+    mode: "host" as const,
+    compose_file: "docker-compose.yml",
+    service: "worker",
+    image: "ubuntu:24.04",
+    pass_env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"],
+  },
   pi: {
     binary: "pi",
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
@@ -67,6 +74,7 @@ export function loadRepoConfig(path: string): RepoConfig {
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
     pi: { ...DEFAULTS.pi, ...raw.pi },
+    env: { ...DEFAULTS.env, ...raw.env },
   };
   if (!cfg.models.default) cfg.models.default = {};
   // fail fast on a missing base model rather than at lap time

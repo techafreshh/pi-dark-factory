@@ -107,6 +107,13 @@ async function cmdOnboard(stateDir: string, target: string) {
     timeouts: { stage_minutes: 30, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
     scenario: { ports, runtime: "runtime.json", holdout: "holdout.json" },
     skip_labels: [] as string[],
+    env: {
+      mode: "host",
+      compose_file: "docker-compose.yml",
+      service: "worker",
+      image: "ubuntu:24.04",
+      pass_env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"],
+    },
     pi: {
       binary: "pi",
       tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],

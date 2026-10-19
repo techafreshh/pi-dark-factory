@@ -1,5 +1,5 @@
 import { parseEventStream } from "./pievents";
-import { killTree } from "./sh";
+import { killTree, sh } from "./sh";
 import type { ModelSpec, StageModels, Usage } from "./types";
 
 export interface PiCallOpts {
@@ -13,6 +13,8 @@ export interface PiCallOpts {
   systemPrompt?: string;
   extraArgs?: string[];
   timeoutMs: number;
+  /** container mode: docker prefix; cleanupArgv runs after any exit (docker rm -f) */
+  runnerPrefix?: { argvPrefix: string[]; cleanupArgv?: string[] };
 }
 
 export type PiOutcome =
@@ -69,10 +71,12 @@ async function drainStream(stream: ReadableStream<Uint8Array> | undefined): Prom
  * whole process tree — no orphaned workers.
  */
 export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
-  const cmd = [o.binary, ...buildPiArgs(o)];
+  const cmd = [...(o.runnerPrefix?.argvPrefix ?? []), o.binary, ...buildPiArgs(o)];
   let proc: any;
   try {
-    const full = process.platform === "linux" ? ["setsid", ...cmd] : cmd;
+    // container mode: the payload lives in the docker daemon, not this
+    // process tree — the docker client itself needs no setsid group
+    const full = process.platform === "linux" && !o.runnerPrefix ? ["setsid", ...cmd] : cmd;
     proc = Bun.spawn(full, {
       cwd: o.cwd,
       env: { ...process.env },
@@ -109,6 +113,11 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
         })
       : null;
   const code = await (timeoutP ? Promise.race([exited, timeoutP]) : exited);
+  if (o.runnerPrefix?.cleanupArgv) {
+    // --rm removes normally-exiting containers; rm -f is the mop-up for
+    // killed clients, timeouts, and crashes — and is idempotent
+    await sh(o.runnerPrefix.cleanupArgv, { timeoutMs: 20000 }).catch(() => {});
+  }
   if (timedOut) return { kind: "timeout" };
 
   const [lines, stderr] = await Promise.all([stdoutP, stderrP]);

@@ -1,5 +1,5 @@
 {
-  "_readme": "Reference repo config (written by `foreman onboard`, edited by hand). models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model — a hung stream is a host problem). required_checks: names of GitHub checks that must pass ([] = no CI gate). scenario.ports are RESERVED across all repos; runtime/holdout are file names relative to this directory. skip_labels: issues with any of these labels are never claimed. origin_url: override the clone URL (private repos with a token, or test fixtures).",
+  "_readme": "Reference repo config (written by `foreman onboard`, edited by hand). models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model — a hung stream is a host problem). required_checks: names of GitHub checks that must pass ([] = no CI gate). scenario.ports are RESERVED across all repos; runtime/holdout are file names relative to this directory. skip_labels: issues with any of these labels are never claimed. origin_url: override the clone URL (private repos with a token, or test fixtures). env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker service (compose_file is resolved in the worktree; the compose file must publish the scenario ports on 127.0.0.1) or in the fallback `image` with pip/uv/npm cache volumes until the repo ships a compose file — installs inside are ordinary work; the host stays clean. pass_env forwards host env vars into the container when present.",
   "repo": "OWNER/NAME",
   "slug": "NAME",
   "default_branch": "main",
@@ -13,6 +13,13 @@
   "timeouts": { "stage_minutes": 30, "checks_minutes": 30, "readiness_seconds": 120, "probe_ms": 10000 },
   "scenario": { "ports": [8100, 8102], "runtime": "runtime.json", "holdout": "holdout.json" },
   "skip_labels": ["factory:manual"],
+  "env": {
+    "mode": "host",
+    "compose_file": "docker-compose.yml",
+    "service": "worker",
+    "image": "ubuntu:24.04",
+    "pass_env": ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"]
+  },
   "pi": {
     "binary": "pi",
     "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],

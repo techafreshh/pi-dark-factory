@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildPiArgs, callPi, callPiWithFallback } from "../src/pi";
@@ -7,6 +7,8 @@ import type { ModelSpec, StageModels } from "../src/types";
 
 let fixtureDir: string;
 let fakePi: string;
+let passExec: string;
+let cleanupMark: string;
 
 beforeAll(() => {
   fixtureDir = mkdtempSync(join(tmpdir(), "pdfpi-"));
@@ -37,6 +39,13 @@ beforeAll(() => {
     ].join("\n")
   );
   chmodSync(fakePi, 0o755);
+  // passthrough wrapper (docker prefix stand-in) and a cleanup that drops a marker file
+  passExec = join(fixtureDir, "pass-exec");
+  writeFileSync(passExec, "#!/usr/bin/env bash\nexec \"$@\"\n");
+  chmodSync(passExec, 0o755);
+  cleanupMark = join(fixtureDir, "cleanup-mark");
+  writeFileSync(cleanupMark, "#!/usr/bin/env bash\ntouch \"$1\"\n");
+  chmodSync(cleanupMark, 0o755);
 });
 
 afterAll(() => rmSync(fixtureDir, { recursive: true, force: true }));
@@ -105,8 +114,43 @@ describe("callPi (real subprocess, fake pi)", () => {
   }, 10000);
 });
 
-describe("callPiWithFallback (hot model failover)", () => {
-  const models = (base: ModelSpec, fallback: ModelSpec[]): StageModels => ({ base, fallback });
+describe("callPi with runnerPrefix (container mode)", () => {
+  test("prefix wraps the pi argv; cleanup argv runs after a clean exit", async () => {
+    const marker = join(fixtureDir, "cleanup-ran-marker");
+    try {
+      rmSync(marker, { force: true });
+    } catch {}
+    const res = await callPi({
+      ...opts(5000),
+      model: model("good"),
+      runnerPrefix: { argvPrefix: [passExec], cleanupArgv: [cleanupMark, marker] },
+    });
+    expect(res.kind).toBe("ok");
+    if (res.kind === "ok") expect(res.text).toContain("PROMPT<[do the thing");
+    expect(existsSync(marker)).toBe(true); // docker rm -f ran even on success
+  }, 10000);
+
+  test("cleanup argv also runs after a timeout kill", async () => {
+    const marker = join(fixtureDir, "cleanup-timeout-marker");
+    try {
+      rmSync(marker, { force: true });
+    } catch {}
+    process.env.FAKE_MODE = "hang";
+    try {
+      const res = await callPi({
+        ...opts(1200),
+        model: model("good"),
+        runnerPrefix: { argvPrefix: [passExec], cleanupArgv: [cleanupMark, marker] },
+      });
+      expect(res.kind).toBe("timeout");
+      expect(existsSync(marker)).toBe(true);
+    } finally {
+      delete process.env.FAKE_MODE;
+    }
+  }, 10000);
+});
+
+describe("callPiWithFallback (hot model failover)", () => {  const models = (base: ModelSpec, fallback: ModelSpec[]): StageModels => ({ base, fallback });
 
   test("base provider error advances to the fallback model", async () => {
     const res = await callPiWithFallback(
