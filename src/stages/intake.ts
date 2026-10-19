@@ -32,19 +32,20 @@ export interface PickResult {
 
 /**
  * Deterministic intake — no LLM judgment, no GitHub label state machine.
- * The claim ledger is the source of truth: only an issue with NO row is
- * claimable, so a delivered issue can never be re-claimed, no matter what
- * a crashed lap left behind.
+ * The claim ledger is the source of truth: only an issue with NO row (or an
+ * interrupted lap below the attempt cap) is claimable, so a delivered issue
+ * can never be re-claimed, no matter what a crashed lap left behind.
+ * Returns ALL claimable issues, oldest first — the tick dispatches them in parallel.
  */
-export async function pickClaimable(
+export async function listClaimable(
   cfg: RepoConfig,
   ledger: Ledger,
   gh: GhApi,
   dependsCache: Map<number, boolean> = new Map()
-): Promise<PickResult> {
+): Promise<IssueLite[]> {
   const issues = (await gh.issueList("open", 100)).slice().sort((a, b) => a.number - b.number);
-  if (issues.length === 0) return { issue: null, reason: "no open issues" };
   const prs = await gh.prListOpen();
+  const out: IssueLite[] = [];
 
   for (const issue of issues) {
     const labels = issue.labels ?? [];
@@ -73,7 +74,20 @@ export async function pickClaimable(
     }
     if (openDeps.length > 0) continue;
 
-    return { issue, reason: `claimed #${issue.number}` };
+    out.push(issue);
   }
+  return out;
+}
+
+export async function pickClaimable(
+  cfg: RepoConfig,
+  ledger: Ledger,
+  gh: GhApi,
+  dependsCache: Map<number, boolean> = new Map()
+): Promise<PickResult> {
+  const all = await listClaimable(cfg, ledger, gh, dependsCache);
+  if (all.length > 0) return { issue: all[0], reason: `claimed #${all[0].number}` };
+  const open = await gh.issueList("open", 100);
+  if (open.length === 0) return { issue: null, reason: "no open issues" };
   return { issue: null, reason: "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)" };
 }

@@ -18,7 +18,9 @@ const HELP = `pi-dark-factory foreman — unattended build loop on Pi
 Usage: foreman <command> [options]
 
 Commands:
-  tick   [--repo <slug>]              run one lap cycle for every configured repo (or one)
+  tick   [--repo <slug>] [--concurrency N]   run one tick: every claimable issue becomes a lap,
+                                             laps run in parallel (N=0 or omitted = unlimited,
+                                             or set PI_FACTORY_CONCURRENCY)
   status [--repo <slug>]              claim ledger, recent laps/stages, worktrees
   onboard <owner/name>                register a repo: config + scenario templates + port pair
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)
@@ -307,9 +309,13 @@ async function main() {
   }
   const stateDir = stateDirOf(flags);
   switch (command) {
-    case "tick":
-      await runTick({ stateDir, repoSlug: typeof flags.repo === "string" ? flags.repo : undefined });
+    case "tick": {
+      const fromFlag = typeof flags.concurrency === "string" ? Number(flags.concurrency) : undefined;
+      const fromEnv = process.env.PI_FACTORY_CONCURRENCY ? Number(process.env.PI_FACTORY_CONCURRENCY) : undefined;
+      const concurrency = Number.isFinite(fromFlag) ? fromFlag! : Number.isFinite(fromEnv) ? fromEnv : 0;
+      await runTick({ stateDir, repoSlug: typeof flags.repo === "string" ? flags.repo : undefined, concurrency });
       break;
+    }
     case "status":
       cmdStatus(stateDir, typeof flags.repo === "string" ? flags.repo : undefined);
       break;

@@ -1,8 +1,9 @@
 # VPS deployment runbook
 
-Tested shape: Ubuntu VPS, dedicated `factory` user, host-side git worktrees (no per-lap Docker),
-serialized laps. Deployment assumes ~11GB RAM shared with other services — keep the factory
-serialized (it is by design: one lap at a time, one tick at a time).
+Tested shape: Ubuntu VPS, dedicated `factory` user, host-side git worktrees (no per-lap
+Docker), laps dispatched **in parallel by default** — concurrency unlimited unless you cap it
+(`--concurrency N` / `PI_FACTORY_CONCURRENCY`). The host's own RAM is the only quota; you sized
+the host, you set the pace.
 
 ## 1. Factory user
 
@@ -69,7 +70,9 @@ User=factory
 WorkingDirectory=/home/factory/pi-dark-factory
 Environment=PI_FACTORY_STATE=/home/factory/state
 ExecStart=/home/factory/.bun/bin/bun src/foreman.ts tick
-TimeoutStartSec=4h
+# unlimited parallel laps can run long — never time out the tick itself; only
+# its per-stage watchdogs kill anything
+TimeoutStartSec=infinity
 # the service cgroup reaps anything a lap leaked — no orphaned workers
 KillMode=control-group
 ```
@@ -125,9 +128,10 @@ project. The slicer's issue #1 is the end-to-end walking skeleton by prompt cont
   `~/state/repos/<slug>/issues/<n>/sessions/`.
 - **Updating the factory**: `git pull && bun install` in `~/pi-dark-factory` — state is external,
   nothing else to do. systemd unit unchanged.
-- **Memory doctrine** (from the old factory's postmortems): keep laps serialized (default),
-  don't run parallel `tick`s across repos on a saturated host, and if streams stall check
-  `free -h` / swap before blaming the provider — the old "silent streams" was host OOM, always.
+- **Scale as you like**: concurrency starts unlimited. If a pilot run wants restraint, cap it
+  transiently with `--concurrency N` (or `PI_FACTORY_CONCURRENCY` in the unit) — no config
+  change required to go back. The only hard limits are the per-stage watchdogs (anti-hang,
+  not throttles) and the attempt cap per issue (the notify-and-stop contract).
 
 ## 7. Troubleshooting
 

@@ -4,7 +4,7 @@ import type { ModelEntry, ModelSpec, RepoConfig, StageModels } from "./types";
 const DEFAULTS = {
   attempts: 3,
   merge: { method: "squash" as const, required_checks: [] as string[], delete_branch: true },
-  timeouts: { stage_minutes: 30, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
+  timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
   skip_labels: [] as string[],
   pi: {
     binary: "pi",

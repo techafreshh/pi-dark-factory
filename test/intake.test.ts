@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GhApi, CheckState } from "../src/gh";
-import { pickClaimable } from "../src/stages/intake";
+import { listClaimable, pickClaimable } from "../src/stages/intake";
 import { Ledger } from "../src/ledger";
 import type { IssueLite, PrLite, RepoConfig } from "../src/types";
 
@@ -138,5 +138,17 @@ describe("pickClaimable (deterministic intake)", () => {
     gh.issues = [issue(1, "Dependent", "Depends on: #999")];
     const pick = await pickClaimable(cfg, new Ledger(":memory:"), gh);
     expect(pick.issue).toBeNull();
+  });
+
+  test("listClaimable returns EVERY claimable issue, oldest first (parallel dispatch)", async () => {
+    const gh = new FakeGh();
+    gh.issues = [
+      issue(4, "Fourth"),
+      issue(1, "First"),
+      issue(2, "Second", "", ["factory:manual"]),
+      issue(3, "Third", "Depends on: #1"),
+    ];
+    const all = await listClaimable(cfg, new Ledger(":memory:"), gh);
+    expect(all.map((i) => i.number)).toEqual([1, 4]); // #2 skipped by label, #3 waits on #1
   });
 });

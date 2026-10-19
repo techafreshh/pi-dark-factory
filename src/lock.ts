@@ -22,10 +22,11 @@ function looksLikeFactory(pid: number): boolean {
 }
 
 /**
- * Tick mutual exclusion via pidfile + liveness. systemd never overlaps the
- * service with itself; this only guards a manual `foreman tick` against the
- * scheduled one. A dead holder's lock is reclaimed, so a crashed tick can
- * never wedge the timer forever.
+ * Scheduler mutual exclusion via pidfile + liveness: only ONE tick (the
+ * dispatcher) may run at a time. Laps themselves run in parallel inside it.
+ * systemd never overlaps the service with itself; this only guards a manual
+ * `foreman tick` against the scheduled one. A dead holder's lock is
+ * reclaimed, so a crashed tick can never wedge the timer forever.
  */
 export function acquireTickLock(stateDir: string): boolean {
   const path = join(stateDir, "tick.lock");

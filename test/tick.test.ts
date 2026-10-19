@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi, CheckState } from "../src/gh";
 import type { CallStageFn } from "../src/tick";
-import { tickRepo } from "../src/tick";
+import { runWithConcurrency, tickRepo } from "../src/tick";
 import { issueDir } from "../src/gitws";
 import { Ledger } from "../src/ledger";
 import type { IssueLite, PrLite, RepoConfig, StageModels } from "../src/types";
@@ -269,4 +269,36 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(w.gh.comments.join("\n")).toContain("BLOCKED");
     expect(w.calls.length).toBe(0);
   }, 60000);
+});
+
+describe("runWithConcurrency (unabated-by-default dispatcher)", () => {
+  test("caps parallel execution at the limit while completing every item", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const done: number[] = [];
+    const items = [1, 2, 3, 4, 5, 6, 7];
+    await runWithConcurrency(items, 2, async (n) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 20));
+      active--;
+      done.push(n);
+    });
+    expect(maxActive).toBe(2);
+    expect(done.sort()).toEqual(items);
+  });
+
+  test("limit 0 = unlimited: everything in flight at once", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const items = [1, 2, 3, 4, 5];
+    await runWithConcurrency(items, 0, async (n) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 25));
+      active--;
+      void n;
+    });
+    expect(maxActive).toBe(5);
+  });
 });

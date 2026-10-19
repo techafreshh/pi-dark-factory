@@ -2,9 +2,10 @@
 
 An unattended software factory built on the **Pi** coding agent (`pi --mode json`), written in
 TypeScript on Bun, with **zero frameworks and zero external dependencies**. A systemd timer fires
-`foreman tick`; one lap takes the oldest unclaimed GitHub issue from intake through
-plan → implement → verify → review → squash-merge → close — with **every gate deterministic** and
-the LLM never trusted.
+`foreman tick`; every claimable GitHub issue becomes a lap that runs intake through
+plan → implement → verify → review → squash-merge → close — **in parallel by default
+(concurrency unlimited; the host's own resources are the only quota)**, with **every gate
+deterministic** and the LLM never trusted.
 
 It replaces an Archon-based factory whose engine kept wedging. Every one of those failure
 classes is answered structurally here:
@@ -12,7 +13,7 @@ classes is answered structurally here:
 | Old wound | Mechanism in this factory |
 |---|---|
 | Already-delivered issues re-claimed forever | **SQLite claim ledger** — intake only picks issues with no row (or a crashed `in_progress` row below the attempt cap). GitHub labels are cosmetic. |
-| Hung laps / silent streams | Every stage is a **one-shot subprocess with a wall-clock timeout**; kill = kill the process group (setsid). Laps are serialized (one at a time, pidfile + systemd). |
+| Hung laps / silent streams | Every stage is a **one-shot subprocess with a wall-clock watchdog**; kill = kill the process group (setsid). Timeouts are generous and per-stage (`plan_minutes` / `implement_minutes` / `review_minutes`) — they exist to break hangs, not to throttle work. |
 | Orphaned workers needing targeted kills | Everything is a child of the oneshot service cgroup — systemd reaps leftovers. Plus a janitor pass (`foreman cleanup`) for stale `pi --mode json` processes older than 2h. |
 | Worktree/session reuse confusing resumed runs | One worktree per issue (created at first implement, deleted at merge), reused only within that issue's repair loop. Every stage is a fresh process reading current disk truth — there is no cached-node replay to poison. |
 | Structured output failures / "turn off thinking" | **No schema-valid JSON is ever demanded from a model.** All structure is Pi tool calls and text; verdicts are parsed leniently with one re-ask, then fail closed. |
@@ -23,6 +24,23 @@ classes is answered structurally here:
 
 Blocked issues (attempt cap exhausted, default 3) get a GitHub comment with the failure receipt,
 the last error, and the exact unblock command — and are **never** auto-retried.
+
+## Concurrency (unabated by default)
+
+Every claimable issue of every onboarded repo dispatches **at once** — the scheduler is the only
+serial thing, and it does no work itself. Parallel merges are first-class: each lap has its own
+worktree + branch, and the implementer's contract requires it to keep its branch integrating
+with a base that may move under it (rebase during repair rounds). The only limits:
+
+```
+foreman tick --concurrency 4     # cap parallel laps (trial runs, weak hosts)
+PI_FACTORY_CONCURRENCY=4         # same, via the service environment
+(unset)                          # unlimited — you sized the host, you set the pace
+```
+
+Model bindings are read fresh at each spawn, so provider switching never wedges in-flight work;
+the SQLite ledger is WAL and single-writer-per-process-safe; per-repo git operations
+(fetch/worktree add/worktree remove) are mutexed because parallel laps share one source checkout.
 
 ## Lifecycle (one lap, per tick)
 
@@ -42,7 +60,7 @@ the last error, and the exact unblock command — and are **never** auto-retried
 ## Commands
 
 ```
-bun src/foreman.ts tick   [--repo <slug>]        # one lap cycle (what the timer runs)
+bun src/foreman.ts tick   [--repo <slug>] [--concurrency N]   # every claimable issue becomes a lap
 bun src/foreman.ts status [--repo <slug>]       # ledger, laps, stages, worktrees
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)
@@ -104,8 +122,9 @@ disciplined model for implement/review.
 
 ```
 bun install
-bun test          # 62 tests: parser, ledger, probes, spawner (fake pi binary),
-                  # scenario harness (real python3 server), tick integration (real git, fake gh)
+bun test          # 65 tests: parser, ledger, probes, spawner (fake pi binary),
+                  # scenario harness (real python3 server), tick integration (real git, fake gh),
+                  # parallel dispatcher
 ```
 
 No external runtime dependencies — `bun:sqlite` and the Bun standard library only.

@@ -76,7 +76,7 @@ describe("loadRepoConfig", () => {
     expect(loaded.slug).toBe("app");
     expect(loaded.attempts).toBe(3);
     expect(loaded.merge.method).toBe("squash");
-    expect(loaded.timeouts.stage_minutes).toBe(30);
+    expect(loaded.timeouts.stage_minutes).toBe(60);
     expect(loaded.pi.tools.length).toBeGreaterThan(3);
   });
   test("rejects a malformed repo", () => {

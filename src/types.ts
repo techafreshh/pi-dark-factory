@@ -32,7 +32,12 @@ export interface RepoConfig {
     [stage: string]: ModelEntry | undefined;
   };
   timeouts: {
+    /** default wall-clock limit for any stage without a per-stage override */
     stage_minutes: number;
+    /** optional per-stage overrides: plan_minutes / implement_minutes / review_minutes */
+    plan_minutes?: number;
+    implement_minutes?: number;
+    review_minutes?: number;
     checks_minutes: number;
     readiness_seconds: number;
     probe_ms: number;

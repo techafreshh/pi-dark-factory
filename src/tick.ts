@@ -2,16 +2,15 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { Gh, type GhApi } from "./gh";
-import { issueDir, sessionDir as sessionDirOf, branchName, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt } from "./receipts";
 import { scenarioSummary, runVerify } from "./stages/verify";
-import { pickClaimable } from "./stages/intake";
+import { listClaimable } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
-import { scenarioSummary, runVerify } from "./stages/verify";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 
@@ -29,6 +28,10 @@ export type CallStageFn = (
   args: CallStageArgs
 ) => Promise<PiStageResult>;
 
+/** per-stage wall-clock minutes; a hung stream is killed, never waited on forever */
+const stageMinutes = (cfg: RepoConfig, stage: StageName): number =>
+  (cfg.timeouts as any)[`${stage}_minutes`] ?? cfg.timeouts.stage_minutes;
+
 export function makeCallStage(cfg: RepoConfig): CallStageFn {
   return (stage, a) =>
     callPiWithFallback(
@@ -40,7 +43,7 @@ export function makeCallStage(cfg: RepoConfig): CallStageFn {
         sessionDir: a.sessionDir,
         systemPrompt: a.systemPrompt,
         extraArgs: cfg.pi.extra_args,
-        timeoutMs: cfg.timeouts.stage_minutes * 60_000,
+        timeoutMs: stageMinutes(cfg, stage) * 60_000,
       },
       a.models
     );
@@ -66,8 +69,20 @@ function prBody(cfg: RepoConfig, issue: IssueLite, plan: string): string {
 }
 
 /**
- * Crash reconciliation — the anti-wedge pass. Laps are serialized, so at
- * tick start ANY in_progress row is by definition an interrupted lap:
+ * Per-repo git mutex: parallel laps share one source checkout, and git is
+ * not fond of concurrent `worktree add` / `fetch && reset` on the same .git.
+ */
+const sourceLocks = new Map<string, Promise<unknown>>();
+async function withSourceLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sourceLocks.get(slug) ?? Promise.resolve();
+  const task = prev.then(fn, fn);
+  sourceLocks.set(slug, task.catch(() => {}));
+  return task;
+}
+
+/**
+ * Crash reconciliation — the anti-wedge pass. During a tick, ANY in_progress
+ * row is by definition an interrupted lap (laps only run inside ticks):
  *  - issue already closed or a PR already merged → the delivery landed; close the books
  *  - attempts at cap → mark blocked and notify (the crash ate the notification)
  *  - otherwise the row stays reclaimable by intake with attempts carried over
@@ -109,22 +124,17 @@ async function reconcile(cfg: RepoConfig, deps: TickDeps, stateDir: string) {
   }
 }
 
-export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps): Promise<string> {
-  await ensureSource(stateDir, cfg);
+/** fetch + reset main, close the books on crashed laps — once per repo per tick */
+export async function prepareRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps): Promise<void> {
+  await withSourceLock(cfg.slug, () => ensureSource(stateDir, cfg));
   await reconcile(cfg, deps, stateDir);
+}
 
-  const pick = await pickClaimable(cfg, deps.ledger, deps.gh);
-  if (!pick.issue) {
-    const lapId = deps.ledger.startLap(cfg.repo, null);
-    deps.ledger.endLap(lapId, "idle", pick.reason);
-    receipt(stateDir, `idle: ${pick.reason}`);
-    return "idle";
-  }
-  const issue = pick.issue;
+export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, issue: IssueLite): Promise<string> {
   const n = issue.number;
   const priorRow = deps.ledger.getIssue(cfg.repo, n);
   if (!priorRow) {
-    if (!deps.ledger.claim(cfg.repo, n)) return "idle"; // race with another surface
+    if (!deps.ledger.claim(cfg.repo, n)) return "claimed-elsewhere"; // race
   } // else: reclaim of an interrupted lap — attempts carry over
   const lapId = deps.ledger.startLap(cfg.repo, n);
   const startAttempt = (priorRow?.attempts ?? 0) + 1;
@@ -142,6 +152,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
       plan = readFileSync(planPath, "utf8");
     } catch {}
   }
+
   let pr: number | null = priorRow?.pr ?? null;
   let findings: string | null = null;
   let lastError = "attempts exhausted";
@@ -200,7 +211,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
     }
 
     // ---- IMPLEMENT (worktree is created once, reused across repairs of this issue)
-    const worktree = await addWorktree(stateDir, cfg, n);
+    const worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
     const implModels = resolveModels(cfg, "implement");
     const implRes = await deps.callStage("implement", {
       models: implModels,
@@ -300,7 +311,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);
     } catch {}
-    await removeWorktree(stateDir, cfg, n, { deleteBranch: true });
+    await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
     deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
     receipt(stateDir, `lap #${n} MERGED via PR #${pr} (squash) — ledger closed`);
@@ -322,6 +333,19 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   return outcome;
 }
 
+/** one lap, single-issue convenience (used by tests and single-lap debugging) */
+export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps): Promise<string> {
+  await prepareRepo(cfg, stateDir, deps);
+  const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
+  if (claimable.length === 0) {
+    const lapId = deps.ledger.startLap(cfg.repo, null);
+    deps.ledger.endLap(lapId, "idle", "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)");
+    receipt(stateDir, "idle: no claimable issue");
+    return "idle";
+  }
+  return runLap(cfg, stateDir, deps, claimable[0]);
+}
+
 export function discoverConfigs(stateDir: string, slug?: string): RepoConfig[] {
   const reposDir = join(stateDir, "repos");
   let entries: string[] = [];
@@ -337,7 +361,28 @@ export function discoverConfigs(stateDir: string, slug?: string): RepoConfig[] {
     .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-export async function runTick(opts: { stateDir: string; repoSlug?: string }) {
+/**
+ * Every claimable issue of every repo becomes a lap; they run in parallel.
+ * Limit 0 (the default) means unlimited — the host's own resources are the
+ * only quota. Pass --concurrency N (or PI_FACTORY_CONCURRENCY) to cap it.
+ */
+export async function runWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  if (limit <= 0) {
+    await Promise.all(items.map(fn));
+    return;
+  }
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = idx++;
+      if (i >= items.length) return;
+      await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+export async function runTick(opts: { stateDir: string; repoSlug?: string; concurrency?: number }) {
   mkdirSync(opts.stateDir, { recursive: true });
   const { acquireTickLock, releaseTickLock } = await import("./lock");
   if (!acquireTickLock(opts.stateDir)) {
@@ -346,15 +391,30 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string }) {
   }
   try {
     const ledger = new Ledger(join(opts.stateDir, "factory.db"));
+    const tasks: (() => Promise<void>)[] = [];
     for (const cfg of discoverConfigs(opts.stateDir, opts.repoSlug)) {
       try {
-        await tickRepo(cfg, opts.stateDir, { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg) });
+        const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg) };
+        await prepareRepo(cfg, opts.stateDir, deps);
+        const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
+        for (const issue of claimable) {
+          tasks.push(async () => {
+            try {
+              await runLap(cfg, opts.stateDir, deps, issue);
+            } catch (e: any) {
+              // infra failure (git/gh/network) — receipt and move on; the
+              // in_progress row is reconciled next tick, never lost
+              receipt(opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+            }
+          });
+        }
       } catch (e: any) {
-        // infra failure (git/gh/network) — receipt and move on; in_progress
-        // rows are reconciled next tick, never lost
         receipt(opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
       }
     }
+    const limit = opts.concurrency ?? 0;
+    receipt(opts.stateDir, `dispatching ${tasks.length} lap(s), concurrency=${limit > 0 ? limit : "unlimited"}`);
+    await runWithConcurrency(tasks, limit, (t) => t());
   } finally {
     releaseTickLock(opts.stateDir);
   }
