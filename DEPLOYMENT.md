@@ -1,9 +1,9 @@
 # VPS deployment runbook
 
 Tested shape: Ubuntu VPS, dedicated `factory` user, host-side git worktrees (no per-lap
-Docker), laps dispatched **in parallel by default** — concurrency unlimited unless you cap it
-(`--concurrency N` / `PI_FACTORY_CONCURRENCY`). The host's own RAM is the only quota; you sized
-the host, you set the pace.
+Docker — a per-repo container environment for install freedom is a planned opt-in), **one lap
+per repo per tick** (dependency chains dive issue by issue; repos run concurrently with each
+other, cap via `--concurrency N` / `PI_FACTORY_CONCURRENCY`).
 
 ## 1. Factory user
 
@@ -128,10 +128,10 @@ project. The slicer's issue #1 is the end-to-end walking skeleton by prompt cont
   `~/state/repos/<slug>/issues/<n>/sessions/`.
 - **Updating the factory**: `git pull && bun install` in `~/pi-dark-factory` — state is external,
   nothing else to do. systemd unit unchanged.
-- **Scale as you like**: concurrency starts unlimited. If a pilot run wants restraint, cap it
-  transiently with `--concurrency N` (or `PI_FACTORY_CONCURRENCY` in the unit) — no config
-  change required to go back. The only hard limits are the per-stage watchdogs (anti-hang,
-  not throttles) and the attempt cap per issue (the notify-and-stop contract).
+- **Ordering & scale**: one lap per repo per tick — the dependency chain advances one link per
+  15-minute tick, never two branches at once on one repo. Onboard more repos to get more
+  parallelism (each repo gets its own lap per tick); `--concurrency` caps total simultaneous
+  laps if the host needs a breath.
 
 ## 7. Troubleshooting
 

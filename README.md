@@ -2,10 +2,10 @@
 
 An unattended software factory built on the **Pi** coding agent (`pi --mode json`), written in
 TypeScript on Bun, with **zero frameworks and zero external dependencies**. A systemd timer fires
-`foreman tick`; every claimable GitHub issue becomes a lap that runs intake through
-plan → implement → verify → review → squash-merge → close — **in parallel by default
-(concurrency unlimited; the host's own resources are the only quota)**, with **every gate
-deterministic** and the LLM never trusted.
+`foreman tick`; each repo's next claimable issue runs a lap — intake through
+plan → implement → verify → review → squash-merge → close — **one lap per repo per tick by
+design** (dependency chains want strictly ordered delivery), with repos fanning out in parallel,
+**every gate deterministic**, and the LLM never trusted.
 
 It replaces an Archon-based factory whose engine kept wedging. Every one of those failure
 classes is answered structurally here:
@@ -25,22 +25,20 @@ classes is answered structurally here:
 Blocked issues (attempt cap exhausted, default 3) get a GitHub comment with the failure receipt,
 the last error, and the exact unblock command — and are **never** auto-retried.
 
-## Concurrency (unabated by default)
+## Ordering & concurrency (by design)
 
-Every claimable issue of every onboarded repo dispatches **at once** — the scheduler is the only
-serial thing, and it does no work itself. Parallel merges are first-class: each lap has its own
-worktree + branch, and the implementer's contract requires it to keep its branch integrating
-with a base that may move under it (rebase during repair rounds). The only limits:
-
-```
-foreman tick --concurrency 4     # cap parallel laps (trial runs, weak hosts)
-PI_FACTORY_CONCURRENCY=4         # same, via the service environment
-(unset)                          # unlimited — you sized the host, you set the pace
-```
+A repo's backlog is a dependency chain: the splice writes `Depends on: #n`, and a lap takes the
+repo's **oldest claimable issue** — one whose deps are all closed by merged PRs. One lap per repo
+per tick; the next tick (15 min later) takes the next link. Repos run concurrently with each
+other (`--concurrency N` / `PI_FACTORY_CONCURRENCY` caps cross-repo parallelism; default
+unlimited). The previous factory's runs supplied the evidence for this shape: serial delivery
+shipped 11 of 12 issues in perfect order with zero conflicts, while concurrent branches produced
+mid-flight union-merges, a stranded never-delivered branch, and cross-worktree import
+contamination.
 
 Model bindings are read fresh at each spawn, so provider switching never wedges in-flight work;
 the SQLite ledger is WAL and single-writer-per-process-safe; per-repo git operations
-(fetch/worktree add/worktree remove) are mutexed because parallel laps share one source checkout.
+(fetch/worktree add/worktree remove) are mutexed even under manual concurrency.
 
 ## Lifecycle (one lap, per tick)
 
@@ -60,7 +58,7 @@ the SQLite ledger is WAL and single-writer-per-process-safe; per-repo git operat
 ## Commands
 
 ```
-bun src/foreman.ts tick   [--repo <slug>] [--concurrency N]   # every claimable issue becomes a lap
+bun src/foreman.ts tick   [--repo <slug>] [--concurrency N]   # one lap per repo (next link in its chain)
 bun src/foreman.ts status [--repo <slug>]       # ledger, laps, stages, worktrees
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)

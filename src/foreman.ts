@@ -18,9 +18,9 @@ const HELP = `pi-dark-factory foreman — unattended build loop on Pi
 Usage: foreman <command> [options]
 
 Commands:
-  tick   [--repo <slug>] [--concurrency N]   run one tick: every claimable issue becomes a lap,
-                                             laps run in parallel (N=0 or omitted = unlimited,
-                                             or set PI_FACTORY_CONCURRENCY)
+  tick   [--repo <slug>] [--concurrency N]   one lap per repo (next claimable link in its
+                                             dependency chain); repos run in parallel,
+                                             N caps that (0 or omitted = unlimited)
   status [--repo <slug>]              claim ledger, recent laps/stages, worktrees
   onboard <owner/name>                register a repo: config + scenario templates + port pair
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)

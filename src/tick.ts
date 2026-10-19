@@ -397,7 +397,14 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
         const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg) };
         await prepareRepo(cfg, opts.stateDir, deps);
         const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
-        for (const issue of claimable) {
+        // One lap per repo per tick — by design. The splice is a dependency
+        // chain, and strictly ordered one-at-a-time delivery is what keeps
+        // main conflict-free (concurrent branches produced union-merge
+        // reconciles and a stranded branch in the previous factory's runs).
+        // Repos fan out in parallel; a repo dives issue by issue, topologically.
+        if (claimable.length > 0) {
+          const issue = claimable[0];
+          receipt(opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
           tasks.push(async () => {
             try {
               await runLap(cfg, opts.stateDir, deps, issue);
