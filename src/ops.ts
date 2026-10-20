@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync as mvSync,
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { Gh, repoDefaultBranch } from "./gh";
-import { removeWorktree } from "./gitws";
+import { deleteRemoteBranch, removeWorktree } from "./gitws";
 import { Ledger } from "./ledger";
 import { callPi } from "./pi";
 import { portBusy } from "./scenario";
@@ -261,6 +261,12 @@ export async function opsUnblock(stateDir: string, slug: string, issue: number, 
       out.worktree = "removed";
     } catch (e: any) {
       out.worktree_error = e.message?.slice(0, 150);
+    }
+    try {
+      await deleteRemoteBranch(stateDir, cfg, issue);
+      out.remote_branch = "deleted";
+    } catch (e: any) {
+      out.remote_branch_error = e.message?.slice(0, 150);
     }
   }
   return out;

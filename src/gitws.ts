@@ -87,6 +87,20 @@ export async function removeWorktree(
   }
 }
 
+/** Best-effort remote branch cleanup. `unblock --prune` used to leave
+ * refs/heads/factory/issue-N on GitHub, so the reclaimed issue's next push
+ * bounced non-fast-forward. */
+export async function deleteRemoteBranch(
+  stateDir: string,
+  cfg: RepoConfig,
+  n: number
+): Promise<void> {
+  await sh(["git", "push", "origin", "--delete", branchName(n)], {
+    cwd: sourceDir(stateDir, cfg.slug),
+    timeoutMs: 120000,
+  });
+}
+
 export async function uncommitted(worktree: string): Promise<string[]> {
   const out = await gitIn(worktree, ["status", "--porcelain"]);
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
