@@ -194,6 +194,9 @@ export async function runScenario(
   opts: {
     readinessSeconds: number;
     defaultProbeMs: number;
+    /** the lap's product worktree, exported to setup/start/teardown as $WORKTREE
+     *  so a scenario can copy its build artifact into the empty scratch dir */
+    worktree?: string;
     /** container mode: prefix for setup/start/teardown + authoritative cleanup */
     wrap?: { argvPrefix: string[]; cleanup: () => Promise<void> | void };
   }
@@ -213,7 +216,11 @@ export async function runScenario(
 
   rmSync(scratchDir, { recursive: true, force: true });
   mkdirSync(scratchDir, { recursive: true });
-  const env = { ...process.env, PORT: String(spec.port) };
+  const env = {
+    ...process.env,
+    PORT: String(spec.port),
+    ...(opts.worktree ? { WORKTREE: opts.worktree } : {}),
+  };
   const raw = (cmd: string) => (opts.wrap ? [...opts.wrap.argvPrefix, "bash", "-c", cmd] : ["bash", "-c", cmd]);
 
   if (spec.setup) {

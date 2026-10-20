@@ -79,12 +79,13 @@ export async function runVerify(
     const envBuild =
       cfg.env.mode === "compose"
         ? buildStageCmd(cfg, opts.worktree, opts.stateDir, `pdf-${cfg.slug}-${opts.issue}-${key}`, {
-            extraEnv: { PORT: String(spec.port) },
+            extraEnv: { PORT: String(spec.port), WORKTREE: opts.worktree },
           })
         : undefined;
     const result = await runScenario(spec, scratch, {
       readinessSeconds: cfg.timeouts.readiness_seconds,
       defaultProbeMs: cfg.timeouts.probe_ms,
+      worktree: opts.worktree,
       wrap: envBuild
         ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
         : undefined,

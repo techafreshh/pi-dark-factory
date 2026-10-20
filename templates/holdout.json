@@ -1,5 +1,5 @@
 {
-  "_readme": "pi-dark-factory HOLDOUT scenario — adversarial edge cases on a second port, same contract as runtime.json. Same black-box rules: outside the repo, foreground start, deterministic probes. Write probes the implementer would NOT naturally handle: malformed JSON must get 4xx (never 500/hang), invalid enum values, unknown-resource lookups, script-tag escaping, boundary values, rapid sequential writes. Record the API's actual behavior where the spec is silent — only a 5xx, a hang, or corruption is a failure.",
+  "_readme": "pi-dark-factory HOLDOUT scenario \u2014 adversarial edge cases on a second port, same contract as runtime.json. Same black-box rules: outside the repo, foreground start, deterministic probes. Write probes the implementer would NOT naturally handle: malformed JSON must get 4xx (never 500/hang), invalid enum values, unknown-resource lookups, script-tag escaping, boundary values, rapid sequential writes. Record the API's actual behavior where the spec is silent \u2014 only a 5xx, a hang, or corruption is a failure. Setup runs in an EMPTY scratch dir with $WORKTREE (the lap's product worktree) exported \u2014 copy your artifact/build from there.",
   "name": "holdout",
   "port": 8102,
   "setup": "echo 'replace with build/install steps if any'",
