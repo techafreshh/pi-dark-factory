@@ -18,6 +18,7 @@ class FakeGh implements GhApi {
   mergedPrs: PrLite[] = [];
   states: Record<number, string> = {};
   comments: string[] = [];
+  labelsAdded: Record<number, string[]> = {};
   nextPr = 101;
   merged: number[] = [];
 
@@ -41,6 +42,12 @@ class FakeGh implements GhApi {
   }
   issueCreate(title: string, body: string): Promise<number> {
     return Promise.resolve(this.issues.length + 1);
+  }
+  issueAddLabels(n: number, labels: string[]): Promise<void> {
+    this.labelsAdded[n] = [...(this.labelsAdded[n] ?? []), ...labels];
+    const i = this.issues.find((x) => x.number === n);
+    if (i) i.labels = [...(i.labels ?? []), ...labels];
+    return Promise.resolve();
   }
   prListOpen(): Promise<PrLite[]> {
     return Promise.resolve(this.prs);
@@ -221,6 +228,34 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(implementCalls).toBe(2); // repair round happened
     const second = w.calls.filter((c) => c.stage === "implement")[1];
     expect(second.prompt).toContain("REPAIR ROUND");
+  }, 60000);
+
+  test("needs-context path: planner escapes → question posted, label gate set, claim dropped, label removal re-queues", async () => {
+    const w = makeWorld();
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: makeCallStage(w, {
+        planText: "INSUFFICIENT_CONTEXT: which SSO provider should we use?\n\nWould assume: keycloak, org-only",
+      }),
+    });
+    expect(outcome).toBe("needs_context");
+    // the question reached the issue, with release instructions
+    const comment = w.gh.comments.join("\n");
+    expect(comment).toContain("SSO provider");
+    expect(comment).toContain("factory:needs-info");
+    expect(comment).toContain("Would assume");
+    // the gate label is on the issue and the claim is dropped (fresh attempt count later)
+    expect(w.gh.labelsAdded[1]).toEqual(["factory:needs-info"]);
+    expect(w.ledger.getIssue(w.cfg.repo, 1)).toBeNull();
+    // no plan persisted and no implement stage burned
+    expect(existsSync(join(issueDir(w.stateDir, "toy", 1), "plan.md"))).toBe(false);
+    expect(w.calls.some((c) => c.stage === "implement")).toBe(false);
+    // with the label set, intake skips the issue; a human removing it re-queues it fresh
+    const intake = await import("../src/stages/intake");
+    expect(((await intake.pickClaimable(w.cfg, w.ledger, w.gh)).issue)).toBeNull();
+    w.gh.issues[0].labels = [];
+    expect(((await intake.pickClaimable(w.cfg, w.ledger, w.gh)).issue)?.number).toBe(1);
   }, 60000);
 
   test("reclaim: an interrupted lap (in_progress, attempts<cap) resumes from its persisted plan", async () => {

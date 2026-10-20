@@ -5,11 +5,11 @@ import { buildStageCmd } from "./env";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { Ledger } from "./ledger";
-import { blockedComment, mergedComment, noActionComment } from "./notify";
+import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt } from "./receipts";
 import { scenarioSummary, runVerify } from "./stages/verify";
-import { listClaimable } from "./stages/intake";
+import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
@@ -215,6 +215,21 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         deps.ledger.endLap(lapId, "no_action", parsed.reason);
         receipt(stateDir, `lap #${n} → NO_ACTION: ${parsed.reason}`);
         outcome = "no_action";
+        break outer;
+      }
+      if (parsed.kind === "insufficient_context") {
+        // The planner needs a product decision from the issue author. Park the
+        // issue on GitHub under the gate label and drop the claim — the label
+        // alone keeps intake away, so a fresh lap (with a clean attempt count)
+        // starts the moment the human answers and removes it.
+        deps.ledger.endLap(lapId, "needs_context", parsed.question);
+        try {
+          await deps.gh.issueComment(n, needsContextComment(cfg, n, parsed.question ?? "", parsed.assumptions ?? ""));
+          await deps.gh.issueAddLabels(n, [NEEDS_INFO_LABEL]);
+        } catch {}
+        deps.ledger.dropIssue(cfg.repo, n);
+        receipt(stateDir, `lap #${n} NEEDS_CONTEXT (parked under ${NEEDS_INFO_LABEL}): ${parsed.question}`);
+        outcome = "needs_context";
         break outer;
       }
       plan = parsed.plan!;

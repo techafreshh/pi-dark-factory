@@ -16,6 +16,22 @@ describe("parsePlan (lenient — no schema demanded from the model)", () => {
   test("NO_ACTION without colon still parses", () => {
     expect(parsePlan("no action, tracker only").kind).toBe("no_action");
   });
+  test("INSUFFICIENT_CONTEXT first line → question + everything after as assumptions", () => {
+    const p = parsePlan(
+      "INSUFFICIENT_CONTEXT: which SSO provider should be used?\n\nWould assume: keycloak, org-only login\nmore prose"
+    );
+    expect(p.kind).toBe("insufficient_context");
+    expect(p.question).toContain("SSO provider");
+    expect(p.assumptions).toContain("Would assume");
+  });
+  test("INSUFFICIENT_CONTEXT without colon still parses, with a fallback question", () => {
+    const p = parsePlan("insufficient context entirely unclear");
+    expect(p.kind).toBe("insufficient_context");
+    expect(p.question).toContain("unclear");
+  });
+  test("a plan mentioning insufficient context in prose is still a plan", () => {
+    expect(parsePlan("# Plan\nif this runs out we flag insufficient context later").kind).toBe("plan");
+  });
 });
 
 describe("parseVerdict (lenient, fail-closed)", () => {

@@ -6,6 +6,14 @@ export function branchName(n: number) {
   return `factory/issue-${n}`;
 }
 
+/**
+ * The factory's own gate label — the planner asked the issue author a question
+ * (INSUFFICIENT_CONTEXT) and the issue is parked on GitHub until the answer is
+ * edited into the body and this label is removed. No ledger row, no factory
+ * command: GitHub is the only interface a human needs.
+ */
+export const NEEDS_INFO_LABEL = "factory:needs-info";
+
 /** every `Depends on: #1, #2` mention in an issue body */
 export function parseDepends(body: string): number[] {
   const out: number[] = [];
@@ -49,7 +57,7 @@ export async function listClaimable(
 
   for (const issue of issues) {
     const labels = issue.labels ?? [];
-    if (labels.some((l) => cfg.skip_labels.includes(l))) continue;
+    if (labels.some((l) => cfg.skip_labels.includes(l) || l === NEEDS_INFO_LABEL)) continue;
     // No row = never touched. in_progress + attempts < cap = a lap that was
     // interrupted (crash/restart) — reclaimable with attempts carried over.
     // Anything else (merged / no_action / blocked / cap-reached) is closed.

@@ -13,6 +13,7 @@ export interface GhApi {
   issueComment(n: number, body: string): Promise<void>;
   issueClose(n: number): Promise<void>;
   issueCreate(title: string, body: string): Promise<number>;
+  issueAddLabels(n: number, labels: string[]): Promise<void>;
   prListOpen(): Promise<PrLite[]>;
   prListMerged(limit?: number): Promise<PrLite[]>;
   prCreate(head: string, base: string, title: string, body: string): Promise<number>;
@@ -58,6 +59,26 @@ export class Gh implements GhApi {
     const m = out.match(/issues\/(\d+)/);
     if (!m) throw new Error(`could not parse issue number from: ${out.slice(0, 200)}`);
     return Number(m[1]);
+  }
+
+  /**
+   * Label gate for parked issues. The factory's own label may not exist on a
+   * fresh repo — create it and retry once before failing.
+   */
+  async issueAddLabels(n: number, labels: string[]): Promise<void> {
+    if (labels.length === 0) return;
+    const addArgs = () => [
+      "gh", "issue", "edit", String(n), "--repo", this.repo,
+      ...labels.flatMap((l) => ["--add-label", l]),
+    ];
+    if ((await sh(addArgs())).code === 0) return;
+    for (const l of labels) {
+      await shOk(
+        await sh(["gh", "label", "create", l, "--repo", this.repo, "--force", "--color", "5319e5"]),
+        "gh label create"
+      );
+    }
+    shOk(await sh(addArgs()), "gh issue edit --add-label");
   }
 
   prListOpen(): Promise<PrLite[]> {

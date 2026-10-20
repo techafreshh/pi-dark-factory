@@ -23,7 +23,9 @@ classes is answered structurally here:
 | Crash mid-lap = lost issue forever | **Reconciliation pass** every tick: a delivered-but-unbooked merge is detected from merged PRs and closed out; a crashed lap at the attempt cap is marked blocked and notified; a crashed lap below cap is resumable with its persisted `plan.md`. |
 
 Blocked issues (attempt cap exhausted, default 3) get a GitHub comment with the failure receipt,
-the last error, and the exact unblock command — and are **never** auto-retried.
+the last error, and the exact unblock command — and are **never** auto-retried. Issues parked
+under `factory:needs-info` (planner needs a product decision) are likewise never auto-retried —
+releasing them is GitHub-only: edit the answer into the body, drop the label.
 
 ## Ordering & concurrency (by design)
 
@@ -85,8 +87,14 @@ compose mode uses `extra_hosts`).
 
 1. **Intake** — deterministic: oldest open issue with no ledger row, no foreign PR claiming it,
    no unmet `Depends on: #n`, none of `skip_labels`.
-2. **Plan** (planner model, read-only) — writes `plan.md`; replies `NO_ACTION: <reason>` for
-   tracker/meta issues.
+2. **Plan** (planner model, read-only) — writes `plan.md` in a fixed skeleton (approach with
+   rejected alternatives, assumptions, repo patterns to mirror with `file:line` citations, files
+   to change, anchored steps, validation, out-of-scope). Escapes: `NO_ACTION: <reason>` for
+   tracker/meta issues; `INSUFFICIENT_CONTEXT: <question>` when a product decision is missing —
+   the question (plus the defaults the planner would have used) is posted on the issue, and the
+   issue is parked under the `factory:needs-info` label until the answer is edited into the body
+   and the label removed. Technical choices are never an escape: the planner must decide them and
+   record them as assumptions.
 3. **Implement** (implementer model, full tools, in the issue's worktree) — must commit
    everything and push `factory/issue-<n>`; the PR is opened by the foreman, not the agent.
 4. **Verify** — deterministic only: clean tree, real commits vs base, required CI checks,

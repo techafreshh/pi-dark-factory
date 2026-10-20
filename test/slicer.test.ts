@@ -59,4 +59,12 @@ describe("buildSlicerPrompt", () => {
     expect(p).toContain("MY PRD");
     expect(p).toContain("25");
   });
+  test("demands Given/When/Then acceptance and honest dependencies", () => {
+    const p = buildSlicerPrompt("MY PRD", 25);
+    expect(p).toContain("Given/When/Then");
+    expect(p).toContain("is not a dependency");
+    expect(p).toContain("## Acceptance");
+    expect(p).toContain("TITLE:");
+    expect(p).toContain("DEPENDS:");
+  });
 });

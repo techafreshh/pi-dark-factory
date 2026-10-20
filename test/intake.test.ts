@@ -31,6 +31,11 @@ class FakeGh implements GhApi {
   issueCreate(title: string, body: string): Promise<number> {
     return Promise.resolve(this.issues.length + 1);
   }
+  issueAddLabels(n: number, labels: string[]): Promise<void> {
+    const i = this.issues.find((x) => x.number === n);
+    if (i) i.labels = [...(i.labels ?? []), ...labels];
+    return Promise.resolve();
+  }
   prListOpen(): Promise<PrLite[]> {
     return Promise.resolve(this.prs);
   }
@@ -104,6 +109,16 @@ describe("pickClaimable (deterministic intake)", () => {
     const gh = new FakeGh();
     gh.issues = [issue(1, "Manual", "", ["factory:manual"]), issue(2, "Fine")];
     expect((await pickClaimable(cfg, new Ledger(":memory:"), gh)).issue?.number).toBe(2);
+  });
+
+  test("skips the factory's needs-info gate label even when repo config doesn't list it", async () => {
+    const gh = new FakeGh();
+    gh.issues = [issue(1, "Parked on a question", "", ["factory:needs-info"]), issue(2, "Fine")];
+    const pick = await pickClaimable(cfg, new Ledger(":memory:"), gh);
+    expect(pick.issue?.number).toBe(2);
+    // release: human removes the label → claimable again
+    gh.issues[0].labels = [];
+    expect((await pickClaimable(cfg, new Ledger(":memory:"), gh)).issue?.number).toBe(1);
   });
 
   test("a foreign PR claiming the issue blocks the claim; our own factory PR does not", async () => {
