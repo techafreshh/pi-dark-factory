@@ -199,7 +199,7 @@ if (import.meta.main) {
     process.exit(1);
   }
   const port = Number(process.env.CRPASS_PORT ?? 8099);
-  const upstream = process.env.CRPASS_UPSTREAM ?? "https://api.cline.bot";
+  const upstream = process.env.CRPASS_UPSTREAM ?? "https://api.cline.bot/api";
   const stateFile = process.env.CRPASS_STATE_FILE ?? `${keysFile}.state.json`;
   startKeyrouter({ port, keysFile, upstream, stateFile });
   console.log(`clinepass keyrouter v${VERSION} on :${port} -> ${upstream} (keys: ${keysFile})`);
