@@ -145,14 +145,18 @@ Then per repo, in `~/state/repos/<slug>/config.json`:
 
 **Worker service contract** (in the product repo): any built service — a copy of your dev/app
 service is fine. The factory only overrides the *command*: each stage becomes
-`docker compose -f <compose> run --rm --workdir <worktree> <service> pi …`, so:
+`docker compose -f <compose> run --rm --service-ports --workdir <worktree> <service> pi …`, so:
 
 - the worker's image must contain the project's toolchain (or make the agent install it —
   it can, it's root);
-- the compose file must **publish the two scenario ports** on `127.0.0.1` (the port pair
-  reserved at onboard time);
+- the worker service declares the **scenario port pair published on `127.0.0.1`** — the factory
+  passes `--service-ports` because `compose run` publishes nothing by default;
 - `depends_on` services (falkordb, postgres…) come up automatically for every stage —
   runtime verification finally exercises real dependencies instead of `-m "not falkordb"`.
+
+A complete factory-ready compose example lives at
+`templates/docker-compose.product-example.yml` — copy the shape into the product repo, or
+let the implementer ship its own as an issue deliverable.
 
 Stages mount the worktree, the state dir, and the factory user's Pi install at identical
 container paths; `safe.directory=*` and `HOME=/root` are pre-set; `env.pass_env` forwards

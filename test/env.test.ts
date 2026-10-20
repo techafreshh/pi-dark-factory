@@ -67,6 +67,7 @@ describe("buildStageCmd (container execution environment)", () => {
     expect(args).not.toContain("-p 127.0.0.1:"); // absent — product compose owns port publishing
     expect(args).not.toContain("pdf-uv:");   // no factory caches in product compose mode
     expect(args).toContain(`--workdir ${wt}`);
+    expect(args).toContain("--service-ports"); // `compose run` publishes nothing by default
     expect(s.argvPrefix[s.argvPrefix.length - 1]).toBe("worker");
   });
 

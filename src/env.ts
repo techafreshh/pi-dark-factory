@@ -56,9 +56,12 @@ export function buildStageCmd(
   if (existsSync(composePath)) {
     // product-owned compose: its worker service defines OS, deps and the
     // compose network (falkordb, postgres…); the factory only overrides the
-    // command per stage. The compose file publishes the scenario ports.
+    // command per stage. --service-ports is load-bearing: `compose run`
+    // publishes NOTHING by default, but host-side black-box verification
+    // needs the scenario ports on 127.0.0.1 (declare them on the service).
     const argvPrefix = [
       "docker", "compose", "-f", composePath, "run", "--rm",
+      "--service-ports",
       "--name", uniqueName, "--workdir", worktree,
       ...mounts, ...envFlags, cfg.env.service,
     ];

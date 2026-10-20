@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DESIGN EXAMPLE — what a factory-ready docker-compose.yml looks like inside a
+# PRODUCT repo, not a factory-maintained file. Copy this shape into the product
+# repo (or better: let the implementer ship it as an ordinary issue deliverable).
+#
+# The factory contract (repo config: env.mode:"compose", env.service:"worker"):
+#   - a service named "worker" (any build; root by default, so the implementer
+#     can pip install / apt-get / go get freely — the mess dies with the stage)
+#   - the scenario port pair published on 127.0.0.1 (see ports below)
+# Per stage the factory runs:
+#   docker compose -f <file> run --rm --service-ports --workdir <worktree> worker pi …
+# (command is overridden per stage, so the placeholder below never runs; the
+# factory's Pi install is bind-mounted to /root/.pi automatically — no need to
+# declare anything for it here.)
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  worker:
+    build: .
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    environment:
+      FALKORDB_HOST: falkordb            # compose-network hostname, not the factory host
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    ports:
+      - "127.0.0.1:8100:8100"            # runtime scenario port (reserved pair from foreman onboard)
+      - "127.0.0.1:8102:8102"            # holdout scenario port
+    command: ["sleep", "infinity"]       # placeholder — factory overrides the command per stage
+
+  falkordb:
+    image: falkordb/falkordb:6.0.2
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      retries: 12
