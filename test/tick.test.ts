@@ -213,6 +213,22 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect((await import("../src/stages/intake")).pickClaimable(w.cfg, w.ledger, w.gh).then((p) => p.issue)).resolves.toBeNull();
   }, 60000);
 
+  test("review re-asks: unparseable verdicts are retried before failing closed as REJECT", async () => {
+    const w = makeWorld({ attempts: 1 });
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: makeCallStage(w, { reviewPlan: ["I think this looks quite good, ship it"] }),
+    });
+    expect(outcome).toBe("blocked");
+    // 1 initial ask + 5 re-asks, then the unparseable text fails closed as REJECT;
+    // attempts=1, so exactly one round of 6 reviewer calls
+    expect(w.calls.filter((c) => c.stage === "review").length).toBe(6);
+    const comment = w.gh.comments.join("\n");
+    expect(comment).toContain("BLOCKED");
+    expect(comment).toContain("review rejected");
+  }, 60000);
+
   test("repair loop: review rejects once, attempt 2 fixes and merges", async () => {
     const w = makeWorld();
     const outcome = await tickRepo(w.cfg, w.stateDir, {

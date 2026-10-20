@@ -60,6 +60,14 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
 
 const modelStr = (m: ModelSpec) => `${m.provider}/${m.model}${m.thinking ? `:${m.thinking}` : ""}`;
 
+/**
+ * Unparseable review verdicts are re-asked this many times before the text
+ * fails closed as REJECT. Flash-tier reviewers occasionally emit prose without
+ * the verdict line; a re-ask is cheap next to the repair round a false REJECT
+ * burns.
+ */
+const REVIEW_REASKS = 5;
+
 export interface TickDeps {
   ledger: Ledger;
   gh: GhApi;
@@ -296,7 +304,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
 
-    // ---- REVIEW (independent, read-only; unparseable → one re-ask → fail closed as REJECT)
+    // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     const revModels = resolveModels(cfg, "review");
     const callReview = () =>
       deps.callStage("review", {
@@ -310,9 +318,16 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);
-    if (revRes.outcome.kind === "ok" && parseVerdict(revRes.outcome.text).verdict === "unparseable") {
-      receipt(stateDir, `lap #${n} review verdict unparseable — re-asking once`);
+    let reask = 0;
+    while (
+      revRes.outcome.kind === "ok" &&
+      parseVerdict(revRes.outcome.text).verdict === "unparseable" &&
+      reask < REVIEW_REASKS
+    ) {
+      reask++;
+      receipt(stateDir, `lap #${n} review verdict unparseable — re-ask ${reask}/${REVIEW_REASKS}`);
       revRes = await callReview();
+      recordStage("review", attempt, revModels, revRes);
     }
     if (revRes.outcome.kind !== "ok") {
       lastError = `review stage failed: ${"error" in revRes.outcome ? revRes.outcome.error : revRes.outcome.kind}`;
@@ -323,7 +338,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const verdict = parseVerdict(revRes.outcome.text);
     if (verdict.verdict === "unparseable") {
       verdict.verdict = "reject";
-      verdict.findings = "review verdict unparseable after re-ask — failing closed:\n" + revRes.outcome.text.slice(0, 1500);
+      verdict.findings = "review verdict unparseable after " + REVIEW_REASKS + " re-asks — failing closed:\n" + revRes.outcome.text.slice(0, 1500);
     }
     if (verdict.verdict === "reject") {
       findings = verdict.findings;
