@@ -29,6 +29,10 @@ pi --version
 # git + gh + curl
 sudo apt-get install -y git gh curl
 gh auth login        # or export GH_TOKEN in the service unit
+
+# ClinePass multi-key router: bootstrap installs pi-keyrouter.service (port 8099);
+# keys go in /home/factory/state/clinepass.keys (one per line, 600 — live-reloaded).
+# Provider wiring: templates/pi-models.clinepass-router.json -> ~/.pi/agent/models.json.
 ```
 
 ## 3. Factory code + state

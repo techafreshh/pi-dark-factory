@@ -75,6 +75,9 @@ export function buildStageCmd(
   const caches = ["-v", "pdf-uv:/root/.cache/uv", "-v", "pdf-pip:/root/.cache/pip", "-v", "pdf-npm:/root/.npm"];
   const argvPrefix = [
     "docker", "run", "--rm", "--name", uniqueName,
+    // the clinepass key router (and any host service) is reachable from the
+    // container via this name
+    "--add-host", "host.docker.internal:host-gateway",
     "-w", worktree, ...mounts, ...caches, ...ports, ...envFlags,
     cfg.env.image,
   ];

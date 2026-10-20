@@ -88,10 +88,29 @@ EnvironmentFile=$F_HOME/factoryd.env
 ExecStart=$BUN src/factoryd.ts
 Restart=always
 E
+cat > /etc/systemd/system/pi-keyrouter.service <<E
+[Unit]
+Description=clinepass key router (multi-key failover)
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=factory
+WorkingDirectory=$F_HOME/pi-dark-factory
+Environment=CRPASS_KEYS_FILE=$F_HOME/state/clinepass.keys
+Environment=CRPASS_PORT=8099
+Environment=CRPASS_STATE_FILE=$F_HOME/state/clinepass.keys.state.json
+ExecStart=$BUN src/keyrouter.ts
+Restart=always
+E
+# container stages reach host services (key router) by name
+grep -q 'host.docker.internal' /etc/hosts || echo "127.0.0.1 host.docker.internal" >> /etc/hosts
+# one clinepass api key per line — the router fans laps over them
+touch $F_HOME/state/clinepass.keys && chmod 600 $F_HOME/state/clinepass.keys && chown factory:factory $F_HOME/state/clinepass.keys
 systemctl daemon-reload
-systemctl enable --now pi-factory.timer pi-factoryd.service
+systemctl enable --now pi-factory.timer pi-factoryd.service pi-keyrouter.service
 sleep 1
 curl -fsS http://127.0.0.1:8077/health && echo
+curl -fsS http://127.0.0.1:8099/health && echo
 
 echo "== 6. Caddy block (add to your Caddyfile, then reload caddy) =="
 cat <<E

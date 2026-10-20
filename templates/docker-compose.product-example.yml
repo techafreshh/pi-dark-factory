@@ -16,6 +16,9 @@
 services:
   worker:
     build: .
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach host-side services: the clinepass
+                                              # key router at host.docker.internal:8099
     depends_on:
       falkordb:
         condition: service_healthy
