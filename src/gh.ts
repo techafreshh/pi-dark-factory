@@ -128,7 +128,9 @@ export class Gh implements GhApi {
 }
 
 export async function repoDefaultBranch(repo: string): Promise<string> {
-  const raw = await ghJson<any>(repo, ["repo", "view", "--json", "defaultBranchRef"]);
+  // `gh repo view` takes the repository positionally — it has no --repo flag.
+  const res = await sh(["gh", "repo", "view", repo, "--json", "defaultBranchRef"]);
+  const raw = JSON.parse(shOk(res, "gh repo view")) as any;
   const name = raw.defaultBranchRef?.name;
   if (!name) throw new Error(`could not read default branch of ${repo}`);
   return name;
