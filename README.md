@@ -78,7 +78,7 @@ live). Cooldowns persist across restarts. `curl :8099/health` / `/pool` shows th
 Wiring (one-time, on the VPS): merge `templates/pi-models.clinepass-router.json` into the
 factory user's `~/.pi/agent/models.json`, put your keys in `~/state/clinepass.keys`, and point
 repo configs at `provider: "clinepass-rotator"`. `host.docker.internal` resolves both on the
-host (bootstrap adds the `/etc/hosts` line) and inside containers (fallback mode adds it;
+host (the `pi-factory-setup` skill adds the `/etc/hosts` line) and inside containers (fallback mode adds it;
 compose mode uses `extra_hosts`).
 
 ## Lifecycle (one lap, per tick)
@@ -161,7 +161,7 @@ disciplined model for implement/review.
 
 ```
 bun install
-bun test          # 65 tests: parser, ledger, probes, spawner (fake pi binary),
+bun test          # 89 tests: parser, ledger, probes, spawner (fake pi binary),
                   # scenario harness (real python3 server), tick integration (real git, fake gh),
                   # parallel dispatcher
 ```
@@ -169,4 +169,5 @@ bun test          # 65 tests: parser, ledger, probes, spawner (fake pi binary),
 No external runtime dependencies — `bun:sqlite` and the Bun standard library only.
 
 See `DEPLOYMENT.md` for the VPS runbook (factory user, Pi install + provider auth, systemd
-timer, first-lap smoke test).
+timer, first-lap smoke test) — or clone this repo on the server and run the in-repo
+`pi-factory-setup` skill, which walks the whole install guided (it retired `bootstrap.sh`).

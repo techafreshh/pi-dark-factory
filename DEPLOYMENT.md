@@ -6,6 +6,12 @@ via `--concurrency N` / `PI_FACTORY_CONCURRENCY`). Optional per-repo container m
 stages root inside their own Docker environment (`env.mode: "compose"`) — install anything,
 host stays clean.
 
+**Install**: clone this repo on the server and run the in-repo `pi-factory-setup` skill in an
+agent session there — it walks this whole runbook (user, runtimes, auth, systemd units,
+factoryd, key router, Caddy, smoke lap), skipping what exists and verifying each step. The
+sections below remain the reference for what it does and why (the old one-shot `bootstrap.sh`
+is retired).
+
 ## 1. Factory user
 
 ```sh
@@ -30,7 +36,7 @@ pi --version
 sudo apt-get install -y git gh curl
 gh auth login        # or export GH_TOKEN in the service unit
 
-# ClinePass multi-key router: bootstrap installs pi-keyrouter.service (port 8099);
+# ClinePass multi-key router: the setup skill installs pi-keyrouter.service (port 8099);
 # keys go in /home/factory/state/clinepass.keys (one per line, 600 — live-reloaded).
 # Provider wiring: templates/pi-models.clinepass-router.json -> ~/.pi/agent/models.json.
 ```
@@ -74,6 +80,8 @@ Type=oneshot
 User=factory
 WorkingDirectory=/home/factory/pi-dark-factory
 Environment=PI_FACTORY_STATE=/home/factory/state
+# .bun/bin first so a bun-installed `pi` resolves from systemd's default PATH
+Environment=PATH=/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/factory/.bun/bin/bun src/foreman.ts tick
 # unlimited parallel laps can run long — never time out the tick itself; only
 # its per-stage watchdogs kill anything
@@ -186,10 +194,13 @@ or crash.
 
 ## 8. Remote control (factoryd + factory-remote) — zero SSH from here on
 
-`bootstrap.sh` (repo root, `sudo bash bootstrap.sh` **on the VPS, once**) does all of §1–4
-and additionally: generates the API key into `/home/factory/factoryd.env` (chmod 600),
-installs `pi-factoryd.service` (Bun.serve API, port 8077, Restart=always) alongside the
-timer, health-checks locally, and prints the exact Caddy block for your domain:
+`pi-factory-setup` (`.agents/skills/pi-factory-setup/`, shipped in this repo) is the installer:
+clone this repo on the VPS, open an agent session in the checkout, and say "**set up the
+factory**". It walks §1–8 in order — skipping what exists, verifying each step — and ends with
+the API key generated into `/home/factory/factoryd.env` (chmod 600) and `pi-factoryd.service`
+(Bun.serve API, port 8077, Restart=always) running alongside the timer, local health checks
+green. The exact Caddy block for your domain (the skill writes it to a 600-mode file rather
+than echoing the key):
 
 ```
 factory-api.techa.pro {
@@ -205,7 +216,7 @@ On your machine (any checkout, or `%USERPROFILE%\bin` as in the websites factory
 
 ```sh
 export FACTORY_URL=https://factory-api.techa.pro
-export FACTORY_API_KEY=$(sudo cat /home/factory/factoryd.env | grep KEY | cut -d= -f2)   # done over SSH once
+export FACTORY_API_KEY=$(sudo cat /home/factory/factoryd.env | grep KEY | cut -d= -f2)   # read the key on the server once, after setup
 python3 bin/factory-remote doctor
 ```
 
@@ -218,7 +229,7 @@ detached; pidfile arbitrates with the systemd timer) · `POST /repos/<slug>/unbl
 
 Rules: the key IS the factory — never commit it, never print it (DEPLOYMENT receipts redact
 nothing, so keep logs off the internet path). Mutations are confirm-gated by the `pi-factory`
-skill; read-only verbs are friction-free. Zero SSH after bootstrap — for code-level truth
+skill; read-only verbs are friction-free. Zero SSH after setup — for code-level truth
 (diff/CI/files) query GitHub directly with a local `gh`.
 
 ## 9. Troubleshooting

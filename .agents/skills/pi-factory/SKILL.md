@@ -38,9 +38,10 @@ python3 bin/factory-remote doctor
 ```
 
 If FACTORY_URL/KEY are unset, read them from `~/.config/factory-remote/` (url +
-key files). If absent, the factory is not provisioned — tell the user bootstrap
-(`sudo bash bootstrap.sh` on the VPS, the ONE SSH moment) is pending; do not
-improvise an SSH workaround.
+key files). If absent, the factory is not provisioned — tell the user: clone
+pi-dark-factory on the VPS and run the in-repo `pi-factory-setup` skill in an
+agent session there (it is the guided installer; the old one-shot
+`bootstrap.sh` was retired). Never improvise an SSH workaround.
 
 ## Onboarding a new project (the wizard — gate every write)
 
