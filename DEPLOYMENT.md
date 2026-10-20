@@ -180,7 +180,44 @@ If the launcher refuses inside a bare image, pin `env.image` to an image with no
 and scenario start carries a unique `--name`, and `docker rm -f` follows it on success, timeout,
 or crash.
 
-## 8. Troubleshooting
+## 8. Remote control (factoryd + factory-remote) — zero SSH from here on
+
+`bootstrap.sh` (repo root, `sudo bash bootstrap.sh` **on the VPS, once**) does all of §1–4
+and additionally: generates the API key into `/home/factory/factoryd.env` (chmod 600),
+installs `pi-factoryd.service` (Bun.serve API, port 8077, Restart=always) alongside the
+timer, health-checks locally, and prints the exact Caddy block for your domain:
+
+```
+factory-api.techa.pro {
+  @health path /health
+  handle @health { reverse_proxy 127.0.0.1:8077 }
+  @unauthorized not header X-Api-Key <KEY>
+  handle @unauthorized { respond 401 }
+  reverse_proxy 127.0.0.1:8077
+}
+```
+
+On your machine (any checkout, or `%USERPROFILE%\bin` as in the websites factory):
+
+```sh
+export FACTORY_URL=https://factory-api.techa.pro
+export FACTORY_API_KEY=$(sudo cat /home/factory/factoryd.env | grep KEY | cut -d= -f2)   # done over SSH once
+python3 bin/factory-remote doctor
+```
+
+Route map (`GET /health` stays open; everything else requires `X-Api-Key`):
+`GET /status?slug=` · `GET /logs?slug=&tail=` · `POST /repos` {repo}
+· `PUT /repos/<slug>/scenario` {kind, content — validated server-side before it can burn a lap}
+· `POST /repos/<slug>/backlog` {prd_text, dry_run, max} · `POST /repos/<slug>/tick` (fires
+detached; pidfile arbitrates with the systemd timer) · `POST /repos/<slug>/unblock`
+{issue, prune} · `POST /cleanup`.
+
+Rules: the key IS the factory — never commit it, never print it (DEPLOYMENT receipts redact
+nothing, so keep logs off the internet path). Mutations are confirm-gated by the `pi-factory`
+skill; read-only verbs are friction-free. Zero SSH after bootstrap — for code-level truth
+(diff/CI/files) query GitHub directly with a local `gh`.
+
+## 9. Troubleshooting
 
 | Symptom | Meaning | Fix |
 |---|---|---|

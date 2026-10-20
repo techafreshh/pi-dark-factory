@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+"""factory-remote — drive a pi-dark-factory over HTTPS. Python 3 stdlib only.
+
+Env:
+  FACTORY_URL      e.g. https://factory-api.techa.pro
+  FACTORY_API_KEY  the key from the VPS (/home/factory/factoryd.env)
+
+Verbs (mirror the foreman CLI):
+  health                                  open endpoint — connectivity check
+  status [--repo SLUG] [--raw]            ledger, laps, stages, chain depth
+  logs  [--repo SLUG] [--tail N]          laps.log tail (the audit spine)
+  onboard OWNER/NAME                      config + scenario templates + port pair
+  scenario SLUG runtime|holdout --file F  write + server-side validate a scenario
+  backlog SLUG --prd-file F [--max N]     slice a PRD; previews unless --create
+  tick SLUG                               fire a lap now (pidfile arbitrates with the timer)
+  unblock SLUG ISSUE [--prune]            drop the ledger row (optionally close PR/branch/worktree)
+  cleanup                                 prune caches, kill stale pi workers
+  doctor                                  connectivity + auth + version check
+
+Exit code 0 = success, 1 = error (message on stderr).
+"""
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+TIMEOUT_FAST = 60
+TIMEOUT_SLOW = 900  # backlog slicing runs an LLM server-side
+
+
+def _cfg() -> tuple[str, str]:
+    url = os.environ.get("FACTORY_URL", "").rstrip("/")
+    key = os.environ.get("FACTORY_API_KEY", "")
+    if not url or not key:
+        die("FACTORY_URL and FACTORY_API_KEY must be set (see factory-remote --help)")
+    return url, key
+
+
+def _api(method: str, path: str, body: dict | None = None, timeout: int = TIMEOUT_FAST, allow_401: bool = False):
+    url, key = _cfg()
+    req = urllib.request.Request(
+        url + path,
+        method=method,
+        headers={"Content-Type": "application/json", **({} if allow_401 else {"X-Api-Key": key})},
+        data=json.dumps(body).encode() if body is not None else None,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        if allow_401:
+            return e.code, {}
+        try:
+            payload = json.loads(e.read() or b"{}")
+        except Exception:
+            payload = {}
+        die(f"{method} {path} -> HTTP {e.code}: {payload.get('error', payload)}")
+    except urllib.error.URLError as e:
+        die(f"{method} {path} failed to connect: {e.reason} — factoryd down? wrong FACTORY_URL?")
+
+
+def die(msg: str):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def _print_slugs(prefix: str, rows: list, key: str):
+    if rows:
+        print(prefix)
+        for r in rows:
+            print(f"  {json.dumps(r, ensure_ascii=False)[:240]}")
+
+
+# ── commands ─────────────────────────────────────────────────────────────────
+
+def cmd_health(_a):
+    url = os.environ.get("FACTORY_URL", "").rstrip("/")
+    if not url:
+        die("FACTORY_URL is not set")
+    req = urllib.request.Request(url + "/health")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        print(json.dumps(json.loads(r.read())))
+
+
+def cmd_doctor(_a):
+    _cfg()
+    code, body = _api("GET", "/health", allow_401=True)
+    if code != 200:
+        die(f"/health answered {code} — factoryd is not healthy")
+    print(f"factoryd: {body.get('service')} v{body.get('version')} — reachable")
+    code, body = _api("GET", "/status")
+    if code != 200:
+        die(f"/status answered {code} — check FACTORY_API_KEY")
+    repos = body.get("repos", [])
+    print(f"auth OK — {len(repos)} repo(s) onboarded")
+    _print_slugs("repos:", repos, "slug")
+
+
+def cmd_status(a):
+    path = "/status" + (f"?slug={a.repo}" if a.repo else "")
+    code, body = _api("GET", path)
+    if a.raw:
+        print(json.dumps(body, indent=2))
+        return
+    for r in body.get("repos", []):
+        print(f"{r['slug']} ({r['repo']}) — claimable chain: {r['chain']}, in flight: {r['in_flight']}")
+    print("\n== ledger ==")
+    for i in body.get("issues", []):
+        print(f"#{i['issue_number']} {i['repo']} [{i['state']}] attempts={i['attempts']}"
+              f"{' PR#' + str(i['pr']) if i.get('pr') else ''} — {(i.get('last_error') or '')[:120]}")
+    print("\n== recent laps ==")
+    for l in body.get("laps", []):
+        print(f"#{l['id']} {l['repo']} issue={l.get('issue_number') or '-'} {l.get('outcome') or '…'} {(l.get('detail') or '')[:100]}")
+    print("\n== recent stages ==")
+    for s in body.get("stages", []):
+        print(f"#{s['id']} {s['stage']} a{s['attempt']} {s['model']} {s.get('exit') or '…'} tok={s.get('input_tokens')}/{s.get('output_tokens')}")
+    wts = body.get("worktrees", [])
+    if wts:
+        print("\n== worktrees ==")
+        for w in wts:
+            print(f"  {w}")
+
+
+def cmd_logs(a):
+    qs = []
+    if a.repo:
+        qs.append(f"slug={a.repo}")
+    if a.tail:
+        qs.append(f"tail={a.tail}")
+    code, body = _api("GET", "/logs" + ("?" + "&".join(qs) if qs else ""))
+    for line in body.get("lines", []):
+        print(line)
+
+
+def cmd_onboard(a):
+    code, body = _api("POST", "/repos", {"repo": a.repo}, timeout=TIMEOUT_FAST)
+    if body.get("already"):
+        print(f"already onboarded: {body['config_path']}")
+        return
+    print(f"onboarded {body['repo']} (slug: {body['slug']}, branch: {body['default_branch']}, ports: {' + '.join(map(str, body['ports']))})")
+    print("wrote:")
+    for f in body["config_written"]:
+        print(f"  {f}")
+    print("next: review/edit those files (they live ON THE VPS — use `scenario` to push edited scenarios,")
+    print("or edit config over the API once config endpoints exist), then backlog + tick.")
+
+
+def cmd_scenario(a):
+    if a.kind not in ("runtime", "holdout"):
+        die("kind must be runtime or holdout")
+    content = open(a.file, encoding="utf-8").read()
+    code, body = _api("PUT", f"/repos/{a.slug}/scenario", {"kind": a.kind, "content": content})
+    print(f"{a.kind}.json updated for {a.slug}: {body.get('path')}")
+
+
+def cmd_backlog(a):
+    if not os.path.exists(a.prd_file):
+        die(f"PRD file not found: {a.prd_file}")
+    prd = open(a.prd_file, encoding="utf-8").read()
+    code, body = _api(
+        "POST", f"/repos/{a.slug}/backlog",
+        {"prd_text": prd, "dry_run": not a.create, "max": a.max},
+        timeout=TIMEOUT_SLOW,
+    )
+    print(f"sliced {body['sliced']} issues; {body['existing']} already exist (deduped by title)")
+    if not a.create:
+        print("PREVIEW (run again with --create to publish):")
+        for i, p in enumerate(body["preview"], 1):
+            print(f"{i}. {p['title']}" + (f" (depends: {', '.join(map(str, p['depends']))})" if p["depends"] else ""))
+    else:
+        print("created / resolved:")
+        for c in body["created"]:
+            print(f"  #{c['number']}: {c['title']}")
+
+
+def cmd_tick(a):
+    code, body = _api("POST", f"/repos/{a.slug}/tick", {})
+    print(f"lap dispatched for {body['slug']} — follow with: factory-remote status --repo {a.slug} (or logs)")
+
+
+def cmd_unblock(a):
+    code, body = _api("POST", f"/repos/{a.slug}/unblock", {"issue": a.issue, "prune": a.prune})
+    print(json.dumps(body, indent=2))
+
+
+def cmd_cleanup(_a):
+    code, body = _api("POST", "/cleanup", {}, timeout=TIMEOUT_FAST)
+    for line in body.get("log", []):
+        print(line)
+
+
+def main():
+    p = argparse.ArgumentParser(description="factory-remote — remote control for a pi-dark-factory")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("health")
+    sub.add_parser("doctor")
+    sp = sub.add_parser("status"); sp.add_argument("--repo"); sp.add_argument("--raw", action="store_true")
+    sp = sub.add_parser("logs"); sp.add_argument("--repo"); sp.add_argument("--tail", type=int, default=200)
+    sp = sub.add_parser("onboard"); sp.add_argument("repo", metavar="OWNER/NAME")
+    sp = sub.add_parser("scenario"); sp.add_argument("slug"); sp.add_argument("kind", choices=["runtime", "holdout"]); sp.add_argument("--file", required=True)
+    sp = sub.add_parser("backlog"); sp.add_argument("slug"); sp.add_argument("--prd-file", required=True); sp.add_argument("--max", type=int, default=40); sp.add_argument("--create", action="store_true")
+    sp = sub.add_parser("tick"); sp.add_argument("slug")
+    sp = sub.add_parser("unblock"); sp.add_argument("slug"); sp.add_argument("issue", type=int); sp.add_argument("--prune", action="store_true")
+    sub.add_parser("cleanup")
+    a = p.parse_args()
+    table = {
+        "health": cmd_health, "doctor": cmd_doctor, "status": cmd_status, "logs": cmd_logs,
+        "onboard": cmd_onboard, "scenario": cmd_scenario, "backlog": cmd_backlog,
+        "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
+    }
+    table[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()
