@@ -46,7 +46,18 @@ export function parseEventStream(lines: string[]): ParsedEvents {
       case "message_end": {
         const u = extractUsage(e.usage ?? e.message?.usage);
         if (u) usage = u;
-        if (e.message?.role === "assistant") assistantText = textOfMessage(e.message);
+        if (e.message?.role === "assistant") {
+          if (e.message.stopReason === "error") {
+            // a failed model stream is a provider error, not an empty verdict —
+            // surface the upstream message so callers fail honestly (429/402
+            // used to masquerade as an empty review and burn the re-ask loop)
+            errorHint = String(e.message.errorMessage ?? e.errorMessage ?? "model stream error").slice(0, 500);
+            assistantText = null;
+            break;
+          }
+          const t = textOfMessage(e.message);
+          if (t) assistantText = t; // empty assistant text is no text at all
+        }
         break;
       }
       case "turn_end": {
@@ -59,7 +70,8 @@ export function parseEventStream(lines: string[]): ParsedEvents {
         if (u) usage = u;
         if (assistantText === null && Array.isArray(e.messages)) {
           const last = [...e.messages].reverse().find((m: any) => m?.role === "assistant");
-          if (last) assistantText = textOfMessage(last);
+          const t = last ? textOfMessage(last) : "";
+          if (t) assistantText = t; // only real text may become the verdict
         }
         break;
       }
