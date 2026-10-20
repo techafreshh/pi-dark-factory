@@ -2,9 +2,11 @@
 name: pi-factory-setup
 description: >-
   Install / provision pi-dark-factory ON ITS DEDICATED SERVER (VPS): the full
-  first-time setup — factory user, runtimes (bun, pi, gh), GitHub + provider
-  auth, code clone + state dir, systemd timer + factoryd API (optional ClinePass
-  key router), Caddy block, and an optional first smoke lap. Use when the user
+  first-time setup — factory user, runtimes (bun, pi, gh, optional docker),
+  GitHub + provider auth, pi provisioning (models.json provider entries,
+  packages/extensions, thinking levels), code clone + state dir, systemd
+  timer + factoryd API (optional ClinePass key router), Caddy block, and an
+  optional first smoke lap. Use when the user
   says things like "set up the factory", "bootstrap/provision/install the
   factory on this server", "wire up factoryd", "get the factory running here",
   or is starting an agent session in a fresh clone of pi-dark-factory on a
@@ -24,8 +26,10 @@ description: >-
 
 **Done means**: `pi-factory.timer` armed (fires every 15 min) with its
 `pi-factory.service` green; `pi-factoryd` healthy on :8077 with the API key in
-`factoryd.env` (600); optionally `pi-keyrouter` healthy on :8099; a `pi` smoke
-call works as the factory user; optionally a first smoke lap ran its gates;
+`factoryd.env` (600); optionally `pi-keyrouter` healthy on :8099; pi fully
+provisioned for the factory user (provider auth, custom `models.json` entries,
+packages/extensions) with every `provider/model:thinking` string smoke-tested;
+optionally a first smoke lap ran its gates;
 the user's laptop can `doctor` in over HTTPS.
 
 ## Operating rules
@@ -71,13 +75,24 @@ plain "just set it up"):
 1. **Factory user name** — default `factory`.
 2. **GitHub auth** — interactive `gh auth login` as the factory user (device
    flow), or a `GH_TOKEN` to put in `factoryd.env`?
-3. **Remote control** (default: yes) — generate the API key and run factoryd
+3. **Model lineup** — pi ships empty (no auth, no custom providers, no
+   packages/extension). Which **providers + models** will repo configs use,
+   per stage (plan/implement/review), with which **thinking levels** and
+   fallback chains (`"provider/model[:level]"`)? Phase 4 auths every named
+   provider and smoke-tests every exact `provider/model:thinking` string —
+   a level like `max` only works if the provider's model entry maps it.
+4. **Pi packages/extensions** — anything the stages must have loaded
+   (extra tools, MCP bridges...)? A missing one never fails loudly — the
+   stage just runs bare without it.
+5. **Remote control** (default: yes) — generate the API key and run factoryd
    on :8077. If yes: which **domain** serves it (Caddy block)?
-4. **ClinePass key router** — only if they have ClinePass API keys (how many?).
-   Otherwise skip Phase 5c entirely.
-5. **Container-mode repos planned?** (default: not now) — if yes, add the
-   factory user to the `docker` group in Phase 1.
-6. **Smoke lap after install?** (recommended; spends a few cents of tokens on
+6. **ClinePass key router** — only if they have ClinePass API keys (how many?).
+   Otherwise skip step 5c only; if yes, the `clinepass-rotator` provider
+   entry goes into `models.json` in Phase 4.
+7. **Container-mode repos planned?** (default: not now) — if yes, Phase 1
+   installs docker (fresh VPSes have none) and adds the factory user to its
+   group.
+8. **Smoke lap after install?** (recommended; spends a few cents of tokens on
    a toy repo) — vs. going straight to a real project via the `pi-factory`
    wizard.
 
@@ -86,7 +101,10 @@ plain "just set it up"):
 ```sh
 id factory &>/dev/null || sudo useradd -m -s /bin/bash -c "pi dark factory" factory
 sudo loginctl enable-linger factory            # user services survive logout
-# only if container mode is planned:
+# container mode planned? fresh VPSes have no docker — install it, then group:
+command -v docker &>/dev/null || sudo apt-get update -qq
+command -v docker &>/dev/null || sudo apt-get install -y docker.io
+sudo systemctl enable --now docker
 id -nG factory | grep -qw docker || sudo usermod -aG docker factory
 ```
 
@@ -128,29 +146,63 @@ Verify: `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && ls node_modules | 
 `sudo -u factory -H bash -lc 'bun src/foreman.ts help'` prints usage.
 Fetch `<REPO_URL>` from the current checkout's `git remote get-url origin`.
 
-## Phase 4 — auth (the token-burning prereq — everything else gates on this)
+## Phase 4 — pi provisioning (it ships empty: auth, providers, packages)
 
-**GitHub** — either have the user complete
+pi installs bare: no credentials, no custom providers, no packages. This
+phase provisions the factory user's entire `~/.pi/agent/` surface and is
+**the gate for Phase 5** — nothing gets enabled until every step passes.
+
+**4a. GitHub** — either have the user complete
 `sudo -u factory -H gh auth login` (device flow: relay the code), or append
 `GH_TOKEN=<token>` to `/home/factory/factoryd.env` (600). Verify:
 `sudo -u factory -H gh api user -q .login`.
 
-**Pi providers** — for each provider the user's repo configs will use
+**4b. Provider auth** — for every provider in the Phase 0 lineup
 (`zai`, `openrouter`, `anthropic`, `clinepass-rotator`, …):
 `sudo -u factory -H bash -lc 'pi auth login'` (OAuth device flows — hand the
-user the URLs/codes), or keys into `~/.pi/agent/auth.json` / env vars that go
-into the systemd env file. Then the smoke call — **this is the gate for
-Phase 5**; if it fails, no timer gets armed.
+user the URLs/codes), or keys into `~/.pi/agent/auth.json`, or env vars
+(models.json `apiKey` interpolates `"$ENV_VAR"`).
+
+**4c. Custom providers (`models.json`)** — non-builtin providers (the
+`clinepass-rotator` router, self-hosted gateways) live in the factory user's
+`~/.pi/agent/models.json` — pi installs **without one**, so create it.
+Structure: `{"providers": {"<id>": {"name", "baseUrl", "apiKey", "api",
+"models": [...]}}}` (`api` is e.g. `"openai-completions"`; model entries
+need `id`, optionally `reasoning: true`, `contextWindow`, `maxTokens`,
+`cost`). When the key router was chosen in Phase 0, merge the shipped
+template's `providers` object into that file — preserving any existing
+entries — and trim its model ids to what the provider actually serves.
+
+**4d. Packages & extensions** — pi's distributed extensions are *packages*,
+installed as the factory user:
+
+```sh
+sudo -u factory -H bash -lc 'pi install npm:<scope>/<pkg>@<ver>'   # or git:org/repo@ref
+sudo -u factory -H bash -lc 'pi list'   # every promised package must appear
+```
+
+Personal installs are declared in `~/.pi/agent/settings.json` and load into
+_every_ session (including container-mode stages — the `~/.pi` bind mount
+carries it all). Loose extensions can also be dropped as `.ts` files into
+`~/.pi/agent/extensions/` (auto-loaded, no compile step). A missing package
+or extension never fails loudly — stages just run bare — so confirm each one
+in `pi list` (or its own verify step) before moving on.
+
+**4e. Smoke every model:thinking string** — the exact strings Phase 7 will
+write into repo configs, thinking level included (`--thinking` level: the
+default ladder maps through `high`; `xhigh`/`max` only work when the
+provider's model entry defines a `thinkingLevelMap` for them):
 
 ```sh
 sudo -u factory -H bash -lc \
-  'pi --mode json --no-tools --provider <provider> --model <model> "say OK" </dev/null'
+  'pi --mode json --no-tools --provider <provider> --model <model> --thinking <level> "say OK" </dev/null'
 ```
 
-If a project-trust prompt ever appears here, set default trust in
-`~/.pi/agent/settings.json` — no unattended run may ever block on a question
-nothing can answer. Note which provider/model strings succeeded: they are
-what goes into each repo config's `models`.
+If a project-trust prompt ever appears here or on stage runs, set default
+trust in `~/.pi/agent/settings.json` (or pass flags via repo configs'
+`pi.extra_args`) — no unattended run may ever block on a question nothing
+can answer. A lineup entry is not "done" until its smoke returned assistant
+text: the winners are exactly what config.json `models` gets.
 
 ## Phase 5 — systemd (units, env file, enable)
 
@@ -286,10 +338,20 @@ first suspect.
 
 Follow `DEPLOYMENT.md` §5: `onboard <owner/name>` (auto-writes config +
 scenario templates + reserves two scenario ports), edit
-`/home/factory/state/repos/<slug>/config.json` (models — prefer a disciplined
-model for implement/review, cheaper for plan; see also the ClinePass router
-entry `templates/pi-models.clinepass-router.json` for `clinepass-rotator`
-wiring), write real `runtime.json` + `holdout.json` probes with the user,
+`/home/factory/state/repos/<slug>/config.json`:
+
+- **models** gets the Phase 4 lineup — per-stage provider/model with
+  `"thinking"` levels and `"provider/model[:level]"` fallback strings
+  (disciplined model for implement/review, cheaper for plan).
+- **Container mode** (if Phase 0 planned it): a repo with a
+  `docker-compose.yml` gets `env.mode: "compose"` + `env.service` per the §7
+  worker contract (the compose must publish the scenario ports on
+  `127.0.0.1`); repos without one stay on the fallback `env.image` and pick
+  compose up automatically once it lands as an issue deliverable. First
+  container repo: run the §7 in-container smoke before the first lap
+  (`docker run --rm -v ~/.pi:/root/.pi … ubuntu:24.04 pi --version`).
+
+Then write real `runtime.json` + `holdout.json` probes with the user,
 then:
 
 ```sh
