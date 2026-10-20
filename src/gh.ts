@@ -96,6 +96,12 @@ export class Gh implements GhApi {
   }
 
   async prCreate(head: string, base: string, title: string, body: string): Promise<number> {
+    // adopt an open PR for this branch instead of failing: a prior lap can
+    // have opened it and then blocked/erroring — the reclaimed issue reuses it
+    const open = await ghJson<any[]>(this.repo, [
+      "pr", "list", "--state", "open", "--head", head, "--json", "number",
+    ]);
+    if (Array.isArray(open) && open.length > 0) return Number(open[0].number);
     const res = await sh([
       "gh", "pr", "create", "--repo", this.repo, "--head", head, "--base", base,
       "--title", title, "--body", body,
