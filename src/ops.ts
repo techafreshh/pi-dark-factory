@@ -35,6 +35,7 @@ export interface OpsStatus {
 export async function opsStatus(stateDir: string, slug?: string): Promise<OpsStatus> {
   const reposDir = join(stateDir, "repos");
   const repoList: OpsStatus["repos"] = [];
+  let repoForStages: string | undefined;
   if (existsSync(reposDir)) {
     for (const entry of readdirSync(reposDir).filter((e) => e !== "source")) {
       const cfgPath = join(reposDir, entry, "config.json");
@@ -42,6 +43,7 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
       try {
         const cfg = loadRepoConfig(cfgPath);
         if (slug && cfg.slug !== slug) continue;
+        if (slug) repoForStages = cfg.repo; // stage rows are keyed by repo (owner/name), not slug
         const ledger = new Ledger(join(stateDir, "factory.db"));
         const chain = (await (await import("./stages/intake")).listClaimable(cfg, ledger, new Gh(cfg.repo))).length;
         const inFlight = ledger
@@ -65,7 +67,7 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
     repos: repoList,
     issues: ledger.listIssues(),
     laps: ledger.recentLaps(slug, 10),
-    stages: ledger.recentStages(slug, 15),
+    stages: ledger.recentStages(repoForStages, 15),
     worktrees,
   };
 }
