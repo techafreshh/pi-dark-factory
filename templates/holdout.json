@@ -1,7 +1,7 @@
 {
-  "_readme": "pi-dark-factory HOLDOUT scenario \u2014 adversarial edge cases on a second port, same contract as runtime.json. Same black-box rules: outside the repo, foreground start, deterministic probes. Write probes the implementer would NOT naturally handle: malformed JSON must get 4xx (never 500/hang), invalid enum values, unknown-resource lookups, script-tag escaping, boundary values, rapid sequential writes. Record the API's actual behavior where the spec is silent \u2014 only a 5xx, a hang, or corruption is a failure. Setup runs in an EMPTY scratch dir with $WORKTREE (the lap's product worktree) exported \u2014 copy your artifact/build from there.",
+  "_readme": "pi-dark-factory HOLDOUT scenario \u2014 adversarial edge cases on a second port, same contract as runtime.json. Same black-box rules: outside the repo, foreground start, deterministic probes. Write probes the implementer would NOT naturally handle: malformed JSON must get 4xx (never 500/hang), invalid enum values, unknown-resource lookups, script-tag escaping, boundary values, rapid sequential writes. Record the API's actual behavior where the spec is silent \u2014 only a 5xx, a hang, or corruption is a failure. Setup runs in an EMPTY scratch dir with $WORKTREE (the lap's product worktree) exported \u2014 copy your artifact/build from there.\n\"port\" may also be \"first\"/\"second\" \u2014 resolved from config.json scenario.ports (the reserved pair is assigned once at `foreman onboard`); a literal number still works as an explicit override.",
   "name": "holdout",
-  "port": 8102,
+  "port": "second",
   "setup": "echo 'replace with build/install steps if any'",
   "start": "python3 -m http.server $PORT --bind 127.0.0.1",
   "readiness_path": "/",

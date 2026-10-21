@@ -12,7 +12,9 @@ export interface Probe {
 
 export interface ScenarioSpec {
   name: string;
-  port: number;
+  /** resolved number, or "first"/"second" — resolveScenarioPort pins it from
+   *  the repo config's reserved pair, which is the single source of truth */
+  port: number | "first" | "second";
   setup?: string;
   /** foreground server command — the harness backgrounds it and kills it on teardown */
   start: string;
@@ -140,6 +142,16 @@ export function parseMaxMs(expect: string): number | null {
   return m ? Number(m.slice("max_ms:".length)) : null;
 }
 
+/** Pin an abstract "first"/"second" port to the repo's reserved pair —
+ *  keeping config.json the single place a project's scenario ports exist. */
+export function resolveScenarioPort(spec: ScenarioSpec, reserved: number[]): number {
+  if (typeof spec.port === "number") return spec.port;
+  const idx = spec.port === "first" ? 0 : spec.port === "second" ? 1 : -1;
+  const port = idx >= 0 ? reserved[idx] : undefined;
+  if (!port) throw new Error(`scenario ${spec.name}: "${spec.port}" has no ${spec.port} port in config scenario.ports`);
+  return port;
+}
+
 export function loadScenario(path: string): ScenarioSpec {
   const raw = JSON.parse(readFileSync(path, "utf8"));
   const spec: ScenarioSpec = {
@@ -151,7 +163,8 @@ export function loadScenario(path: string): ScenarioSpec {
     teardown: raw.teardown || undefined,
     probes: Array.isArray(raw.probes) ? raw.probes : [],
   };
-  if (!Number.isInteger(spec.port) || spec.port <= 0) throw new Error(`${path}: "port" must be a positive integer`);
+  if (!("first" === spec.port || "second" === spec.port) && (!Number.isInteger(spec.port) || spec.port <= 0))
+    throw new Error(`${path}: "port" must be a positive integer or "first"/"second"`);
   if (!spec.start || typeof spec.start !== "string") throw new Error(`${path}: "start" must be a non-empty string`);
   if (spec.probes.length === 0) throw new Error(`${path}: "probes" must be a non-empty array`);
   const ids = new Set<string>();

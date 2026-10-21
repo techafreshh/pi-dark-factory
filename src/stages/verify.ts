@@ -5,7 +5,7 @@ import { waitChecks } from "../gh";
 import { buildStageCmd } from "../env";
 import { sh } from "../sh";
 import { changedPaths, issueDir, lockfileOnly } from "../gitws";
-import { loadScenario, runScenario, type ScenarioResult } from "../scenario";
+import { loadScenario, resolveScenarioPort, runScenario, type ScenarioResult } from "../scenario";
 import type { RepoConfig } from "../types";
 
 export interface GateFailure {
@@ -70,6 +70,7 @@ export async function runVerify(
     let spec;
     try {
       spec = loadScenario(path);
+      spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
     } catch (e: any) {
       failures.push({ gate: key, detail: `bad scenario file ${path}: ${e.message}` });
       continue;
