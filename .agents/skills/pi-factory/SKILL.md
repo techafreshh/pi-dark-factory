@@ -31,16 +31,32 @@ about it is a claim.
 
 ## Connect
 
+One-time setup on the machine you drive from (laptop or anywhere):
+
 ```bash
-export FACTORY_URL=https://pi-factory.techa.pro
-export FACTORY_API_KEY=<key>     # stored for the user at ~/.config/factory-remote/key
-python3 bin/factory-remote doctor
+install -m 755 <factory-checkout>/bin/factory-remote ~/.local/bin/factory-remote
+mkdir -p ~/.config/factory-remote && chmod 700 ~/.config/factory-remote
+printf %s https://pi-factory.techa.pro > ~/.config/factory-remote/url
+printf %s <KEY> > ~/.config/factory-remote/key && chmod 600 ~/.config/factory-remote/*
 ```
 
-If FACTORY_URL/KEY are unset, read them from `~/.config/factory-remote/` (url +
-key files). If absent, the factory is not provisioned — tell the user: clone
-pi-dark-factory on the VPS and run the in-repo `pi-factory-setup` skill in an
-agent session there (it is the guided installer; the old one-shot
+`<KEY>` = the `FACTORY_API_KEY` value from `/home/factory/factoryd.env` on
+the VPS (read it there once; never echo it into chat). After this the
+client carries its own URL + key — **it runs from any directory**, the
+pilot project's included; `--prd-file` / `--file` arguments resolve against
+the current directory, which is exactly what you want when onboarding from
+the project's own checkout:
+
+```bash
+cd ~/code/mdrender
+factory-remote doctor
+```
+
+`FACTORY_URL` / `FACTORY_API_KEY` env vars still override the stored files.
+If `doctor` cannot reach the factory at all (connection refused/timeout —
+not a 401), the factory is not provisioned: tell the user to clone
+pi-dark-factory on the VPS and run the in-repo `pi-factory-setup` skill in
+an agent session there (the guided installer; the old one-shot
 `bootstrap.sh` was retired). Never improvise an SSH workaround.
 
 ## Onboarding a new project (the wizard — gate every write)
