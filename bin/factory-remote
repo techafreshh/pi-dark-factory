@@ -116,7 +116,7 @@ def cmd_status(a):
         print(json.dumps(body, indent=2))
         return
     for r in body.get("repos", []):
-        print(f"{r['slug']} ({r['repo']}) — claimable chain: {r['chain']}, in flight: {r['in_flight']}")
+        print(f"{r.get('slug')} ({r.get('repo')}) — claimable chain: {r.get('chain')}, in flight: {r.get('in_flight')}")
     print("\n== ledger ==")
     for i in body.get("issues", []):
         print(f"#{i['issue_number']} {i['repo']} [{i['state']}] attempts={i['attempts']}"

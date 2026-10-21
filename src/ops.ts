@@ -43,7 +43,7 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
         const cfg = loadRepoConfig(cfgPath);
         if (slug && cfg.slug !== slug) continue;
         const ledger = new Ledger(join(stateDir, "factory.db"));
-        const chain = (await import("./stages/intake")).listClaimable(cfg, ledger, new Gh(cfg.repo)).length;
+        const chain = (await (await import("./stages/intake")).listClaimable(cfg, ledger, new Gh(cfg.repo))).length;
         const inFlight = ledger
           .listIssues(cfg.repo)
           .filter((r) => r.state === "in_progress").length;
