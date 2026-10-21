@@ -203,7 +203,7 @@ green. The exact Caddy block for your domain (the skill writes it to a 600-mode 
 than echoing the key):
 
 ```
-factory-api.techa.pro {
+pi-factory.techa.pro {
   @health path /health
   handle @health { reverse_proxy 127.0.0.1:8077 }
   @unauthorized not header X-Api-Key <KEY>
@@ -211,21 +211,36 @@ factory-api.techa.pro {
   reverse_proxy 127.0.0.1:8077
 }
 ```
+On a host with a dockerized Caddy (the deployment this repo was validated on:
+`caddy-gateway` on the `web_gateway` network, `ExtraHosts host-gateway`),
+proxy to the gateway IP instead and open the port only to that subnet —
+`reverse_proxy 10.0.1.1:8077` + `ufw allow from 10.0.1.0/24 to any port 8077`.
 
 On your machine (any checkout, or `%USERPROFILE%\bin` as in the websites factory):
 
+One-shot laptop setup (installs the client onto PATH, stores the URL + key in
+`~/.config/factory-remote/` at mode 600, verifies with `doctor`):
+
 ```sh
-export FACTORY_URL=https://factory-api.techa.pro
-export FACTORY_API_KEY=$(sudo cat /home/factory/factoryd.env | grep KEY | cut -d= -f2)   # read the key on the server once, after setup
-python3 bin/factory-remote doctor
+./laptop-setup.sh                       # run from a checkout; or curl -fsSL <raw>/laptop-setup.sh | bash -s --
+# key: passed via --key / FACTORY_API_KEY, prompted hidden, or read on the server:
+#   sudo cat /home/factory/factoryd.env
 ```
+
+`FACTORY_URL`/`FACTORY_API_KEY` env vars override the stored files
 
 Route map (`GET /health` stays open; everything else requires `X-Api-Key`):
 `GET /status?slug=` · `GET /logs?slug=&tail=` · `POST /repos` {repo}
 · `PUT /repos/<slug>/scenario` {kind, content — validated server-side before it can burn a lap}
 · `POST /repos/<slug>/backlog` {prd_text, dry_run, max} · `POST /repos/<slug>/tick` (fires
 detached; pidfile arbitrates with the systemd timer) · `POST /repos/<slug>/unblock`
-{issue, prune} · `POST /cleanup`.
+{issue, prune} · `POST /repos/<slug>/config` {allowlisted patch: models, env
+(mode/image/service), required_checks, timeouts… — deep-merged and re-validated}
+· `POST /cleanup`.
+
+Auth is double-gated: Caddy 401s at the edge, and factoryd independently
+re-checks `X-Api-Key` on every non-`/health` route (even a localhost hit
+needs the key). `/health` stays deliberately open.
 
 Rules: the key IS the factory — never commit it, never print it (DEPLOYMENT receipts redact
 nothing, so keep logs off the internet path). Mutations are confirm-gated by the `pi-factory`

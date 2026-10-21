@@ -31,7 +31,15 @@ about it is a claim.
 
 ## Connect
 
-One-time setup on the machine you drive from (laptop or anywhere):
+One-time setup on the machine you drive from (laptop or anywhere). Fastest —
+the repo's own script (install + store + verify in one shot):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/techafreshh/pi-dark-factory/main/laptop-setup.sh \
+  | bash -s -- https://pi-factory.techa.pro
+```
+
+…or the same steps by hand (from any factory checkout):
 
 ```bash
 install -m 755 <factory-checkout>/bin/factory-remote ~/.local/bin/factory-remote
