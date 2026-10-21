@@ -74,7 +74,11 @@ export function buildStageCmd(
   const ports = cfg.scenario.ports.map((p) => ["-p", `127.0.0.1:${p}:${p}`]).flat();
   const caches = ["-v", "pdf-uv:/root/.cache/uv", "-v", "pdf-pip:/root/.cache/pip", "-v", "pdf-npm:/root/.npm"];
   const argvPrefix = [
-    "docker", "run", "--rm", "--name", uniqueName,
+    // -i is load-bearing: callPi writes the stage prompt to the spawned
+    // process's stdin, and `docker run` without -i gives the container an
+    // empty stdin — pi reads an empty prompt, settles instantly at rc=0 with
+    // no assistant message, and every stage "fails" in ~4s
+    "-i", "docker", "run", "--rm", "--name", uniqueName,
     // the clinepass key router (and any host service) is reachable from the
     // container via this name
     "--add-host", "host.docker.internal:host-gateway",
