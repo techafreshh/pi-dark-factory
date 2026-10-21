@@ -7,7 +7,7 @@
  * arbitrates against the systemd timer's tick, so a manual or remote tick
  * can never double-run a lap.
  */
-import { opsBacklog, opsCleanup, opsLogs, opsOnboard, opsScenarioSet, opsStatus, opsUnblock } from "./ops";
+import { opsBacklog, opsCleanup, opsLogs, opsOnboard, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { runTick } from "./tick";
 
 const VERSION = "0.1.0";
@@ -59,6 +59,9 @@ export function startFactoryd(opts: FactorydOpts) {
         }
         if (req.method === "POST" && path === "/repos") {
           return respond(await opsOnboard(opts.stateDir, String((await readJson(req)).repo ?? "")));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/config")) {
+          return respond(await opsSetConfig(opts.stateDir, slug, await readJson(req)));
         }
         if (req.method === "PUT" && tickEnd === undefined && path.endsWith("/scenario")) {
           const body = await readJson(req);

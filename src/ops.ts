@@ -262,6 +262,35 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
   return parseSlicerOutput(text);
 }
 
+const CONFIG_PATCH_ALLOW = [
+  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "pi",
+];
+
+function deepMerge(base: any, patch: any): any {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return patch;
+  const out: any = { ...(typeof base === "object" && base !== null ? base : {}) };
+  for (const [k, v] of Object.entries(patch)) out[k] = deepMerge(out[k], v);
+  return out;
+}
+
+/** Remote wizard support: deep-merge a patch into an onboarded repo's
+ *  config.json. Keys outside the allowlist are refused — the patch may set
+ *  models/env/merge knobs but never touches repo identity, scenario ports,
+ *  or the onboarding itself. The merged result is re-validated by loadRepoConfig. */
+export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch))
+    throw new Error("config patch must be a JSON object");
+  const bad = Object.keys(patch).filter((k) => !CONFIG_PATCH_ALLOW.includes(k));
+  if (bad.length > 0)
+    throw new Error("config patch keys outside the allowlist (" + CONFIG_PATCH_ALLOW.join(", ") + "): " + bad.join(", "));
+  const path = join(repoCfgDir(stateDir, slug), "config.json");
+  if (!existsSync(path)) throw new Error("repo " + slug + " is not onboarded");
+  const merged = deepMerge(JSON.parse(readFileSync(path, "utf8")), patch);
+  writeFileSync(path, JSON.stringify(merged, null, 2) + "\n");
+  loadRepoConfig(path); // re-validate shape
+  return { config_path: path, config: merged };
+}
+
 export async function opsBacklog(
   stateDir: string,
   slug: string,
