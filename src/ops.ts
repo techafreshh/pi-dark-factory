@@ -118,12 +118,12 @@ export async function opsOnboard(
   const ports = await pickPorts(stateDir);
   const cfg = {
     _readme:
-      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass ([] = no CI gate). scenario.ports are RESERVED across all repos. env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
+      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; ["*"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
     repo: target,
     slug,
     default_branch: branch,
     attempts: 3,
-    merge: { method: "squash", required_checks: [] as string[], delete_branch: true },
+    merge: { method: "squash", required_checks: ["*"] as string[], delete_branch: true },
     models: { default: { provider: "SET-ME", model: "SET-ME", thinking: "medium", fallback: [] as string[] } },
     timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
     scenario: { ports, runtime: "runtime.json", holdout: "holdout.json" },

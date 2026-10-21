@@ -147,6 +147,9 @@ export async function repoDefaultBranch(repo: string): Promise<string> {
  * non-PENDING. Any required FAILURE fails fast. A required check that never
  * reports fails after the timeout — fail closed.
  */
+export const CI_AUTODETECT = "*";
+const CI_GRACE_MS = 240_000; // window for Actions to report at least one check before "no CI" is concluded
+
 export async function waitChecks(
   gh: GhApi,
   pr: number,
@@ -154,12 +157,41 @@ export async function waitChecks(
   timeoutMs: number
 ): Promise<{ pass: boolean; detail: string }> {
   if (required.length === 0) return { pass: true, detail: "no required checks configured" };
+  const auto = required.includes(CI_AUTODETECT);
+  const names = required.filter((r) => r !== CI_AUTODETECT);
   const deadline = Date.now() + timeoutMs;
+  const grace = Date.now() + CI_GRACE_MS;
   for (;;) {
     const checks = await gh.prChecks(pr);
     const states = new Map(checks.map((c) => [c.name, c.state]));
-    const missing = required.filter((r) => !states.has(r));
-    const failed = required.filter((r) => /FAIL|ERROR|CANCEL/i.test(states.get(r) ?? ""));
+    if (auto) {
+      // ["*"]: whatever CI the product ships gates the merge — and a repo
+      // with no workflows stays ungated. The grace window absorbs Actions'
+      // startup lag (a fresh PR reports nothing for the first minute or so).
+      if (checks.length === 0) {
+        if (Date.now() < grace) {
+          await new Promise((r) => setTimeout(r, 15000));
+          continue;
+        }
+        return { pass: true, detail: "no CI on the PR — nothing to gate on" };
+      }
+      const failed = checks.filter((c) => /FAIL|ERROR|CANCEL/i.test(c.state));
+      if (failed.length > 0) {
+        return { pass: false, detail: `CI checks failed: ${failed.map((c) => c.name).join(", ")}` };
+      }
+      const done = checks.filter((c) => !/PENDING|QUEUED|IN_PROGRESS|EXPECTED|ACTION_REQUIRED|WAITING/i.test(c.state));
+      if (done.length === checks.length) return { pass: true, detail: "CI checks green" };
+      if (Date.now() >= deadline) {
+        return {
+          pass: false,
+          detail: `CI checks never settled within ${Math.round(timeoutMs / 60000)}m: ${checks.filter((c) => !done.includes(c)).map((c) => c.name).join(", ")}`,
+        };
+      }
+      await new Promise((r) => setTimeout(r, 15000));
+      continue;
+    }
+    const missing = names.filter((r) => !states.has(r));
+    const failed = names.filter((r) => /FAIL|ERROR|CANCEL/i.test(states.get(r) ?? ""));
     if (failed.length > 0) {
       return { pass: false, detail: `required checks failed: ${failed.join(", ")}` };
     }
