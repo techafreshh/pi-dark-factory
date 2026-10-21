@@ -224,7 +224,14 @@ export async function runScenario(
   // a container-mode port check still makes sense: another lap or a stray
   // host process on the published port breaks deterministic verification
   if (await portBusy(spec.port)) {
-    return mkResults(false, `port ${spec.port} is busy (another server is listening)`);
+    // the port pair belongs to this repo's reservation, so a listener here
+    // is a stray from an earlier attempt (a crashed server can escape the
+    // process-group kill) — reclaim it before failing the scenario
+    await sh(["bash", "-c", `fuser -k -n tcp ${spec.port} 2>/dev/null || true`], { timeoutMs: 10000 });
+    await new Promise((r) => setTimeout(r, 1500));
+    if (await portBusy(spec.port)) {
+      return mkResults(false, `port ${spec.port} is still busy (a non-factory process is listening on it)`);
+    }
   }
 
   rmSync(scratchDir, { recursive: true, force: true });
