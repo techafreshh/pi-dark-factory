@@ -78,7 +78,7 @@ export function buildStageCmd(
     // process's stdin, and `docker run` without -i gives the container an
     // empty stdin — pi reads an empty prompt, settles instantly at rc=0 with
     // no assistant message, and every stage "fails" in ~4s
-    "-i", "docker", "run", "--rm", "--name", uniqueName,
+    "docker", "run", "-i", "--rm", "--name", uniqueName,
     // the clinepass key router (and any host service) is reachable from the
     // container via this name
     "--add-host", "host.docker.internal:host-gateway",
