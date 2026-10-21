@@ -24,7 +24,17 @@ Everything below runs as `factory` (`sudo -u factory -H bash -l`) unless noted.
 
 ## 2. Runtimes
 
+Pi needs **Node >= 22** — the distro Node (Ubuntu 24.04 ships 18) fails at
+startup with `SyntaxError: The requested module 'node:module' does not
+provide an export named 'enableCompileCache'`. Give the factory user its own
+Node 22 and put it FIRST on PATH for login shells *and* the systemd units
+(the unit templates in §4 already carry `/home/factory/.local/node/bin`):
+
 ```sh
+# Node 22 for the factory user (self-contained, no sudo)
+sudo -u factory -H bash -c 'mkdir -p ~/.local/node && curl -fsSL https://nodejs.org/dist/v22.23.1/node-v22.23.1-linux-x64.tar.xz | tar -xJ -C ~/.local/node --strip-components=1'
+grep -q ".local/node/bin" ~factory/.profile || sed -i '1i export PATH="$HOME/.local/node/bin:$PATH"' ~factory/.profile
+
 # Bun (official installer — needs unzip; or npm i -g bun)
 curl -fsSL https://bun.sh/install | bash
 
@@ -191,6 +201,16 @@ If the launcher refuses inside a bare image, pin `env.image` to an image with no
 `@earendil-works/pi-coding-agent` in your worker Dockerfile. Cleanup is automatic: every stage
 and scenario start carries a unique `--name`, and `docker rm -f` follows it on success, timeout,
 or crash.
+
+
+**Network prerequisite (host firewall — learned 2026-10-21):** stage
+containers reach the ClinePass keyrouter via `host.docker.internal` → the
+docker gateway, and the host firewall must allow it or every model call
+connect-times out and laps die at plan in ~4 s with "no assistant message".
+On this class of install (ufw + docker pools in 10.0.0.0/8):
+`ufw allow from 10.0.0.0/8 to any port 8099 proto tcp`. Verify from a
+container: `docker run --rm --add-host host.docker.internal:host-gateway
+node:22 sh -c 'wget -qO- http://host.docker.internal:8099/health'`.
 
 ## 8. Remote control (factoryd + factory-remote) — zero SSH from here on
 
