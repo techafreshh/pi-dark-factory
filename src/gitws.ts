@@ -122,3 +122,24 @@ export async function pushBranch(worktree: string, n: number): Promise<void> {
     "git push"
   );
 }
+
+// ── ref-based gates (instabox machine mode: the branch is pushed by the
+// machine, the host only fetches and judges it) ──────────────────────────────
+
+/** Bring the machine-pushed branch into the source checkout for host-side gates. */
+export async function fetchBranch(stateDir: string, cfg: RepoConfig, n: number): Promise<void> {
+  await shOk(
+    await sh(["git", "fetch", "origin", branchName(n)], { cwd: sourceDir(stateDir, cfg.slug), timeoutMs: 300000 }),
+    "git fetch origin " + branchName(n)
+  );
+}
+
+export async function commitsAheadRef(dir: string, baseBranch: string, ref: string): Promise<number> {
+  const out = await gitIn(dir, ["rev-list", "--count", `origin/${baseBranch}..origin/${ref}`]);
+  return Number(out.trim());
+}
+
+export async function changedPathsFromRef(dir: string, baseBranch: string, ref: string): Promise<string[]> {
+  const out = await gitIn(dir, ["diff", "--name-only", `origin/${baseBranch}...origin/${ref}`]);
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
+}

@@ -53,17 +53,35 @@ export interface RepoConfig {
    * (product-owned compose file in the worktree) or a fallback `docker run`
    * image until the repo ships one — root inside, so pip/apt/go/npm install
    * anything freely; the host stays clean.
+   * "instabox" = implement+review run inside a disposable InstaBox microVM
+   * (https://instabox.sh) booted from the repo's golden snapshot; the plan
+   * stage stays host-side (read-only), probes stay host-side through SSH
+   * port forwards. The host needs no Docker at all.
    */
   env: {
-    mode: "host" | "compose";
+    mode: "host" | "compose" | "instabox";
     /** repo-relative path of the product-owned compose file */
     compose_file: string;
     /** service in that compose file the factory runs stages in */
     service: string;
     /** fallback image when the repo has no compose file yet */
     image: string;
-    /** host env vars forwarded into the container when present */
+    /** host env vars forwarded into the container/machine when present */
     pass_env: string[];
+    /** instabox-mode settings */
+    instabox: {
+      api_base: string;
+      /** name of the env var on the factory host holding the X-API-Key */
+      api_key_env: string;
+      /** template machines boot from when no snapshot exists yet */
+      template: string;
+      /** per-repo golden snapshot name (built by `foreman bake`); empty = template */
+      snapshot: string;
+      /** in-machine path the repo is cloned to */
+      repo_dir: string;
+      /** shell run on the bake machine after clone; empty = clone-only snapshot */
+      bake: string;
+    };
   };
   skip_labels: string[];
   pi: {

@@ -71,6 +71,12 @@ user — smoke it first:
 pi --mode json --no-tools --provider zai --model glm-5.3 "say OK" </dev/null
 ```
 
+InstaBox mode (`env.mode: "instabox"`) additionally needs `INSTABOX_API_KEY` (or the repo
+config's `api_key_env`) in the service unit's environment, plus `ssh` present on the host —
+machine stages run over InstaBox's ssh gateway, and scenario probes reach them through
+forwarded 127.0.0.1 ports. Build each repo's golden snapshot once with `foreman bake <slug>`.
+No Docker is required for instabox-mode repos.
+
 If the project-trust prompt appears in headless runs, set default trust in
 `~/.pi/agent/settings.json` (or pass `--approve` via the repo config's `pi.extra_args`) so no
 unattended run can ever block on a question nothing can answer.

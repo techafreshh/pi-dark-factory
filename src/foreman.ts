@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { readFileSync } from "node:fs";
-import { opsBacklog, opsCleanup, opsLogs, opsOnboard, opsStatus, opsUnblock } from "./ops";
+import { opsBacklog, opsBake, opsCleanup, opsLogs, opsOnboard, opsStatus, opsUnblock } from "./ops";
 import { runTick } from "./tick";
 
 const HELP = `pi-dark-factory foreman — local CLI over the ops core
@@ -16,10 +16,13 @@ Commands:
   onboard <owner/name>                register a repo: config + scenario templates + port pair
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)
                                          [--max N] [--dry-run]
+  bake <slug>                         build the repo's golden instabox snapshot: machine from
+                                         template + clone + env.instabox.bake script; sets
+                                         env.instabox.snapshot in the repo config
   unblock <slug> <issue>              drop the ledger row so intake re-claims the issue
                                          [--prune] also close PR + delete branch + worktree
   cleanup                             prune blocked worktrees' dep caches, kill stale pi,
-                                       report disk
+                                       reap leftover pdf-* instabox machines, report disk
 
 Options:
   --state-dir <path>    default: $PI_FACTORY_STATE or ./state
@@ -130,6 +133,16 @@ async function main() {
       } else {
         r.created!.forEach((c) => console.log(`#${c.number}: ${c.title}`));
       }
+      break;
+    }
+    case "bake": {
+      if (!pos[0]) throw new Error("bake needs <slug>");
+      const r = await opsBake(stateDir, pos[0]);
+      console.log(`baked ${r.snapshot} (${r.snapshotId}) from machine ${r.machine}`);
+      if (r.rootSizeBytes !== undefined) {
+        console.log(`size: root ${Math.round(r.rootSizeBytes / 2 ** 30)} GiB${r.dataSizeBytes !== undefined ? `, data ${Math.round(r.dataSizeBytes / 2 ** 30)} GiB` : ""}`);
+      }
+      if (r.config_updated) console.log(`config updated: env.instabox.snapshot = "${r.snapshot}"`);
       break;
     }
     case "unblock": {

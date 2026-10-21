@@ -4,7 +4,8 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
-import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir as sourceDirOf, worktreeDir, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
@@ -257,6 +258,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   let pr: number | null = priorRow?.pr ?? null;
   let findings: string | null = null;
   let lastError = "attempts exhausted";
+  // instabox machine mode: one machine per issue's lap, created lazily at the
+  // first implement attempt and kept across repairs; destroyed when the lap
+  // books out (a crashed lap leaves it parked for reclaim + the janitor)
+  let machine: LapMachine | null = null;
 
   const recordStage = (
     stage: StageName,
@@ -276,6 +281,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   let outcome: string | null = null;
 
+  try {
   // connection-blip backoff: an attempt that dies within ~2 minutes to a
   // connection-class error (model API/edge hiccup, router pass-through reset)
   // made zero progress — chained insta-fails must not burn the attempt
@@ -352,18 +358,37 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       writeFileSync(join(issueDir(stateDir, cfg.slug, n), "plan.md"), plan);
     }
 
-    // ---- IMPLEMENT (worktree is created once, reused across repairs of this issue)
-    const worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
+    // ---- IMPLEMENT (machine mode: the machine's clone IS the worktree —
+    // created once, reused across repairs; the machine runs the same gates
+    // and pushes the branch itself)
     const implModels = resolveModels(cfg, "implement");
-    const implRes = await deps.callStage("implement", {
-      models: implModels,
-      prompt: buildImplementPrompt(cfg, issue, plan, { attempt, findings }),
-      systemPrompt: IMPLEMENTER_SYSTEM,
-      cwd: worktree,
-      tools: cfg.pi.tools,
-      sessionDir: sessDir,
-      name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
-    });
+    const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
+    let worktree: string | null = null;
+    let implRes: PiStageResult;
+    if (cfg.env.mode === "instabox") {
+      machine ??= openLapMachine(cfg, n, (m) => receipt(stateDir, m));
+      const machRes = await machine.callStage("implement", {
+        models: implModels,
+        prompt: implPrompt,
+        systemPrompt: IMPLEMENTER_SYSTEM,
+        tools: cfg.pi.tools,
+        extraArgs: cfg.pi.extra_args,
+        timeoutMs: stageMinutes(cfg, "implement") * 60_000,
+      });
+      if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
+      implRes = machRes;
+    } else {
+      worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
+      implRes = await deps.callStage("implement", {
+        models: implModels,
+        prompt: implPrompt,
+        systemPrompt: IMPLEMENTER_SYSTEM,
+        cwd: worktree,
+        tools: cfg.pi.tools,
+        sessionDir: sessDir,
+        name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
+      });
+    }
     recordStage("implement", attempt, implModels, implRes);
     if (implRes.outcome.kind !== "ok") {
       lastError = `implement stage failed: ${"error" in implRes.outcome ? implRes.outcome.error : implRes.outcome.kind}`;
@@ -372,24 +397,45 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
 
-    // deterministic post-gates — self-report is never trusted
-    const dirty = await uncommitted(worktree);
-    if (dirty.length > 0) {
-      lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
-      findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
-      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
-      continue outer;
+    // deterministic post-gates — self-report is never trusted. Machine mode
+    // already enforced cleanliness + commit-count inside the machine (their
+    // failure failed the stage); the host re-judges the pushed branch from
+    // its own git truth. Gate failures carry a repair directive into the next
+    // attempt's findings either way — the machine's clone persists across
+    // repair rounds, so the directive points the implementer back at it.
+    let paths: string[];
+    if (machine) {
+      await withSourceLock(cfg.slug, () => fetchBranch(stateDir, cfg, n));
+      const src = sourceDir(stateDir, cfg.slug);
+      const ahead = await commitsAheadRef(src, cfg.default_branch, branchName(n));
+      if (ahead === 0) {
+        lastError = "machine pushed no commits ahead of base — nothing was implemented";
+        findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + cfg.env.instabox.repo_dir + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      paths = await changedPathsFromRef(src, cfg.default_branch, branchName(n));
+    } else {
+      const dirty = await uncommitted(worktree!);
+      if (dirty.length > 0) {
+        lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
+        findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      const ahead = await commitsAhead(worktree!, cfg.default_branch);
+      if (ahead === 0) {
+        lastError = "no commits ahead of base — nothing was implemented";
+        findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      paths = await changedPaths(worktree!, cfg.default_branch);
+      await pushBranch(worktree!, n);
     }
-    const ahead = await commitsAhead(worktree, cfg.default_branch);
-    if (ahead === 0) {
-      lastError = "no commits ahead of base — nothing was implemented";
-      findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
-      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
-      continue outer;
-    }
-    const paths = await changedPaths(worktree, cfg.default_branch);
     if (lockfileOnly(paths)) {
       lastError = `only lockfiles changed (${paths.join(", ")})`;
       findings = `The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`;
@@ -398,7 +444,6 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
 
-    await pushBranch(worktree, n);
     if (pr === null) {
       pr = await deps.gh.prCreate(branchName(n), cfg.default_branch, `[#${n}] ${issue.title}`, prBody(cfg, issue, plan));
       deps.ledger.setIssue(cfg.repo, n, { branch: branchName(n), pr });
@@ -406,7 +451,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- VERIFY (all deterministic)
-    const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree, pr });
+    const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree: worktree ?? undefined, machine: machine ?? undefined, pr });
     if (!v.pass) {
       // receipt/ledger get the one-line summary; the repair round gets FULL
       // reproduction evidence (failing probe's command, expect, and the
@@ -423,18 +468,30 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     const revModels = resolveModels(cfg, "review");
+    const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
     const callReview = () =>
-      deps.callStage("review", {
-        models: revModels,
-        prompt: buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt }),
-        systemPrompt: REVIEWER_SYSTEM,
-        cwd: worktree,
-        tools: cfg.pi.plan_tools,
-        sessionDir: sessDir,
-        name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
-      });
+      machine
+        ? machine.callStage("review", {
+            models: revModels,
+            prompt: revPrompt,
+            systemPrompt: REVIEWER_SYSTEM,
+            timeoutMs: stageMinutes(cfg, "review") * 60_000,
+          })
+        : deps.callStage("review", {
+            models: revModels,
+            prompt: revPrompt,
+            systemPrompt: REVIEWER_SYSTEM,
+            cwd: worktree!,
+            tools: cfg.pi.plan_tools,
+            sessionDir: sessDir,
+            name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
+          });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);
+    {
+      const raw = (revRes as PiStageResult & { raw?: string }).raw;
+      if (raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `review-${attempt}.jsonl`), raw);
+    }
     let reask = 0;
     while (
       revRes.outcome.kind === "ok" &&
@@ -471,10 +528,15 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);
     } catch {}
-    // root-written files from containerized stages would EACCES the
-    // host-side worktree removal — hand ownership back first
-    await chownBack(stateDir, cfg, [worktreeDir(stateDir, cfg.slug, n)]);
-    await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
+    if (machine) {
+      // the machine's clone was the worktree — the host has nothing to clean;
+      // the machine itself is destroyed in the finally below
+    } else {
+      // root-written files from containerized stages would EACCES the
+      // host-side worktree removal — hand ownership back first
+      await chownBack(stateDir, cfg, [worktreeDir(stateDir, cfg.slug, n)]);
+      await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
+    }
     deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
     receipt(stateDir, `lap #${n} MERGED via PR #${pr} (squash) — ledger closed`);
@@ -492,6 +554,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     deps.ledger.endLap(lapId, "blocked", lastError);
     receipt(stateDir, `lap #${n} BLOCKED after ${cfg.attempts} attempts: ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
     outcome = "blocked";
+  }
+  } finally {
+    // booked laps destroy their machine; a crashed lap leaves it parked for
+    // reclaim (paused — storage only) and the cleanup janitor to reap
+    if (machine && outcome !== null) await machine.destroy();
   }
   return outcome;
 }

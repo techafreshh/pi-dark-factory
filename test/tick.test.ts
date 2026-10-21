@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi, CheckState } from "../src/gh";
@@ -126,6 +126,21 @@ function makeWorld(opts: { attempts?: number } = {}): World {
     timeouts: { stage_minutes: 5, checks_minutes: 1, readiness_seconds: 10, probe_ms: 3000 },
     scenario: { ports: [] },
     skip_labels: [],
+    env: {
+      mode: "host",
+      compose_file: "docker-compose.yml",
+      service: "worker",
+      image: "ubuntu:24.04",
+      pass_env: [],
+      instabox: {
+        api_base: "https://api.instabox.sh",
+        api_key_env: "INSTABOX_API_KEY",
+        template: "basic",
+        snapshot: "",
+        repo_dir: "/data/repo",
+        bake: "",
+      },
+    },
     pi: { binary: "pi", tools: ["read", "bash"], plan_tools: ["read"], extra_args: [] },
   };
   writeFileSync(join(cfgDir, "config.json"), JSON.stringify(cfg));
@@ -288,6 +303,91 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(outcome).toBe("merged");
     expect(w.ledger.getIssue(w.cfg.repo, 1)!.attempts).toBe(2); // carried, not reset
     expect(w.calls.some((c) => c.stage === "plan")).toBe(false); // plan reused, not re-planned
+  }, 60000);
+
+  test("machine-mode lap: implement+review run in a fake instabox machine, gates judge the pushed branch", async () => {
+    const w = makeWorld();
+
+    // fake control plane (the instabox API): create → operation → ssh token → delete
+    const machines: Record<string, any> = {};
+    const deleted: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        const p = new URL(req.url).pathname;
+        if (req.method === "GET" && p === "/v1/machines/pdf-toy-i1") {
+          return machines[p] ? Response.json(machines[p]) : new Response("none", { status: 404 });
+        }
+        if (req.method === "POST" && p === "/v1/machines") {
+          return req.json().then((body: any) => {
+            machines[`/v1/machines/${body.name}`] = { id: "m_1", name: body.name, state: "running" };
+            return Response.json({ id: "op1", state: "pending" }, { status: 202 });
+          });
+        }
+        if (req.method === "GET" && p.startsWith("/v1/operations/")) {
+          return Response.json({ id: "op1", state: "succeeded", machine: machines["/v1/machines/pdf-toy-i1"] });
+        }
+        if (req.method === "POST" && p.endsWith("/ssh-tokens")) {
+          return Response.json({ id: "cn1", host: "127.0.0.1", port: 2222, token: "ibssh_fake", expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+        }
+        if (req.method === "DELETE" && p.startsWith("/v1/machines/")) {
+          deleted.push(p);
+          delete machines[p];
+          return Response.json({ id: "opd", state: "pending" }, { status: 202 });
+        }
+        if (req.method === "GET" && p === "/v1/snapshots") return Response.json({ snapshots: [] });
+        return new Response("nf", { status: 404 });
+      },
+    });
+
+    // fake ssh gateway: runs the "remote" command locally
+    const sshPath = join(w.stateDir, "fake-ssh");
+    writeFileSync(
+      sshPath,
+      '#!/usr/bin/env bash\nfor a in "$@"; do CMD="$a"; done\nexec bash -c "$CMD"\n'
+    );
+    chmodSync(sshPath, 0o755);
+    // fake pi: review verdict when the reviewer contract is present, else commit work
+    const piPath = join(w.stateDir, "fake-pi");
+    writeFileSync(
+      piPath,
+      [
+        "#!/usr/bin/env bash",
+        `if grep -q "Judge in this order" /dev/stdin; then`,
+        `  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"VERDICT: APPROVE\\nCoverage MET."}],"usage":{"input_tokens":3,"output_tokens":4}}}'`,
+        "else",
+        `  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"implemented"}]},"usage":{"input_tokens":10,"output_tokens":5}}'`,
+        `  echo hello >> implemented.txt && git add implemented.txt && git commit -q -m "machine implement"`,
+        "fi",
+        "exit 0",
+      ].join("\n") + "\n"
+    );
+    chmodSync(piPath, 0o755);
+
+    w.cfg.env.mode = "instabox";
+    w.cfg.env.instabox.api_base = `http://127.0.0.1:${server.port}`;
+    w.cfg.env.instabox.api_key_env = "INSTABOX_API_KEY";
+    w.cfg.env.instabox.repo_dir = join(w.stateDir, "machine-repo"); // no real /data in the fake machine
+    w.cfg.pi.binary = piPath;
+    process.env.PDF_SSH_BIN = sshPath;
+    process.env.INSTABOX_API_KEY = "test";
+    try {
+      const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+      expect(outcome).toBe("merged");
+      expect(w.ledger.getIssue(w.cfg.repo, 1)!.state).toBe("merged");
+      expect(w.gh.merged).toEqual([101]);
+      // stage forensics landed host-side despite the remote run
+      const implJsonl = readFileSync(join(issueDir(w.stateDir, "toy", 1), "implement-1.jsonl"), "utf8");
+      expect(implJsonl).toContain("implemented");
+      // the fake control plane saw one lifecycle: create and delete of the lap machine
+      expect(deleted.length).toBe(1);
+      // no host worktree was ever created
+      expect(existsSync(join(w.stateDir, "worktrees", "toy"))).toBe(false);
+    } finally {
+      delete process.env.PDF_SSH_BIN;
+      delete process.env.INSTABOX_API_KEY;
+      server.stop(true);
+    }
   }, 60000);
 
   test("reconcile: crashed lap whose delivery already merged → books closed, issue closed, no re-work", async () => {

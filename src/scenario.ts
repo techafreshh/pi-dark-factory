@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sh } from "./sh";
+import { escapeSh, machineBash, PortForwarder, type SshTarget } from "./machine";
 
 export interface Probe {
   id: string;
@@ -335,5 +336,116 @@ export async function runScenario(
     if (spec.teardown) {
       await sh(raw(spec.teardown), { cwd: scratchDir, env, timeoutMs: 60000, killGroup: !opts.wrap });
     }
+  }
+}
+
+/** Anything with an SSH target + the in-machine repo path (LapMachine). */
+export interface MachineScenarioTarget {
+  ssh(): Promise<SshTarget>;
+  repoDir: string;
+}
+
+const b64s = (s: string) => Buffer.from(s, "utf8").toString("base64");
+
+/**
+ * Machine-mode scenario: setup and the foreground `start` server run INSIDE
+ * the InstaBox machine (that is where the product and its dependencies live);
+ * probes stay host-side and black-box against ssh-forwarded 127.0.0.1 ports —
+ * the same judge, a tunnel in the middle. The server runs as a remote session
+ * leader whose whole process group is killed on teardown.
+ */
+export async function runScenarioInMachine(
+  spec: ScenarioSpec,
+  target: MachineScenarioTarget,
+  opts: { readinessSeconds: number; defaultProbeMs: number; key: string; reservedPorts: number[] }
+): Promise<ScenarioResult> {
+  const mkResults = (pass: boolean, error: string): ScenarioResult => ({
+    name: spec.name,
+    pass,
+    results: spec.probes.map((p) => ({ id: p.id, description: p.description, pass: false, detail: "not run" })),
+    error,
+  });
+
+  // the forwarded host ports must be free, exactly like published container ports
+  const port = resolveScenarioPort(spec, opts.reservedPorts);
+  if (await portBusy(port)) {
+    return mkResults(false, `port ${port} is busy (another server is listening)`);
+  }
+  const conn = await target.ssh();
+  const key = opts.key.replace(/[^a-z0-9-]/gi, "");
+  const pidFile = `/tmp/pdf-scen-${key}.pid`;
+  const dirFile = `/tmp/pdf-scen-${key}.dir`;
+  const goto = `cd ${escapeSh(target.repoDir)} || exit 95\nexport PORT=${port}\nexport WORKTREE=${escapeSh(target.repoDir)}\n`;
+  const runIn = (cmd: string) => machineBash(conn, goto + cmd, { timeoutMs: 600000 });
+
+  const fwd = PortForwarder.start(conn, [port]);
+  try {
+    if (spec.setup) {
+      const res = await runIn(spec.setup);
+      if (res.code !== 0) {
+        return mkResults(false, `setup failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300)}`);
+      }
+    }
+
+    // foreground server in the machine, detached as its own session leader;
+    // a previous run's group is killed first so ports are free
+    const startScript = [
+      `set -u`,
+      goto,
+      `if [ -f ${pidFile} ]; then OLD=$(cat ${pidFile} 2>/dev/null || true); [ -n "$OLD" ] && { kill -- -"$OLD" 2>/dev/null || kill "$OLD" 2>/dev/null || true; }; fi`,
+      `rm -f ${pidFile} ${dirFile}`,
+      `M=$(mktemp -d /tmp/pdfscen.XXXXXX)`,
+      `printf %s ${b64s(spec.start)} | base64 -d > "$M/cmd.sh"`,
+      `setsid bash "$M/cmd.sh" > "$M/log" 2>&1 &`,
+      `echo $! > ${pidFile}`,
+      `echo "$M" > ${dirFile}`,
+      `echo STARTED`,
+    ].join("\n");
+    const started = await machineBash(conn, startScript, { timeoutMs: 60000 });
+    if (started.timedOut || !started.stdout.includes("STARTED")) {
+      return mkResults(false, `scenario start failed in machine: ${(started.stderr.trim() || started.stdout.trim()).slice(0, 300)}`);
+    }
+
+    if (!(await ready(port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
+      const logTail = await machineBash(conn, `tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, { timeoutMs: 15000 });
+      const detail = logTail.stdout.trim().slice(-500);
+      return mkResults(
+        false,
+        `server never became ready within ${opts.readinessSeconds}s (machine server.log tail: ${detail})`
+      );
+    }
+
+    const results: ProbeResult[] = [];
+    let pass = true;
+    for (const probe of spec.probes) {
+      const timeoutMs = probe.timeout_ms ?? parseMaxMs(probe.expect) ?? opts.defaultProbeMs;
+      const res = await sh(["bash", "-c", probe.command], {
+        env: { ...process.env, PORT: String(port) },
+        timeoutMs,
+        killGroup: true,
+      });
+      const verdict = res.timedOut
+        ? { pass: false, failed: `timed out after ${timeoutMs}ms` }
+        : evalExpects(res.stdout, res.code, probe.expect);
+      if (!verdict.pass) pass = false;
+      results.push({ id: probe.id, description: probe.description, pass: verdict.pass, detail: verdict.failed ?? "ok" });
+    }
+    return { name: spec.name, pass, results };
+  } finally {
+    // remote kill first (needs the gateway reachable), then teardown, then drop
+    // the forwards — cancellation never skips it
+    try {
+      await machineBash(
+        conn,
+        [
+          `if [ -f ${pidFile} ]; then P=$(cat ${pidFile}); { kill -- -"$P" 2>/dev/null || kill "$P" 2>/dev/null || true; }; fi`,
+          `if [ -f ${dirFile} ]; then D=$(cat ${dirFile}); rm -rf "$D"; fi`,
+          `rm -f ${pidFile} ${dirFile}`,
+        ].join("\n"),
+        { timeoutMs: 30000 }
+      );
+      if (spec.teardown) await runIn(spec.teardown);
+    } catch {}
+    await fwd.stop().catch(() => {});
   }
 }
