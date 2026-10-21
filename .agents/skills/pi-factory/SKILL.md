@@ -32,7 +32,7 @@ about it is a claim.
 ## Connect
 
 ```bash
-export FACTORY_URL=https://factory-api.techa.pro
+export FACTORY_URL=https://pi-factory.techa.pro
 export FACTORY_API_KEY=<key>     # stored for the user at ~/.config/factory-remote/key
 python3 bin/factory-remote doctor
 ```
@@ -78,16 +78,31 @@ decisions they must confirm (the API returns `next_steps`):
 - **models**: default tier for everything + per-stage overrides. Suggest the
   tier lesson from the runbooks: disciplined model for implement/review,
   cheaper for plan; fallback chains as `provider/model[:thinking]`.
-  - **ClinePass multi-key**: on the VPS the clinepass key router runs at
-    `host.docker.internal:8099` (`~/:/state/clinepass.keys`, one key per line —
-    weekly caps cool a key exactly as long as ClinePass's own reset text says).
-    Model strings then use provider `clinepass-rotator` (see
-    `templates/pi-models.clinepass-router.json`); nothing else changes — the
-    router fails over keys inside the same call.
-- **required_checks**: GitHub check names that gate merge (`[]` = none).
+  - **ClinePass multi-key**: the key router runs on the VPS at
+    `host.docker.internal:8099`; keys live in
+    `/home/factory/state/clinepass.keys` (one per line, 600, live-reloaded —
+    never echo them). Model strings use provider `clinepass-rotator`
+    (see `templates/pi-models.clinepass-router.json`); nothing else changes —
+    the router fails over keys inside the same call.
+    **Billing surfaces — do not mix them (learned the hard way 2026-10-20):**
+    the model id's first segment picks the billing program. Ids like
+    `cline-pass/glm-5.3-flash` bill the ClinePass **weekly limit**; bare
+    vendor ids from the catalog (`z-ai/…`, `deepseek/…`) silently bill
+    pay-as-you-go **Cline Credits** and die with `402 insufficient_credits`
+    once the balance drains — while the weekly limit looks untouched. Always
+    hand the rotator pool `cline-pass/…` ids. (Also: reasoning models need a
+    sane `max_tokens`, and big non-streaming prompts hang the pool — the
+    slicer already streams; don't add bare non-streaming HTTP callers.)
+- **required_checks**: `["*"]` is the onboard default and means autodetect —
+  every check the PR reports must pass, a repo with no workflows stays
+  ungated; empty list disables the CI gate; explicit names (e.g.
+  `["test"]`) pin exact checks when you want a subset. The factory
+  bootstraps CI itself: a PRD line "ship a CI workflow…" makes lap 1
+  deliver `.github/workflows/ci.yml` and the gate engages from the next
+  lap — no operator ever names checks by hand.
 - **env.mode**: default `host`; offer `compose` if the product repo has a
   `docker-compose.yml` (install freedom in a root container; the compose file
-  must publish the scenario ports on 127.0.0.1).
+  must publish the scenario ports on `127.0.0.1`).
 
 ### Stage 3 — scenario gate (the acceptance contract)
 
@@ -95,7 +110,13 @@ The scenarios live OUTSIDE the product repo so the implementer can never tune
 code against its own verifier — never relocate them, never share their
 contents with the implementer. Work the assertions out from the PRD and user
 answers (endpoints, port, persistence behavior) — **never invent endpoints**.
-Draft `runtime.json` (positive path: setup/start/probes) and `holdout.json`
+Set `"port": "first"` (runtime) / `"second"` (holdout) — resolved against the
+repo's reserved `config.json scenario.ports` pair at verify time; probes use
+`$PORT` and never hardcode numbers. **Size the probes to the currently
+claimable issue** — gates covering the PRD's final contract on day one burn
+attempt caps on repair churn (2026-10-21 lesson): grow them per issue as
+laps merge. Draft `runtime.json` (positive path: setup/start/probes) and
+`holdout.json`
 (adversarial: malformed input → 4xx never 500, unknown resource, escaping,
 boundaries) as local files, show both in full, get a yes, then:
 
@@ -147,7 +168,7 @@ busy-polling. A full lap is tens of minutes.
 | "add repo X to the factory" | run the wizard from Stage 0 |
 | "cleanup" | confirm, `cleanup` (prunes blocked worktree caches, kills stale pi) |
 | "add this PRD" | Stage 4 on an onboarded repo — `status` first, dedup makes re-runs safe |
-| "clinepass is capped / rotating keys" | mention the router: `curl $FACTORY_HOST:8099/pool` is VPS-side; keys live in `~/state/clinepass.keys` on the VPS (one per line, live-reloaded). If ALL keys cool, laps fail with a plain 429 — ask the user to add a key. |
+| "clinepass is capped / rotating keys" | mention the router: `curl $FACTORY_HOST:8099/pool` is VPS-side; keys live in `/home/factory/state/clinepass.keys` (one per line, live-reloaded). Distinguish the two walls before advising: upstream `402 insufficient_credits` = Cline **Credits** drained (wrong model-id surface — switch to `cline-pass/…` ids); a `429` from the router = the **weekly** pool's reset window (cooling until the parsed reset) — ask the user to add a key or wait. Provider errors now surface as `provider_error` in receipts with the upstream message — read it before proposing unblock. |
 
 Reading results honestly: `terminal ≠ good` — a lap showing `merged` in the
 ledger is confirmed by the merged PR on GitHub (`gh pr view`); a failed lap's
