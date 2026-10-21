@@ -5,16 +5,17 @@
  */
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, removeWorktree } from "./gitws";
 import { Ledger } from "./ledger";
-import { callPi } from "./pi";
 import { portBusy } from "./scenario";
 import { loadScenario } from "./scenario";
 import { buildSlicerPrompt, filterNew, parseSlicerOutput } from "./slicer";
 import { receipt } from "./receipts";
+import { sh } from "./sh";
 import type { RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
@@ -190,6 +191,77 @@ export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" |
   return { ok: true, path };
 }
 
+const SLICER_TIMEOUT_MS = 900_000;
+
+/**
+ * The slicer needs no tools and no agent harness — a single chat completion
+ * through the provider's OpenAI-compatible endpoint. It used to run through
+ * `pi --mode json` like the stages, but that spawn shape parked pre-spawn
+ * (futex, no child, unrecoverable by any timeout) nondeterministically.
+ * Plain HTTP fails fast with the upstream error and retries cleanly.
+ */
+async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<ReturnType<typeof parseSlicerOutput>> {
+  const models = resolveModels(cfg, "plan");
+  const providers = JSON.parse(
+    readFileSync(join(process.env.HOME ?? "", ".pi", "agent", "models.json"), "utf8")
+  ) as { providers: Record<string, { baseUrl: string; apiKey: string }> };
+  const provider = providers.providers[models.base.provider];
+  if (!provider?.baseUrl) throw new Error(`slicer: provider ${models.base.provider} has no baseUrl in ~/.pi/agent/models.json`);
+  // Two cliffs live below, both proven the hard way:
+  // 1. non-streaming POSTs: the ClinePass pool hangs forever on big reasoning
+  //    prompts (zero bytes, no error) while streaming the same request answers
+  //    immediately — opencode never trips this because it always streams.
+  // 2. Bun.fetch -> Bun.serve streaming POST (client and keyrouter are both
+  //    Bun) deadlocks the same way, even though curl against the identical
+  //    endpoint streams fine — so this call shells out to curl.
+  const body = JSON.stringify({
+    model: models.base.model,
+    max_tokens: 16384,
+    stream: true,
+    // default-effort reasoning on these models can outburn max_tokens with
+    // zero content deltas (the slicer prompt is big); low finishes in ~30s
+    reasoning_effort: "low",
+    messages: [
+      { role: "system", content: "You decompose PRDs into build orders for an unattended software factory. Answer ONLY in the requested block format." },
+      { role: "user", content: buildSlicerPrompt(prdText, max) },
+    ],
+  });
+  const scratch = join(tmpdir(), "pdf-slicer");
+  mkdirSync(scratch, { recursive: true });
+  const bodyFile = join(scratch, `body-${Date.now()}.json`);
+  const outFile = join(scratch, `raw-${Date.now()}.sse`);
+  writeFileSync(bodyFile, body);
+  try {
+    const res = await sh(
+      ["curl", "-sN", "--max-time", String(Math.floor(SLICER_TIMEOUT_MS / 1000)),
+       "-X", "POST", `${provider.baseUrl}/chat/completions`,
+       "-H", "content-type: application/json",
+       "-H", `authorization: Bearer ${provider.apiKey}`,
+       "--data-binary", `@${bodyFile}`, "-o", outFile],
+      { timeoutMs: SLICER_TIMEOUT_MS + 15_000 }
+    );
+    if (res.code !== 0) throw new Error(`slicer curl exited ${res.code}`);
+  } finally {
+    try { rmSync(bodyFile); } catch {}
+  }
+  let text = "";
+  for (const rawLine of readFileSync(outFile, "utf8").split("\n")) {
+    const line = rawLine.trim();
+    if (!line.startsWith("data:")) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const ev = JSON.parse(payload) as any;
+      // both the bare OpenAI shape and the pass pool's {"data":{...}} wrapper
+      const delta = ev?.choices?.[0]?.delta?.content ?? ev?.data?.choices?.[0]?.delta?.content;
+      if (typeof delta === "string" && delta) text += delta;
+    } catch { /* keep-alive or split frame */ }
+  }
+  try { rmSync(outFile); } catch {}
+  if (!text.trim()) throw new Error("slicer failed: empty streamed completion (check provider quota/max_tokens)");
+  return parseSlicerOutput(text);
+}
+
 export async function opsBacklog(
   stateDir: string,
   slug: string,
@@ -198,17 +270,7 @@ export async function opsBacklog(
 ) {
   const cfg: RepoConfig = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
   const gh = new Gh(cfg.repo);
-  const models = resolveModels(cfg, "plan");
-  const res = await callPi({
-    binary: cfg.pi.binary,
-    model: models.base,
-    prompt: buildSlicerPrompt(prdText, opts.max ?? 40),
-    cwd: stateDir,
-    noTools: true,
-    timeoutMs: cfg.timeouts.stage_minutes * 60_000,
-  });
-  if (res.kind !== "ok") throw new Error(`slicer failed: ${"error" in res ? res.error : res.kind}`);
-  const sliced = parseSlicerOutput(res.text);
+  const sliced = await slice(prdText, cfg, opts.max ?? 40);
   if (sliced.length === 0) {
     const rawPath = join(stateDir, `slicer-raw-${Date.now()}.txt`);
     writeFileSync(rawPath, res.text);
