@@ -35,7 +35,17 @@ def _cfg() -> tuple[str, str]:
     url = os.environ.get("FACTORY_URL", "").rstrip("/")
     key = os.environ.get("FACTORY_API_KEY", "")
     if not url or not key:
-        die("FACTORY_URL and FACTORY_API_KEY must be set (see factory-remote --help)")
+        # stored-config fallback so the client runs from ANY directory
+        # (e.g. the pilot project being onboarded) without env setup —
+        # the skill's Connect section documents these files (mode 600)
+        cfgdir = os.path.expanduser("~/.config/factory-remote")
+        try:
+            url = url or open(os.path.join(cfgdir, "url"), encoding="utf-8").read().strip()
+            key = key or open(os.path.join(cfgdir, "key"), encoding="utf-8").read().strip()
+        except OSError:
+            pass
+    if not url or not key:
+        die("FACTORY_URL and FACTORY_API_KEY must be set, or stored in ~/.config/factory-remote/{url,key} (see factory-remote --help)")
     return url, key
 
 
