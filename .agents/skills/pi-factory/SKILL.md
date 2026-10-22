@@ -129,7 +129,7 @@ decisions they must confirm (the API returns `next_steps`):
   deliverable** (install freedom in a root container; the compose file must
   publish the scenario ports on `127.0.0.1`). For a compose-mode Node
   project, set the **fallback image** `env.image` to a Node-bearing image
-  (e.g. `node:22-slim`): until lap 1's PR lands the compose file, stages
+  (use a **full** node image like `node:22` — `node:22-slim` has no git, and the implementer cannot commit its work): until lap 1's PR lands the compose file, stages
   run in `env.image` — a bare `ubuntu:24.04` has no Node. (Last-resort
   safety net: the factory mounts its own Node 22 into every container at
   `/root/.pi/host-runtimes/node/bin/node`.)
@@ -139,11 +139,15 @@ models, env, timeouts, merge, default_branch, attempts, skip_labels, pi —
 show the patch and confirm before firing):
 
 ```bash
-factory-remote config <slug> --json '{"env":{"mode":"compose","image":"node:22-slim"},"merge":{"required_checks":["*"]},"models":{"default":{"provider":"clinepass-rotator","model":"cline-pass/glm-5.3-flash","fallback":["clinepass-rotator/cline-pass/deepseek-v4.1-flash"]}}}'
+factory-remote config <slug> --json '{"env":{"mode":"compose","image":"node:22"},"merge":{"required_checks":["*"]},"models":{"default":{"provider":"clinepass-rotator","model":"cline-pass/glm-5.3-flash","fallback":["clinepass-rotator/cline-pass/deepseek-v4.1-flash"]}}}'
 ```
 
 The response echoes the merged config (env.mode, required_checks, per-stage
 models) — read it back to the user before Stage 3.
+
+NOTE: config pushes deep-merge — two writers (this skill and a VPS-side
+session) can interleave; the LAST write wins per key. After any config
+disagreement, re-echo the effective config once before proceeding.
 
 ### Stage 3 — scenario gate (the acceptance contract)
 

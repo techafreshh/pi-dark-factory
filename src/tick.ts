@@ -36,6 +36,18 @@ export type CallStageFn = (
 const stageMinutes = (cfg: RepoConfig, stage: StageName): number =>
   (cfg.timeouts as any)[`${stage}_minutes`] ?? cfg.timeouts.stage_minutes;
 
+/**
+ * Quiet-kill: a live run never goes silent for long — thinking streams as
+ * reasoning deltas and tool calls emit partial output — so N minutes of zero
+ * stdout/stderr bytes means a hung tool process (e.g. a test run that never
+ * exits), a wedged turn, or a stalled provider request. Kill it early so the
+ * outcome reads "timeout" and the continue-ladder resumes the session at
+ * once, instead of freezing until the full stage budget expires. The window
+ * must exceed the slowest legitimate silent stretch (a quiet build/install
+ * mid-tool), hence 15 minutes.
+ */
+const QUIET_KILL_MS = 15 * 60_000;
+
 export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
   return async (stage, a) => {
     // container mode: pi runs inside the product's worker environment
@@ -48,6 +60,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       systemPrompt: a.systemPrompt,
       extraArgs: cfg.pi.extra_args,
       timeoutMs: stageMinutes(cfg, stage) * 60_000,
+      quietMs: QUIET_KILL_MS,
     };
     const runnerPrefix = envBuild.containerized
       ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }

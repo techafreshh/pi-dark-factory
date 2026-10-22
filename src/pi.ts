@@ -14,13 +14,19 @@ export interface PiCallOpts {
   systemPrompt?: string;
   extraArgs?: string[];
   timeoutMs: number;
+  /** kill a run whose stdout/stderr has emitted nothing for this long — every
+   *  live signal (reasoning deltas, tool updates, partial tool output) produces
+   *  bytes, so silence means a hung turn, a wedged tool process, or a stalled
+   *  provider request; surfaces as "timeout" so the caller's continue-ladder
+   *  resumes the session instead of waiting out the whole stage budget */
+  quietMs?: number;
   /** container mode: docker prefix; cleanupArgv runs after any exit (docker rm -f) */
   runnerPrefix?: { argvPrefix: string[]; cleanupArgv?: string[] };
 }
 
 export type PiOutcome =
   | { kind: "ok"; text: string; usage: Usage | null }
-  | { kind: "timeout" }
+  | { kind: "timeout"; error?: string }
   | { kind: "provider_error"; error: string }
   | { kind: "spawn_error"; error: string };
 
@@ -103,28 +109,55 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
   proc.stdin.write(o.prompt);
   try { proc.stdin.end(); } catch {} // FileSink.end() is sync in Bun
 
+  // heartbeat taps alongside the async-iterator drains below — any byte on
+  // stdout/stderr (thinking delta, tool update, partial tool output) counts
+  // as life; only true silence ages the quiet clock
+  let lastActivity = Date.now();
+  proc.stdout?.on?.("data", () => { lastActivity = Date.now(); });
+  proc.stderr?.on?.("data", () => { lastActivity = Date.now(); });
+
   const exited = new Promise<number>((resolve) => {
     proc.on("exit", (c: any) => resolve(c ?? 137));
     proc.on("error", () => resolve(127));
   });
   let timedOut = false;
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   const timeoutP =
     o.timeoutMs > 0
       ? new Promise<number>((resolve) => {
-          setTimeout(() => {
+          timeoutTimer = setTimeout(() => {
             timedOut = true;
             killTree(proc.pid);
             resolve(137);
           }, o.timeoutMs);
         })
       : null;
-  const code = await (timeoutP ? Promise.race([exited, timeoutP]) : exited);
+  let quietKilled = false;
+  let quietIv: ReturnType<typeof setInterval> | null = null;
+  const quietP =
+    o.quietMs && o.quietMs > 0
+      ? new Promise<number>((resolve) => {
+          quietIv = setInterval(() => {
+            if (Date.now() - lastActivity >= (o.quietMs ?? 0)) {
+              quietKilled = true;
+              killTree(proc.pid);
+              resolve(137);
+            }
+          }, 30_000);
+        })
+      : null;
+  const racers = timeoutP || quietP ? [exited, ...(timeoutP ? [timeoutP] : []), ...(quietP ? [quietP] : [])] : [exited];
+  const code = await Promise.race(racers);
+  if (timeoutTimer) clearTimeout(timeoutTimer);
+  if (quietIv) clearInterval(quietIv);
   if (o.runnerPrefix?.cleanupArgv) {
     // --rm removes normally-exiting containers; rm -f is the mop-up for
     // killed clients, timeouts, and crashes — and is idempotent
     await sh(o.runnerPrefix.cleanupArgv, { timeoutMs: 20000 }).catch(() => {});
   }
   if (timedOut) return { kind: "timeout" };
+  if (quietKilled)
+    return { kind: "timeout", error: `no stream output for ${Math.round((o.quietMs ?? 0) / 60_000)}m` };
 
   const [lines, stderr] = await Promise.all([stdoutP, stderrP]);
   const parsed = parseEventStream(lines);
