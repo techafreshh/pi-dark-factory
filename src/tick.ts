@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, join } from "node:fs";
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
@@ -36,26 +36,63 @@ const stageMinutes = (cfg: RepoConfig, stage: StageName): number =>
   (cfg.timeouts as any)[`${stage}_minutes`] ?? cfg.timeouts.stage_minutes;
 
 export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
-  return (stage, a) => {
+  return async (stage, a) => {
     // container mode: pi runs inside the product's worker environment
     const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name);
-    return callPiWithFallback(
-      {
-        binary: cfg.pi.binary,
-        prompt: a.prompt,
-        cwd: a.cwd,
-        tools: a.tools,
-        sessionDir: a.sessionDir,
-        systemPrompt: a.systemPrompt,
-        extraArgs: cfg.pi.extra_args,
-        timeoutMs: stageMinutes(cfg, stage) * 60_000,
-        runnerPrefix: envBuild.containerized
-          ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }
-          : undefined,
-      },
+    const base = {
+      binary: cfg.pi.binary,
+      cwd: a.cwd,
+      tools: a.tools,
+      sessionDir: a.sessionDir,
+      systemPrompt: a.systemPrompt,
+      extraArgs: cfg.pi.extra_args,
+      timeoutMs: stageMinutes(cfg, stage) * 60_000,
+    };
+    const runnerPrefix = envBuild.containerized
+      ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }
+      : undefined;
+    let res = await callPiWithFallback(
+      { ...base, prompt: a.prompt, runnerPrefix },
       a.models
     );
+    // Stream-death continue: when the model stream is cut or the stage burns
+    // its clock, the completed turns already live in the session file (and
+    // the worktree files persist) — re-open the SAME session with a continue
+    // nudge instead of discarding minutes of tool work on a from-scratch rerun.
+    for (let resumes = 0; resumes < 2; resumes++) {
+      const o = res.outcome;
+      const dead =
+        (o.kind === "provider_error" && /terminated|timed out|no assistant message/i.test(o.error ?? "")) ||
+        o.kind === "timeout";
+      if (!dead || !a.sessionDir) break;
+      const newest = newestSessionFile(a.sessionDir);
+      if (!newest) break;
+      res = await callPiWithFallback(
+        {
+          ...base,
+          prompt:
+            "Continue from exactly where you left off in this session — complete the outstanding work and produce the required final output.",
+          runnerPrefix,
+          extraArgs: [...base.extraArgs, "--session", newest],
+        },
+        a.models
+      );
+    }
+    return res;
   };
+}
+
+function newestSessionFile(dir: string): string | null {
+  try {
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({ f, m: statSync(join(dir, f)).mtimeMs }));
+    if (files.length === 0) return null;
+    files.sort((a, b) => b.m - a.m);
+    return join(dir, files[0].f);
+  } catch {
+    return null;
+  }
 }
 
 const modelStr = (m: ModelSpec) => `${m.provider}/${m.model}${m.thinking ? `:${m.thinking}` : ""}`;
