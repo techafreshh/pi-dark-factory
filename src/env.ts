@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RepoConfig } from "./types";
@@ -59,11 +59,40 @@ export function buildStageCmd(
     // command per stage. --service-ports is load-bearing: `compose run`
     // publishes NOTHING by default, but host-side black-box verification
     // needs the scenario ports on 127.0.0.1 (declare them on the service).
+
+    // Factory-injected plumbing, merged as a second -f (compose merges with
+    // last-file-wins): pi inside the stage reaches the keyrouter via
+    // host.docker.internal, and on Linux that name exists only with the
+    // host-gateway mapping — product compose files do not ship it, and every
+    // stage would fail with a deterministic instant "Connection error" while
+    // every generic probe stays green (observed on mdrender 09:33 & 10:06).
+    // `docker compose run` has no --add-host, so an override file is the only
+    // product-agnostic injection point.
+    const overridePath = join(stateDir, "compose-override.yml");
+    try {
+      writeFileSync(
+        overridePath,
+        `# factory-injected stage plumbing for ${cfg.slug} — regenerated on every stage, do not edit\n` +
+          `services:\n  ${cfg.env.service}:\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n`
+      );
+    } catch {
+      // unwritable state dir: a previously written override (if any) still applies
+    }
+
+    // best-effort self-heal: the commit gate needs git in the stage container
+    // and slim images don't ship it (node:22-slim observed). Debian-ish
+    // images get git in ~15s once per stage spawn; anything else fails
+    // visibly on the git step instead of mysteriously.
+    const wrap = [
+      "sh", "-c",
+      'command -v git >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git >/dev/null 2>&1; }; exec "$@"',
+      "stage-sh",
+    ];
     const argvPrefix = [
-      "docker", "compose", "-f", composePath, "run", "--rm",
+      "docker", "compose", "-f", composePath, "-f", overridePath, "run", "--rm",
       "--service-ports",
       "--name", uniqueName, "--workdir", worktree,
-      ...mounts, ...envFlags, cfg.env.service,
+      ...mounts, ...envFlags, cfg.env.service, ...wrap,
     ];
     return { argvPrefix, cleanup: rm, containerized: true };
   }

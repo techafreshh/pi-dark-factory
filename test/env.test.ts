@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildStageCmd } from "../src/env";
@@ -56,19 +56,25 @@ describe("buildStageCmd (container execution environment)", () => {
     expect(s.cleanup).toEqual(["docker", "rm", "-f", "lap-1"]);
   });
 
-  test("compose mode: docker compose -f <worktree file> run <service>, workdir set", () => {
+  test("compose mode: product -f + factory override -f, host-gateway plumbing, git wrap", () => {
     const wt = mkdtempSync(join(tmpdir(), "pdfenv-"));
+    const st = mkdtempSync(join(tmpdir(), "pdfenv-state-"));
     writeFileSync(join(wt, "docker-compose.yml"), "services:\n  worker:\n    image: python:3.12\n");
-    const s = buildStageCmd(cfg({ mode: "compose", service: "worker" }), wt, "/state", "lap-2");
+    const s = buildStageCmd(cfg({ mode: "compose", service: "worker" }), wt, st, "lap-2");
     expect(s.containerized).toBe(true);
     expect(s.argvPrefix[1]).toBe("compose");
     const args = s.argvPrefix.join(" ");
     expect(args).toContain(`-f ${join(wt, "docker-compose.yml")}`);
+    expect(args).toContain(`-f ${join(st, "compose-override.yml")}`); // factory-injected plumbing
     expect(args).not.toContain("-p 127.0.0.1:"); // absent — product compose owns port publishing
     expect(args).not.toContain("pdf-uv:");   // no factory caches in product compose mode
     expect(args).toContain(`--workdir ${wt}`);
     expect(args).toContain("--service-ports"); // `compose run` publishes nothing by default
-    expect(s.argvPrefix[s.argvPrefix.length - 1]).toBe("worker");
+    expect(args).toContain("stage-sh");        // git self-heal wrapper before the caller's command
+    const override = readFileSync(join(st, "compose-override.yml"), "utf8");
+    expect(override).toContain("host.docker.internal:host-gateway");
+    expect(override).toContain("worker:");
+    expect(s.argvPrefix[s.argvPrefix.length - 5]).toBe("worker"); // service before the sh wrapper
   });
 
   test("pass_env forwards only vars that exist on the host", () => {

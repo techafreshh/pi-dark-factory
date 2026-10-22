@@ -277,7 +277,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // Real stage work (gates, reviews, genuine turn failures) takes minutes and
   // never trips this.
   const CONNECTION_BLIP_RE =
-    /^connection error|^connection (terminated|reset)|econn(reset|refused)|socket hang up|^fetch failed|^terminated/i;
+    /connection error|connection (terminated|reset)|econn(reset|refused)|socket hang up|fetch failed|terminated/i;
   const RAPID_FAIL_MS = 120_000;
   const BLIP_COOLDOWN_MS = 120_000;
   let prevStart: number | null = null;
