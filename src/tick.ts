@@ -270,7 +270,31 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   let outcome: string | null = null;
 
+  // connection-blip backoff: an attempt that dies within ~2 minutes to a
+  // connection-class error (model API/edge hiccup, router pass-through reset)
+  // made zero progress — chained insta-fails must not burn the attempt
+  // budget, so give the upstream edge a cooldown before the next attempt.
+  // Real stage work (gates, reviews, genuine turn failures) takes minutes and
+  // never trips this.
+  const CONNECTION_BLIP_RE =
+    /^connection error|^connection (terminated|reset)|econn(reset|refused)|socket hang up|^fetch failed|^terminated/i;
+  const RAPID_FAIL_MS = 120_000;
+  const BLIP_COOLDOWN_MS = 120_000;
+  let prevStart: number | null = null;
+
   outer: for (let attempt = startAttempt; attempt <= cfg.attempts; attempt++) {
+    if (
+      prevStart !== null &&
+      Date.now() - prevStart < RAPID_FAIL_MS &&
+      CONNECTION_BLIP_RE.test(lastError)
+    ) {
+      receipt(
+        stateDir,
+        `attempt ${attempt - 1} died fast to a connection-class error — cooling down ${BLIP_COOLDOWN_MS / 1000}s before attempt ${attempt} (blips shouldn't burn the attempt budget)`
+      );
+      await new Promise((r) => setTimeout(r, BLIP_COOLDOWN_MS));
+    }
+    prevStart = Date.now();
     deps.ledger.setIssue(cfg.repo, n, { attempts: attempt });
     const runTag = `${attempt}-${Date.now().toString(36)}`;
     receipt(stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);

@@ -231,6 +231,26 @@ ledger is confirmed by the merged PR on GitHub (`gh pr view`); a failed lap's
 story is in `status`'s `last_error` plus `logs`. When a provider hit
 `provider_error`, note which models were tried before proposing unblock.
 
+## factory-remote — full CLI reference
+
+All verbs run from any directory (creds are read from env or
+`~/.config/factory-remote/{url,key}`). Exit 0 = success, 1 = error.
+
+| Command | What it does | Notes |
+|---|---|---|
+| `health` | `GET /health` — connectivity + version | open endpoint, no key |
+| `doctor` | handshake + auth + list onboarded repos | run this when anything "doesn't work" |
+| `status [--repo SLUG] [--raw]` | ledger rows, laps, recent stages, chain depth, worktrees | `--raw` dumps the JSON payload |
+| `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | 200 lines default |
+| `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |
+| `onboard OWNER/NAME` | register a repo: config template, scenario templates, port pair | idempotent (`already` if done) |
+| `config SLUG --json '{…}'` | deep-merge a config patch | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Two-writer caveat: last write wins per key — re-echo after a disagreement |
+| `scenario SLUG runtime\|holdout --file F` | write + server-side validate a scenario JSON | holdout = adversarial layer; see Stage 3 probe language |
+| `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
+| `tick SLUG` | fire a lap now | returns immediately (`queued`); tokens are spent server-side — confirm with the user first; the pidfile arbitrates against the systemd timer |
+| `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
+| `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
+
 ## Hard rules
 
 - **Never SSH.** Everything through the client + GitHub. If an operation truly
