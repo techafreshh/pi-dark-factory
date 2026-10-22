@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync, join } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { sh } from "./sh";
@@ -480,6 +480,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
 /** one lap, single-issue convenience (used by tests and single-lap debugging) */
 export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps): Promise<string> {
+  // revive BEFORE reconcile: past ticks' blocked rows get their fresh budget
+  // first; a crash-blocked row from THIS tick's reconcile stays blocked until
+  // the next explicit tick (conservative — a crash deserves a human look)
+  autoReviveBlocked(cfg, stateDir, deps.ledger);
   await prepareRepo(cfg, stateDir, deps);
   const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
   if (claimable.length === 0) {
@@ -489,6 +493,68 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
     return "idle";
   }
   return runLap(cfg, stateDir, deps, claimable[0]);
+}
+
+/**
+ * Auto-revive — a lap that burns its attempt budget must not park the issue
+ * behind a manual `unblock` (the factory has to heal its own retry ladder).
+ * The NEXT tick grants the blocked issue a fresh attempt budget, bounded by
+ * two fuses so autonomy never means unbounded spend:
+ *  - stagnation: the same failure signature on ${STAGNATION_SAME} consecutive
+ *    blocked rounds means the wheel is spinning — the row stays blocked for a
+ *    human (deterministic walls like a broken stage setup reproduce
+ *    verbatim; evolving review/gate findings don't), and
+ *  - a daily cap of AUTO_REVIVE_DAILY_CAP revive rounds per issue.
+ * Round bookkeeping lives in repos/<slug>/revives.json (factory-owned state).
+ */
+const AUTO_REVIVE_DAILY_CAP = 3;
+const STAGNATION_SAME = 2;
+
+export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger): void {
+  const file = join(stateDir, "repos", cfg.slug, "revives.json");
+  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]> } = {
+    day: "", counts: {}, sigs: {},
+  };
+  try {
+    const j = JSON.parse(readFileSync(file, "utf8"));
+    j.counts ??= {};
+    j.sigs ??= {};
+    rs = j;
+  } catch {}
+  const day = new Date().toISOString().slice(0, 10);
+  if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {} };
+
+  for (const row of ledger.listIssues(cfg.repo)) {
+    if (row.state !== "blocked") continue;
+    const sig = (row.last_error ?? "unknown failure").replace(/\s+/g, " ").trim().slice(0, 140);
+    const sigs = rs.sigs[String(row.issue_number)] ?? [];
+    if (sigs.length >= STAGNATION_SAME && sigs.slice(-STAGNATION_SAME).every((s) => s === sig)) {
+      receipt(
+        stateDir,
+        `NOT auto-reviving #${row.issue_number} — same failure signature ${sigs.length + 1} blocked rounds in a row, the wheel is spinning: human review required (${sig.slice(0, 100)})`
+      );
+      continue;
+    }
+    const used = rs.counts[String(row.issue_number)] ?? 0;
+    if (used >= AUTO_REVIVE_DAILY_CAP) {
+      receipt(
+        stateDir,
+        `NOT auto-reviving #${row.issue_number} — auto-revive daily cap (${AUTO_REVIVE_DAILY_CAP}) reached; human review required (last blocker: ${sig.slice(0, 100)})`
+      );
+      continue;
+    }
+    rs.counts[String(row.issue_number)] = used + 1;
+    rs.sigs[String(row.issue_number)] = [...sigs, sig].slice(-4);
+    ledger.setIssue(cfg.repo, row.issue_number, { state: "in_progress", attempts: 0 });
+    receipt(
+      stateDir,
+      `AUTO-REVIVE #${row.issue_number} (round ${used + 1}/${AUTO_REVIVE_DAILY_CAP} today) — repair ladder continues with a fresh attempt budget; previous blocker: ${sig.slice(0, 110)}`
+    );
+  }
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(rs, null, 2));
+  } catch {}
 }
 
 export function discoverConfigs(stateDir: string, slug?: string): RepoConfig[] {
@@ -540,6 +606,8 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
     for (const cfg of discoverConfigs(opts.stateDir, opts.repoSlug)) {
       try {
         const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
+        // revive before prepareRepo/reconcile — see tickRepo's ordering note
+        autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
         await prepareRepo(cfg, opts.stateDir, deps);
         const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
         // One lap per repo per tick — by design. The splice is a dependency

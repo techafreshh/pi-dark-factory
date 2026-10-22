@@ -221,7 +221,7 @@ quiet lap), and auto-reconnects if the transport drops.
 | User says… | Do |
 |---|---|
 | "is the factory running" | `doctor` + `status` — report repos, chain depth, ledger states |
-| "why is #N blocked" | `status` (row + last_error) → `logs --tail 300` for the receipt trail → read the failing gate from `last_error`; propose a fix, then `unblock <slug> <n>` (confirm first) |
+| "why is #N blocked" | `status` (row + last_error) → `logs --tail 300` for the receipt trail → read the failing gate from `last_error`; propose a fix, then `unblock <slug> <n>` (confirm first). NOTE: blocked rows don't need an unblock to keep going — every tick AUTO-REVIVES blocked issues (fresh attempt budget, bounded: max 3 revive rounds/issue/day, and a stagnation breaker that refuses when the same failure signature repeats on consecutive blocks — that means the wheel is spinning and a human should look). `unblock` is for deliberate clearing (`--prune` closes the PR + branch + worktree) |
 | "run a lap now" | confirm (tokens), `tick <slug>` |
 | "add repo X to the factory" | run the wizard from Stage 0 |
 | "cleanup" | confirm, `cleanup` (prunes blocked worktree caches, kills stale pi) |
@@ -250,7 +250,7 @@ All verbs run from any directory (creds are read from env or
 | `scenario SLUG runtime\|holdout --file F` | write + server-side validate a scenario JSON | holdout = adversarial layer; see Stage 3 probe language |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | returns immediately (`queued`); tokens are spent server-side — confirm with the user first; the pidfile arbitrates against the systemd timer |
-| `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
+| `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
 | `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
 
 ## Hard rules
