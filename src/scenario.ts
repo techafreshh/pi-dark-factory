@@ -229,7 +229,9 @@ export async function runScenario(
   // host process on the published port breaks deterministic verification
   if (opts.preClean) {
     // reclaim this repo's leaked stage containers before anything else
-    await sh(["bash", "-c", `docker ps -aq --filter name=${opts.preClean} | xargs -r docker rm -f`], { timeoutMs: 20000 });
+    await sh(["bash", "-c",
+      `docker run --rm -v /home/factory/.pi:/fix alpine chown -R 1001:1001 /fix 2>/dev/null || true; ` +
+      `docker ps -aq --filter name=${opts.preClean} | xargs -r docker rm -f`], { timeoutMs: 30000 });
   }
   if (await portBusy(spec.port)) {
     // the port pair belongs to this repo's reservation, so a listener here

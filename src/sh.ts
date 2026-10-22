@@ -1,3 +1,5 @@
+import { spawn as nodeSpawn } from "node:child_process";
+
 export interface ShOpts {
   cwd?: string;
   timeoutMs?: number;
@@ -16,21 +18,6 @@ export interface ShRes {
 
 const OUT_CAP = 2_000_000;
 
-async function drain(stream: ReadableStream<Uint8Array> | undefined): Promise<string> {
-  if (!stream) return "";
-  const dec = new TextDecoder();
-  let out = "";
-  try {
-    for await (const chunk of stream) {
-      if (out.length < OUT_CAP) out += dec.decode(chunk, { stream: true });
-    }
-    out += dec.decode();
-  } catch {
-    // stream killed mid-read — keep what we have
-  }
-  return out;
-}
-
 export function killTree(pid: number) {
   try {
     process.kill(-pid, "SIGKILL"); // process group (setsid child)
@@ -44,44 +31,50 @@ export function killTree(pid: number) {
 }
 
 export async function sh(cmd: string[], opts: ShOpts = {}): Promise<ShRes> {
+  // node:child_process, not Bun.spawn: the Bun transport sat wedged inside
+  // long-lived factory processes (daemon laps, ticks) with no child and an
+  // unresolved exit promise, while identical invocations from plain shells
+  // worked. Same argv contract, same setsid/killTree semantics.
   const full =
     opts.killGroup && process.platform === "linux" ? ["setsid", ...cmd] : cmd;
-  let proc: any;
+  let child;
   try {
-    proc = Bun.spawn(full, {
+    child = nodeSpawn(full[0], full.slice(1), {
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.env },
-      stdin: opts.input !== undefined ? "pipe" : "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+      env: Object.fromEntries(
+        Object.entries({ ...process.env, ...opts.env }).filter(([, v]) => v !== undefined)
+      ),
+      stdio: [opts.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });
   } catch (e: any) {
     return { code: 127, stdout: "", stderr: `spawn failed: ${e.message}`, timedOut: false };
   }
-  const stdoutP = drain(proc.stdout);
-  const stderrP = drain(proc.stderr);
+  let stdout = "";
+  let stderr = "";
+  child.stdout?.on("data", (c: any) => { if (stdout.length < OUT_CAP) stdout += c.toString(); });
+  child.stderr?.on("data", (c: any) => { if (stderr.length < OUT_CAP) stderr += c.toString(); });
   if (opts.input !== undefined) {
-    proc.stdin.write(opts.input);
-    try { proc.stdin.end(); } catch {} // FileSink.end() is sync in Bun
+    child.stdin?.write(opts.input);
+    try { child.stdin?.end(); } catch {}
   }
   let timedOut = false;
   let timer: any = null;
-  const exited = proc.exited as Promise<number>;
+  let resolveExited: (code: number) => void = () => {};
+  const exited = new Promise<number>((resolve) => {
+    resolveExited = resolve;
+    child.on("exit", (c: any) => resolveExited(c ?? 137));
+    child.on("error", () => { if (!timedOut) resolveExited(127); });
+  });
   let code: number;
   if (opts.timeoutMs) {
-    const timeoutP = new Promise<number>((resolve) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        killTree(proc.pid);
-        resolve(137);
-      }, opts.timeoutMs);
-    });
-    code = await Promise.race([exited, timeoutP]);
-  } else {
-    code = await exited;
+    timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child.pid!);
+      resolveExited(137);
+    }, opts.timeoutMs);
   }
+  code = await exited;
   if (timer) clearTimeout(timer);
-  const [stdout, stderr] = await Promise.all([stdoutP, stderrP]);
   return { code, stdout, stderr, timedOut };
 }
 

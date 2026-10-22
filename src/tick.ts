@@ -58,8 +58,13 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       // scenario ports and would fail every spawn with "port is already
       // allocated"
       await sh(
-        ["bash", "-c", `docker ps -aq --filter name=pdf-${cfg.slug}- | xargs -r docker rm -f`],
-        { timeoutMs: 20000 }
+        ["bash", "-c",
+         // root-owned files from container stages (sessions, trust state)
+         // would starve the factory user's own pi — repair ownership via a
+         // root container through the docker socket (factory has no host sudo)
+         `docker run --rm -v /home/factory/.pi:/fix alpine chown -R 1001:1001 /fix 2>/dev/null || true; ` +
+         `docker ps -aq --filter name=pdf-${cfg.slug}- | xargs -r docker rm -f`],
+        { timeoutMs: 30000 }
       ).catch(() => {});
     }
     let res = await callPiWithFallback(

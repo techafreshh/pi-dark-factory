@@ -1,3 +1,4 @@
+import { spawn as nodeSpawn } from "node:child_process";
 import { parseEventStream } from "./pievents";
 import { killTree, sh } from "./sh";
 import type { ModelSpec, StageModels, Usage } from "./types";
@@ -77,13 +78,15 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
     // container mode: the payload lives in the docker daemon, not this
     // process tree — the docker client itself needs no setsid group
     const full = process.platform === "linux" && !o.runnerPrefix ? ["setsid", ...cmd] : cmd;
-    proc = Bun.spawn(full, {
+    // node:child_process, not Bun.spawn — the Bun transport parked inside
+    // long-lived factory processes (daemon laps/ticks) with no child and an
+    // unresolved exit promise while identical shell invocations worked.
+    proc = nodeSpawn(full[0], full.slice(1), {
       cwd: o.cwd,
-      env: { ...process.env },
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      env: Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)),
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    proc.on("error", () => {}); // spawn failures surface via the exit promise
   } catch (e: any) {
     return { kind: "spawn_error", error: `cannot start ${o.binary}: ${e.message}` };
   }
@@ -100,7 +103,10 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
   proc.stdin.write(o.prompt);
   try { proc.stdin.end(); } catch {} // FileSink.end() is sync in Bun
 
-  const exited = proc.exited as Promise<number>;
+  const exited = new Promise<number>((resolve) => {
+    proc.on("exit", (c: any) => resolve(c ?? 137));
+    proc.on("error", () => resolve(127));
+  });
   let timedOut = false;
   const timeoutP =
     o.timeoutMs > 0
