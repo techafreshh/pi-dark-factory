@@ -13,12 +13,12 @@
           "maxTokens": 65536
         },
         {
-          "id": "cline-pass/deepseek-v4.1-flash",
-          "contextWindow": 131072,
-          "maxTokens": 65536
+          "id": "cline-pass/glm-5.3",
+          "contextWindow": 1000000,
+          "maxTokens": 131072
         },
         {
-          "id": "cline-pass/mimo-v2.6-pro",
+          "id": "cline-pass/deepseek-v4.1-flash",
           "contextWindow": 131072,
           "maxTokens": 65536
         }
