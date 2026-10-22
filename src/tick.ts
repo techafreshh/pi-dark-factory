@@ -4,7 +4,7 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
-import { branchName, issueDir, sessionDir as sessionDirOf, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir as sourceDirOf, worktreeDir, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
@@ -119,6 +119,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
         a.models
       );
     }
+    if (runnerPrefix) await chownBack(stateDir, cfg, [a.cwd]);
     return res;
   };
 }
@@ -456,6 +457,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);
     } catch {}
+    // root-written files from containerized stages would EACCES the
+    // host-side worktree removal — hand ownership back first
+    await chownBack(stateDir, cfg, [worktreeDir(stateDir, cfg.slug, n)]);
     await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
     deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
@@ -557,6 +561,26 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
   } catch {}
 }
 
+/**
+ * Hand root-written files back to the factory uid. Containerized stages (the
+ * product's compose worker, fallback images) run as root and write into the
+ * bind-mounted worktree — and, through git's shared object database, into the
+ * source repo's .git. Host-side git (factory user) then EACCESes on cleanup
+ * and even on `git fetch`. The factory has docker access but no sudo, so the
+ * chown runs through a throwaway root container (same pattern as the .pi
+ * sweep before stages).
+ */
+const FACTORY_UID_GID = "1001:1001";
+
+export async function chownBack(stateDir: string, cfg: RepoConfig, extraDirs: string[] = []): Promise<void> {
+  const dirs = [sourceDirOf(stateDir, cfg.slug), ...extraDirs];
+  for (const d of dirs) {
+    await sh(["docker", "run", "--rm", "-v", `${d}:/fix`, "alpine", "chown", "-R", FACTORY_UID_GID, "/fix"], {
+      timeoutMs: 600000,
+    }).catch(() => {});
+  }
+}
+
 export function discoverConfigs(stateDir: string, slug?: string): RepoConfig[] {
   const reposDir = join(stateDir, "repos");
   let entries: string[] = [];
@@ -610,15 +634,19 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
         autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
         await prepareRepo(cfg, opts.stateDir, deps);
         const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
-        // One lap per repo per tick — by design. The splice is a dependency
-        // chain, and strictly ordered one-at-a-time delivery is what keeps
-        // main conflict-free (concurrent branches produced union-merge
-        // reconciles and a stranded branch in the previous factory's runs).
-        // Repos fan out in parallel; a repo dives issue by issue, topologically.
-        if (claimable.length > 0) {
-          const issue = claimable[0];
-          receipt(opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
-          tasks.push(async () => {
+        // Chained laps: a merge (or block/idle) re-intakes immediately, so one
+        // tick drains the dependency chain instead of doling out one issue per
+        // manual tick. Strictly ordered one-lap-at-a-time still holds inside a
+        // repo (that ordering is what keeps main conflict-free), and
+        // MAX_LAPS bounds a pathological loop — the chain continues next tick.
+        if (claimable.length === 0) continue;
+        const MAX_LAPS_PER_TICK_PER_REPO = 6;
+        receipt(opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
+        tasks.push(async () => {
+          let laps = 0;
+          let issue = claimable[0];
+          while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
+            laps++;
             try {
               await runLap(cfg, opts.stateDir, deps, issue);
             } catch (e: any) {
@@ -626,8 +654,22 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
               // in_progress row is reconciled next tick, never lost
               receipt(opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
             }
-          });
-        }
+            // fresh dependsCache per intake: issues closed by the merge just
+            // completed unblock their dependent here
+            const finished = issue.number;
+            const next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            issue = next[0];
+            if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
+              receipt(opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
+            }
+          }
+          if (laps >= MAX_LAPS_PER_TICK_PER_REPO) {
+            const remaining = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            if (remaining.length > 0) {
+              receipt(opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
+            }
+          }
+        });
       } catch (e: any) {
         receipt(opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
       }
