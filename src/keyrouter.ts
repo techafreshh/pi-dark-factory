@@ -172,7 +172,7 @@ export function startKeyrouter(opts: {
       try {
         const parsed = JSON.parse(body) as { reasoning_effort?: unknown; [k: string]: unknown };
         if (parsed && typeof parsed === "object" && parsed.reasoning_effort === undefined) {
-          parsed.reasoning_effort = "low";
+          parsed.reasoning_effort = process.env.CRPASS_REASONING_EFFORT ?? "low";
           body = JSON.stringify(parsed);
           inHeaders.delete("content-length"); // fetch recomputes for the new body
         }
