@@ -33,6 +33,7 @@ export interface PoolStats {
 export class KeyPool {
   /** priority order — keys are consumed in file order, hot key first */
   private cooldowns = new Map<string, { until: number; reason: string }>();
+  private pins = new Map<string, string>(); // session affinity hash -> key fingerprint
   private lastMtime = 0;
 
   constructor(
@@ -75,6 +76,34 @@ export class KeyPool {
       if (!this.coolUntil(key)) return key;
     }
     return null;
+  }
+
+  /** Session affinity: keep one key pinned per conversation so upstream
+   *  prompt caches (per key/account + prefix) stay warm across the turns of
+   *  that conversation, and concurrent conversations spread across the pool
+   *  instead of stacking on the first hot key. Re-pins to the first hot key
+   *  when the pinned one cools. */
+  nextFor(affinity: string): string | null {
+    if (affinity) {
+      const pinned = this.pins.get(affinity);
+      if (pinned) {
+        const key = this.keys.find((k) => this.fp(k) === pinned && !this.coolUntil(k));
+        if (key) return key;
+        this.pins.delete(affinity);
+      }
+    }
+    const key = this.next();
+    if (key && affinity) {
+      this.pins.set(affinity, this.fp(key));
+      if (this.pins.size > 256) {
+        for (const d of [...this.pins.keys()].slice(0, this.pins.size - 192)) this.pins.delete(d);
+      }
+    }
+    return key;
+  }
+
+  pinCount(): number {
+    return this.pins.size;
   }
 
   /** Reload the keys file if it changed (add/revoke keys without restart). */
@@ -150,9 +179,19 @@ export function startKeyrouter(opts: {
       } catch { /* malformed or streamed body — forward as-is */ }
     }
 
+    // stable per-conversation affinity: hash the request head (model + system
+    // + early messages — identical across the turns of one stage), so repeat
+    // turns ride the same upstream key and prompt caches stay warm
+    let affinity = "";
+    if (path.includes("/chat/completions") && body) {
+      const h = new Bun.CryptoHasher("sha1");
+      h.update(body.slice(0, 65536));
+      affinity = h.digest("hex").slice(0, 16);
+    }
+
     for (;;) {
       pool.reload(opts.keysFile);
-      const key = pool.next();
+      const key = affinity ? pool.nextFor(affinity) : pool.next();
       if (!key) {
         return new Response(
           JSON.stringify({ error: { message: "all clinepass keys are cooling — add a key or wait for a reset" } }),
@@ -200,7 +239,7 @@ export function startKeyrouter(opts: {
       }
       if (url.pathname === "/pool") {
         pool.reload(opts.keysFile);
-        return Response.json({ ...pool.stats(), detail: stats_detail(pool) });
+        return Response.json({ ...pool.stats(), pins: pool.pinCount(), detail: stats_detail(pool) });
       }
       return proxy(req);
     },
