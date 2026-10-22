@@ -212,7 +212,9 @@ during a reasoning-heavy turn is normal; *no new lines at all* for many
 minutes is a stalled stage), and `✔ FINAL` when the agent finishes a stage.
 Add `--think` to see the actual reasoning text, `--issue N` to pin an issue,
 run without `--follow` for a one-shot playback of the whole session. The
-stream follows the newest session for the repo and ends when you Ctrl-C.
+stream follows the newest session for the repo, streams a `·` heartbeat when
+idle (a long silent gap with no heartbeats at all is a dead connection, not a
+quiet lap), and auto-reconnects if the transport drops.
 
 ## Ops mode (daily driving)
 

@@ -11,6 +11,7 @@ Verbs (mirror the foreman CLI):
   logs  [--repo SLUG] [--tail N]          laps.log tail (the audit spine)
   session SLUG [--follow] [--think]       human-readable pi session view
                                           [--issue N]; --follow streams live
+                                          and auto-reconnects on drops
   onboard OWNER/NAME                      config + scenario templates + port pair
   config SLUG --json '{...}'              deep-merge a config patch (models, env, merge, timeouts)
   scenario SLUG runtime|holdout --file F  write + server-side validate a scenario
@@ -23,9 +24,12 @@ Verbs (mirror the foreman CLI):
 Exit code 0 = success, 1 = error (message on stderr).
 """
 import argparse
+import http.client
 import json
 import os
+import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -147,8 +151,8 @@ def cmd_logs(a):
         print(line)
 
 
-def cmd_session(a):
-    """Human-readable view of the agent's live pi session (newest for slug)."""
+def _session_stream(a):
+    """One streaming attempt; any byte-level transport error propagates."""
     url, key = _cfg()
     qs = []
     if a.follow:
@@ -163,11 +167,10 @@ def cmd_session(a):
         with urllib.request.urlopen(req, timeout=120 if a.follow else TIMEOUT_FAST) as r:
             if r.status != 200:
                 die(f"GET {path} -> HTTP {r.status}")
-            # stream through untouched so --follow feels like tail -f
             while True:
                 chunk = r.read(4096)
                 if not chunk:
-                    break
+                    return
                 sys.stdout.write(chunk.decode("utf-8", "replace"))
                 sys.stdout.flush()
     except urllib.error.HTTPError as e:
@@ -176,8 +179,29 @@ def cmd_session(a):
         except Exception:
             payload = {}
         die(f"GET {path} -> HTTP {e.code}: {payload.get('error', payload)}")
-    except urllib.error.URLError as e:
-        die(f"GET {path} failed: {e.reason} — factoryd down? (follow streams stop silently when the lap ends)")
+
+
+def cmd_session(a):
+    """Human-readable view of the agent's live pi session (newest for slug)."""
+    while True:
+        try:
+            _session_stream(a)
+            if not a.follow:
+                return
+            # a follow stream only "ends normally" if the server closed it
+            # (4h cap) — reconnect keeps the monitor useful
+            print("\n── stream ended by server, reconnecting in 5s (Ctrl-C to stop) ──", flush=True)
+            time.sleep(5)
+        except KeyboardInterrupt:
+            print("\nbye")
+            return
+        except (http.client.IncompleteRead, http.client.RemoteDisconnected,
+                http.client.BadStatusLine, ConnectionResetError, TimeoutError,
+                socket.timeout, urllib.error.URLError) as e:
+            if not a.follow:
+                die(f"session stream failed: {e}")
+            print("\n── stream dropped, reconnecting in 5s (Ctrl-C to stop) ──", flush=True)
+            time.sleep(5)
 
 
 def cmd_onboard(a):

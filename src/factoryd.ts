@@ -104,7 +104,7 @@ export function startFactoryd(opts: FactorydOpts) {
                     "\n== ── live ──\n"
                 )
               );
-              let lastBeat = Date.now();
+              let lastSent = Date.now();
               iv = setInterval(() => {
                 try {
                   const size = statSync(file).size;
@@ -114,11 +114,17 @@ export function startFactoryd(opts: FactorydOpts) {
                     const lines = buf.split("\n");
                     buf = lines.pop() ?? "";
                     const out = renderSessionText(lines.join("\n") + "\n", rOpts, st);
-                    if (out) controller.enqueue(enc.encode(out));
-                  } else if (Date.now() - lastBeat > 15_000) {
+                    if (out) {
+                      controller.enqueue(enc.encode(out));
+                      lastSent = Date.now();
+                    }
+                  } else if (Date.now() - lastSent > 5_000) {
+                    // heartbeat bytes reset Bun.serve's connection idleTimeout
+                    // (~10s default) — without these a quiet stream is killed
+                    // mid-watch and the client sees a malformed chunked EOF
                     controller.enqueue(enc.encode("·\n"));
+                    lastSent = Date.now();
                   }
-                  lastBeat = Date.now();
                 } catch {
                   // session file rotated between stages — keep polling
                 }
