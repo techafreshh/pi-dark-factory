@@ -59,14 +59,26 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
     // its clock, the completed turns already live in the session file (and
     // the worktree files persist) — re-open the SAME session with a continue
     // nudge instead of discarding minutes of tool work on a from-scratch rerun.
-    for (let resumes = 0; resumes < 2; resumes++) {
+    // Continue-gate: progress-based, not count-based — keep resuming while
+    // the session keeps growing (the human pattern: press continue as long
+    // as something is happening), bounded by 2x the stage budget so a
+    // pathologically stuck pair can't wedge a lap forever.
+    const continueDeadline = Date.now() + base.timeoutMs * 2;
+    let lastGrowth = { file: "", size: -1 };
+    for (let resumes = 0; resumes < 8; resumes++) {
       const o = res.outcome;
       const dead =
         (o.kind === "provider_error" && /terminated|timed out|no assistant message/i.test(o.error ?? "")) ||
         o.kind === "timeout";
       if (!dead || !a.sessionDir) break;
+      if (Date.now() >= continueDeadline) break;
       const newest = newestSessionFile(a.sessionDir);
       if (!newest) break;
+      // progress gate: a resume that writes nothing new cannot fix anything
+      let size = -1;
+      try { size = statSync(newest).size; } catch {}
+      if (newest === lastGrowth.file && size === lastGrowth.size) break;
+      lastGrowth = { file: newest, size };
       res = await callPiWithFallback(
         {
           ...base,
