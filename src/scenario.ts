@@ -212,6 +212,10 @@ export async function runScenario(
     worktree?: string;
     /** container mode: prefix for setup/start/teardown + authoritative cleanup */
     wrap?: { argvPrefix: string[]; cleanup: () => Promise<void> | void };
+    /** docker name prefix for this repo's stage containers — swept before the
+     *  scenario starts so a container leaked by a killed lap (which holds the
+     *  published scenario port) cannot pre-fail every attempt */
+    preClean?: string;
   }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
@@ -223,6 +227,10 @@ export async function runScenario(
 
   // a container-mode port check still makes sense: another lap or a stray
   // host process on the published port breaks deterministic verification
+  if (opts.preClean) {
+    // reclaim this repo's leaked stage containers before anything else
+    await sh(["bash", "-c", `docker ps -aq --filter name=${opts.preClean} | xargs -r docker rm -f`], { timeoutMs: 20000 });
+  }
   if (await portBusy(spec.port)) {
     // the port pair belongs to this repo's reservation, so a listener here
     // is a stray from an earlier attempt (a crashed server can escape the

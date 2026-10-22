@@ -87,6 +87,7 @@ export async function runVerify(
       readinessSeconds: cfg.timeouts.readiness_seconds,
       defaultProbeMs: cfg.timeouts.probe_ms,
       worktree: opts.worktree,
+      preClean: `pdf-${cfg.slug}-`,
       wrap: envBuild
         ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
         : undefined,

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSy
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
+import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { Ledger } from "./ledger";
@@ -51,6 +52,16 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
     const runnerPrefix = envBuild.containerized
       ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }
       : undefined;
+    if (runnerPrefix) {
+      // container mode: sweep this repo's leaked stage containers before
+      // spawning — a container from a killed lap holds the published
+      // scenario ports and would fail every spawn with "port is already
+      // allocated"
+      await sh(
+        ["bash", "-c", `docker ps -aq --filter name=pdf-${cfg.slug}- | xargs -r docker rm -f`],
+        { timeoutMs: 20000 }
+      ).catch(() => {});
+    }
     let res = await callPiWithFallback(
       { ...base, prompt: a.prompt, runnerPrefix },
       a.models
