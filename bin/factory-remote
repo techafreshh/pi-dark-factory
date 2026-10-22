@@ -9,6 +9,8 @@ Verbs (mirror the foreman CLI):
   health                                  open endpoint — connectivity check
   status [--repo SLUG] [--raw]            ledger, laps, stages, chain depth
   logs  [--repo SLUG] [--tail N]          laps.log tail (the audit spine)
+  session SLUG [--follow] [--think]       human-readable pi session view
+                                          [--issue N]; --follow streams live
   onboard OWNER/NAME                      config + scenario templates + port pair
   config SLUG --json '{...}'              deep-merge a config patch (models, env, merge, timeouts)
   scenario SLUG runtime|holdout --file F  write + server-side validate a scenario
@@ -145,6 +147,39 @@ def cmd_logs(a):
         print(line)
 
 
+def cmd_session(a):
+    """Human-readable view of the agent's live pi session (newest for slug)."""
+    url, key = _cfg()
+    qs = []
+    if a.follow:
+        qs.append("follow=1")
+    if a.think:
+        qs.append("think=1")
+    if a.issue:
+        qs.append(f"issue={a.issue}")
+    path = f"/session/{a.slug}" + ("?" + "&".join(qs) if qs else "")
+    req = urllib.request.Request(url + path, headers={"X-Api-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=120 if a.follow else TIMEOUT_FAST) as r:
+            if r.status != 200:
+                die(f"GET {path} -> HTTP {r.status}")
+            # stream through untouched so --follow feels like tail -f
+            while True:
+                chunk = r.read(4096)
+                if not chunk:
+                    break
+                sys.stdout.write(chunk.decode("utf-8", "replace"))
+                sys.stdout.flush()
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read() or b"{}")
+        except Exception:
+            payload = {}
+        die(f"GET {path} -> HTTP {e.code}: {payload.get('error', payload)}")
+    except urllib.error.URLError as e:
+        die(f"GET {path} failed: {e.reason} — factoryd down? (follow streams stop silently when the lap ends)")
+
+
 def cmd_onboard(a):
     code, body = _api("POST", "/repos", {"repo": a.repo}, timeout=TIMEOUT_FAST)
     if body.get("already"):
@@ -223,6 +258,9 @@ def main():
     sub.add_parser("doctor")
     sp = sub.add_parser("status"); sp.add_argument("--repo"); sp.add_argument("--raw", action="store_true")
     sp = sub.add_parser("logs"); sp.add_argument("--repo"); sp.add_argument("--tail", type=int, default=200)
+    sp = sub.add_parser("session"); sp.add_argument("slug"); sp.add_argument("--follow", "-f", action="store_true")
+    sp.add_argument("--think", action="store_true", help="include the model's reasoning text (capped per turn)")
+    sp.add_argument("--issue", type=int, help="pin a specific issue's session (default: newest for the repo)")
     sp = sub.add_parser("onboard"); sp.add_argument("repo", metavar="OWNER/NAME")
     sp = sub.add_parser("scenario"); sp.add_argument("slug"); sp.add_argument("kind", choices=["runtime", "holdout"]); sp.add_argument("--file", required=True)
     sp = sub.add_parser("backlog"); sp.add_argument("slug"); sp.add_argument("--prd-file", required=True); sp.add_argument("--max", type=int, default=40); sp.add_argument("--create", action="store_true")
@@ -234,8 +272,8 @@ def main():
     a = p.parse_args()
     table = {
         "health": cmd_health, "doctor": cmd_doctor, "status": cmd_status, "logs": cmd_logs,
-        "config": cmd_config, "onboard": cmd_onboard, "scenario": cmd_scenario, "backlog": cmd_backlog,
-        "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
+        "session": cmd_session, "config": cmd_config, "onboard": cmd_onboard, "scenario": cmd_scenario,
+        "backlog": cmd_backlog, "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
     }
     table[a.cmd](a)
 

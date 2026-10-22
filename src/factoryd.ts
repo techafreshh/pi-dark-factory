@@ -7,8 +7,17 @@
  * arbitrates against the systemd timer's tick, so a manual or remote tick
  * can never double-run a lap.
  */
+import { statSync } from "node:fs";
 import { opsBacklog, opsCleanup, opsLogs, opsOnboard, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { runTick } from "./tick";
+import {
+  newRenderState,
+  newestSessionFileForSlug,
+  readSessionTail,
+  readSlice,
+  renderSessionLine,
+  renderSessionText,
+} from "./sessionlog";
 
 const VERSION = "0.1.0";
 
@@ -56,6 +65,77 @@ export function startFactoryd(opts: FactorydOpts) {
               tail: Number(url.searchParams.get("tail") ?? 200),
             })
           );
+        }
+        if (req.method === "GET" && /^\/session\//.test(path)) {
+          const sslug = decodeURIComponent(/^\/session\/([^/]+)/.exec(path)![1]);
+          const issueParam = url.searchParams.get("issue");
+          const file = newestSessionFileForSlug(opts.stateDir, sslug, issueParam ? Number(issueParam) : undefined);
+          if (!file) return fail(404, `no session file for repo ${sslug} — has any lap run yet?`);
+          const rOpts = { think: url.searchParams.get("think") === "1", color: false };
+          const label = `== pi session — ${sslug}${issueParam ? ` issue ${issueParam}` : ""}\n== ${file}\n`;
+          if (url.searchParams.get("follow") !== "1") {
+            const body = label + "\n" + renderSessionText(readSessionTail(file, 8_000_000), rOpts, newRenderState());
+            return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+          }
+          // follow: render the recent 64KB as context, then stream appends as
+          // they land. Tool starts and tool results hit the session the
+          // moment they happen; every turn adds a thinking marker with its
+          // char count. Silence here means a stalled stage — go look.
+          const enc = new TextEncoder();
+          const st = newRenderState();
+          const ctx = readSessionTail(file, 65_536);
+          const startPos = Math.max(0, statSync(file).size - Buffer.byteLength(ctx));
+          let pos = startPos;
+          let buf = "";
+          let iv: ReturnType<typeof setInterval> | null = null;
+          let stopTimer: ReturnType<typeof setTimeout> | null = null;
+          const stop = () => {
+            if (iv) clearInterval(iv);
+            if (stopTimer) clearTimeout(stopTimer);
+            iv = stopTimer = null;
+          };
+          const stream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                enc.encode(
+                  label +
+                    "== recent context first, then following live — Ctrl-C to stop\n\n" +
+                    renderSessionText(ctx, rOpts, st) +
+                    "\n== ── live ──\n"
+                )
+              );
+              let lastBeat = Date.now();
+              iv = setInterval(() => {
+                try {
+                  const size = statSync(file).size;
+                  if (size > pos) {
+                    buf += readSlice(file, pos, Math.min(size, pos + 8_000_000));
+                    pos = size;
+                    const lines = buf.split("\n");
+                    buf = lines.pop() ?? "";
+                    const out = renderSessionText(lines.join("\n") + "\n", rOpts, st);
+                    if (out) controller.enqueue(enc.encode(out));
+                  } else if (Date.now() - lastBeat > 15_000) {
+                    controller.enqueue(enc.encode("·\n"));
+                  }
+                  lastBeat = Date.now();
+                } catch {
+                  // session file rotated between stages — keep polling
+                }
+              }, 2000);
+              // hard cap so an abandoned tab can't pin a stream forever
+              stopTimer = setTimeout(() => {
+                stop();
+                try { controller.close(); } catch {}
+              }, 4 * 3_600_000);
+            },
+            cancel() {
+              stop();
+            },
+          });
+          return new Response(stream, {
+            headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+          });
         }
         if (req.method === "POST" && path === "/repos") {
           return respond(await opsOnboard(opts.stateDir, String((await readJson(req)).repo ?? "")));

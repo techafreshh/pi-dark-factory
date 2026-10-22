@@ -203,6 +203,17 @@ It returns immediately (queued). Check `factory-remote status --repo <slug>`
 once after a few minutes, then report and wait for the user's next ask — no
 busy-polling. A full lap is tens of minutes.
 
+### Watching a run live
+
+`factory-remote session <slug> --follow` streams the agent's current pi
+session in human-readable form: one `▶ tool: command` line per tool call,
+its `⎸ result` beneath, a `⋯ thinking (N chars)` marker per turn (growing N
+during a reasoning-heavy turn is normal; *no new lines at all* for many
+minutes is a stalled stage), and `✔ FINAL` when the agent finishes a stage.
+Add `--think` to see the actual reasoning text, `--issue N` to pin an issue,
+run without `--follow` for a one-shot playback of the whole session. The
+stream follows the newest session for the repo and ends when you Ctrl-C.
+
 ## Ops mode (daily driving)
 
 | User says… | Do |
