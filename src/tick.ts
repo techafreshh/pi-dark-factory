@@ -645,6 +645,8 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
         tasks.push(async () => {
           let laps = 0;
           let issue = claimable[0];
+          let revivedInTick = false;
+          const REVIVE_COOLDOWN_MS = 10 * 60_000;
           while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
             laps++;
             try {
@@ -657,7 +659,20 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
             // fresh dependsCache per intake: issues closed by the merge just
             // completed unblock their dependent here
             const finished = issue.number;
-            const next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            let next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            if (next.length === 0 && !revivedInTick) {
+              // the chain just stalled (likely: this lap burned its attempts
+              // and blocked). A blocked row only ever revives on a tick — and
+              // with no timer armed that means sitting idle until a human
+              // arrives. Pace ONE in-tick revive instead: cool down, retry the
+              // revive (the daily cap and stagnation breaker still bind), and
+              // re-intake once. Bounded: at most one cooldown per repo/tick.
+              revivedInTick = true;
+              receipt(opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000}s before one in-tick revive attempt (fuses: daily cap, stagnation)`);
+              await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
+              autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
+              next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            }
             issue = next[0];
             if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
               receipt(opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
