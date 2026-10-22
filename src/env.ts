@@ -1,7 +1,23 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RepoConfig } from "./types";
+
+/**
+ * The one git identity every factory-written commit carries. Read from the
+ * factory user's ~/.gitconfig; without it, in-container agents guess one
+ * (observed: "pi-dark-factory <factory@pi.local>" on a delivered PR).
+ */
+export function readGitIdentity(home: string = homedir()): { name: string; email: string } | null {
+  try {
+    const raw = readFileSync(join(home, ".gitconfig"), "utf8");
+    const name = /^\s*name\s*=\s*(.+)$/m.exec(raw)?.[1]?.trim();
+    const email = /^\s*email\s*=\s*(.+)$/m.exec(raw)?.[1]?.trim();
+    return name && email ? { name, email } : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface StageEnv {
   /** docker prefix (may be empty in host mode) — callPi prepends it to the pi argv */
@@ -38,12 +54,22 @@ export function buildStageCmd(
     "-v", `${homedir()}/.pi:/root/.pi`,
     "-v", `${homedir()}/.pi/agent/bin/pi:/usr/local/bin/pi:ro`,
   ];
+  const identity = readGitIdentity();
   const envFlags = [
     "-e", "HOME=/root",
     // the repo is owned by a host uid the container doesn't know
     "-e", "GIT_CONFIG_COUNT=1",
     "-e", "GIT_CONFIG_KEY_0=safe.directory",
     "-e", "GIT_CONFIG_VALUE_0=*",
+    ...(identity
+      ? [
+          "-e", "GIT_CONFIG_COUNT=3",
+          "-e", "GIT_CONFIG_KEY_1=user.name",
+          "-e", `GIT_CONFIG_VALUE_1=${identity.name}`,
+          "-e", "GIT_CONFIG_KEY_2=user.email",
+          "-e", `GIT_CONFIG_VALUE_2=${identity.email}`,
+        ]
+      : []),
     ...Object.entries(opts.extraEnv ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
     ...(opts.passEnv ?? cfg.env.pass_env ?? [])
       .filter(Boolean)
