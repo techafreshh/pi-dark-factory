@@ -82,9 +82,12 @@ export function opsLogs(stateDir: string, opts: { slug?: string; tail?: number }
 
 // ── mutations ────────────────────────────────────────────────────────────────
 
-/** Reserve a free port pair for a new repo: config inventory + live bind test. */
+/** Reserve a free port pair for a new repo: config inventory + docker
+ *  publishes + factory services + live bind test, over a wide candidate
+ *  range. The OS ephemeral range (typically 32768-60999) is excluded —
+ *  outbound connections transiently grab ports there. */
 async function pickPorts(stateDir: string): Promise<number[]> {
-  const reserved = new Set<number>();
+  const reserved = new Set<number>([8077, 8099, 9000]); // factory's own services
   const reposDir = join(stateDir, "repos");
   if (existsSync(reposDir)) {
     for (const entry of readdirSync(reposDir)) {
@@ -95,12 +98,24 @@ async function pickPorts(stateDir: string): Promise<number[]> {
       } catch {}
     }
   }
-  const ports: number[] = [];
-  for (let p = 8100; ports.length < 2 && p < 8200; p += 2) {
-    if (reserved.has(p)) continue;
-    if (!(await portBusy(p))) ports.push(p);
+  // host ports already published by running containers (any scheme)
+  const dockerPorts = await sh(["bash", "-c", `docker ps --format '{{.Ports}}' 2>/dev/null || true`], { timeoutMs: 15000 });
+  const pubRe = /(?:[\d.]+|\[[0-9a-f:]+\]):(\d+)->/g;
+  for (const m of (dockerPorts.stdout ?? "").matchAll(pubRe)) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n)) reserved.add(n);
   }
-  if (ports.length < 2) throw new Error("no free port pair in 8100-8200");
+  const pools: [number, number][] = [[8100, 8999], [9001, 32767]];
+  const ports: number[] = [];
+  outer: for (const [lo, hi] of pools) {
+    for (let p = lo; p <= hi; p += 2) {
+      if (ports.length >= 2) break outer;
+      if (reserved.has(p) || reserved.has(p + 1)) continue;
+      if (await portBusy(p) || await portBusy(p + 1)) { reserved.add(p); reserved.add(p + 1); continue; }
+      ports.push(p, p + 1);
+    }
+  }
+  if (ports.length < 2) throw new Error("no free port pair in 8100-32767 (excl. ephemeral, docker publishes and reserved pairs)");
   return ports;
 }
 
