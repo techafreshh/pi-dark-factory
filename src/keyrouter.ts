@@ -128,6 +128,28 @@ export function startKeyrouter(opts: {
     }
     const inHeaders = hopByHop(req.headers);
 
+    // Default caller requests to low reasoning effort: the pass pool's
+    // reasoning models emit enormous hidden thinking regardless of the
+    // caller's own thinking controls (a trivial "say OK" carried a full
+    // reasoning paragraph; long toolized stage turns produced megabytes of
+    // reasoning before any content — multi-hour laps). An explicit
+    // reasoning_effort on the request still wins. Bodies only; JSON only.
+    if (
+      body &&
+      req.method === "POST" &&
+      path.includes("/chat/completions") &&
+      (req.headers.get("content-type") ?? "").includes("application/json")
+    ) {
+      try {
+        const parsed = JSON.parse(body) as { reasoning_effort?: unknown; [k: string]: unknown };
+        if (parsed && typeof parsed === "object" && parsed.reasoning_effort === undefined) {
+          parsed.reasoning_effort = "low";
+          body = JSON.stringify(parsed);
+          inHeaders.delete("content-length"); // fetch recomputes for the new body
+        }
+      } catch { /* malformed or streamed body — forward as-is */ }
+    }
+
     for (;;) {
       pool.reload(opts.keysFile);
       const key = pool.next();
