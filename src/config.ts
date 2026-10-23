@@ -12,6 +12,14 @@ const DEFAULTS = {
     service: "worker",
     image: "ubuntu:24.04",
     pass_env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"],
+    instabox: {
+      api_base: "https://api.instabox.sh",
+      api_key_env: "INSTABOX_API_KEY",
+      template: "basic",
+      snapshot: "",
+      repo_dir: "/data/repo",
+      bake: "",
+    },
   },
   pi: {
     binary: "pi",
@@ -74,7 +82,11 @@ export function loadRepoConfig(path: string): RepoConfig {
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
     pi: { ...DEFAULTS.pi, ...raw.pi },
-    env: { ...DEFAULTS.env, ...raw.env },
+    env: {
+      ...DEFAULTS.env,
+      ...raw.env,
+      instabox: { ...DEFAULTS.env.instabox, ...(raw.env?.instabox ?? {}) },
+    },
   };
   if (!cfg.models.default) cfg.models.default = {};
   // fail fast on a missing base model rather than at lap time

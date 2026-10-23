@@ -4,8 +4,10 @@ import type { GhApi, } from "../gh";
 import { waitChecks } from "../gh";
 import { buildStageCmd } from "../env";
 import { sh } from "../sh";
-import { changedPaths, issueDir, lockfileOnly } from "../gitws";
-import { loadScenario, resolveScenarioPort, runScenario, type ScenarioResult } from "../scenario";
+import { branchName } from "./intake";
+import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir } from "../gitws";
+import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
+import type { SshTarget } from "../machine";
 import type { RepoConfig } from "../types";
 
 export interface GateFailure {
@@ -58,15 +60,22 @@ export async function runVerify(
   opts: {
     stateDir: string;
     issue: number;
-    worktree: string;
+    /** host/compose mode: the local worktree the change lives in */
+    worktree?: string;
+    /** instabox machine mode: scenario setup/start run inside this machine */
+    machine?: { ssh(): Promise<SshTarget> };
     pr: number | null;
   }
 ): Promise<VerifyOutcome> {
   const failures: GateFailure[] = [];
   const scenarios: ScenarioResult[] = [];
 
-  // 1. changed gate (re-checked here so repairs are judged the same way)
-  const paths = await changedPaths(opts.worktree, cfg.default_branch);
+  // 1. changed gate (re-checked here so repairs are judged the same way).
+  // Machine mode judges the fetched pushed branch — same diff, another side
+  // of the tunnel.
+  const paths = opts.machine
+    ? await changedPathsFromRef(sourceDir(opts.stateDir, cfg.slug), cfg.default_branch, branchName(opts.issue))
+    : await changedPaths(opts.worktree!, cfg.default_branch);
   if (paths.length === 0) {
     failures.push({
       gate: "changed",
@@ -107,22 +116,37 @@ export async function runVerify(
     }
     const scratch = join(issueDir(opts.stateDir, cfg.slug, opts.issue), key === "runtime" ? "verify" : "holdout");
     mkdirSync(join(scratch, ".."), { recursive: true });
-    const envBuild =
-      cfg.env.mode === "compose"
-        ? buildStageCmd(cfg, opts.worktree, opts.stateDir, `pdf-${cfg.slug}-${opts.issue}-${key}`, {
-            extraEnv: { PORT: String(spec.port), WORKTREE: opts.worktree },
-            publishPorts: true, // scenario runs are the ONLY publishers of the port pair
-          })
-        : undefined;
-    const result = await runScenario(spec, scratch, {
-      readinessSeconds: cfg.timeouts.readiness_seconds,
-      defaultProbeMs: cfg.timeouts.probe_ms,
-      worktree: opts.worktree,
-      preClean: `pdf-${cfg.slug}-`,
-      wrap: envBuild
-        ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
-        : undefined,
-    });
+    let result: ScenarioResult;
+    if (opts.machine && cfg.env.mode === "instabox") {
+      // setup + start run inside the machine; probes stay host-side behind an
+      // ssh -L forward of the scenario port. $WORKTREE is the machine's copy
+      // of the product — the same contract compose mode forwards over.
+      // preClean's container analogue is the runner's own pidfile kill: a
+      // previous run's server group dies before the next start.
+      result = await runScenarioInMachine(spec, { ssh: () => opts.machine!.ssh(), repoDir: cfg.env.instabox.repo_dir }, {
+        readinessSeconds: cfg.timeouts.readiness_seconds,
+        defaultProbeMs: cfg.timeouts.probe_ms,
+        key: `${cfg.slug}-${opts.issue}-${key}`,
+        reservedPorts: cfg.scenario.ports,
+      });
+    } else {
+      const envBuild =
+        cfg.env.mode === "compose"
+          ? buildStageCmd(cfg, opts.worktree!, opts.stateDir, `pdf-${cfg.slug}-${opts.issue}-${key}`, {
+              extraEnv: { PORT: String(spec.port), WORKTREE: opts.worktree! },
+              publishPorts: true, // scenario runs are the ONLY publishers of the port pair
+            })
+          : undefined;
+      result = await runScenario(spec, scratch, {
+        readinessSeconds: cfg.timeouts.readiness_seconds,
+        defaultProbeMs: cfg.timeouts.probe_ms,
+        worktree: opts.worktree,
+        preClean: `pdf-${cfg.slug}-`,
+        wrap: envBuild
+          ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
+          : undefined,
+      });
+    }
     scenarios.push(result);
     if (!result.pass) {
       failures.push({ gate: key, detail: summarizeScenario(result), repair: repairForScenario(result) });

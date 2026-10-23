@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, removeWorktree } from "./gitws";
+import { InstaBox, sanitizeMachinePart } from "./instabox";
+import { escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
 import { portBusy } from "./scenario";
 import { loadScenario } from "./scenario";
@@ -184,6 +186,90 @@ export async function opsOnboard(
       "foreman backlog (or POST /repos/<slug>/backlog) to slice the PRD",
       "foreman tick / POST /repos/<slug>/tick for the first lap (spends tokens)",
     ],
+  };
+}
+
+/**
+ * Bake the repo's golden instabox snapshot: boot a machine from the template,
+ * clone the repo, run the repo's `bake` shell (install deps...), snapshot it
+ * as `<slug>-base`, and record the name in the repo config. Idempotent — the
+ * old bake machine is rebuilt and the snapshot overwritten.
+ */
+export async function opsBake(stateDir: string, slug: string): Promise<{
+  machine: string;
+  snapshot: string;
+  snapshotId: string;
+  rootSizeBytes?: number;
+  dataSizeBytes?: number;
+  config_updated: boolean;
+}> {
+  const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  const ibx = cfg.env.instabox;
+  const ib = InstaBox.fromEnv(ibx);
+  const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
+
+  receipt(stateDir, `bake ${slug}: booting machine ${name} from template ${ibx.template}`);
+  const existing = await ib.machineByName(name);
+  if (existing) await ib.deleteMachine(name);
+  const op = await ib.createMachine({ name, template: ibx.template, metadata: { factory: "1", bake: cfg.slug } });
+  await ib.waitOperation(op.id);
+  const machine = await ib.machineByName(name);
+  if (!machine) throw new Error(`bake machine ${name} vanished after creation`);
+
+  const envExports = (cfg.env.pass_env ?? [])
+    .filter((k) => process.env[k] !== undefined && process.env[k] !== "")
+    .map((k) => `export ${k}=${escapeSh(process.env[k]!)}`)
+    .join("\n");
+  const clone = [
+    `set -eu`,
+    envExports,
+    `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
+    `if [ ! -d ${escapeSh(ibx.repo_dir)}/.git ]; then git clone ${escapeSh(cfg.origin_url ?? `https://github.com/${cfg.repo}.git`)} ${escapeSh(ibx.repo_dir)}; fi`,
+    `cd ${escapeSh(ibx.repo_dir)}`,
+    `git fetch origin --prune >/dev/null 2>&1 || true`,
+    `git reset --hard "origin/${cfg.default_branch}" >/dev/null`,
+    `echo CLONE_OK`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const tok = await ib.createSshToken(machine.id, { name: "bake", ttlSeconds: 8 * 3600 });
+  const conn = { host: tok.host, port: tok.port, user: tok.token };
+  const cloned = await machineBash(conn, clone, { timeoutMs: 15 * 60_000 });
+  if (cloned.code !== 0 || !cloned.stdout.includes("CLONE_OK")) {
+    throw new Error(`bake clone failed (exit ${cloned.code}): ${(cloned.stderr || cloned.stdout).trim().slice(0, 300)}`);
+  }
+  if (ibx.bake) {
+    receipt(stateDir, `bake ${slug}: running bake script (${ibx.bake.length} chars)`);
+    const bakeScript = `set -eu\ncd ${escapeSh(ibx.repo_dir)}\nprintf %s ${Buffer.from(ibx.bake, "utf8").toString("base64")} | base64 -d | bash\n`;
+    const res = await machineBash(conn, bakeScript, { timeoutMs: 120 * 60_000 });
+    if (res.code !== 0) {
+      throw new Error(`bake script failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(0, 500)}`);
+    }
+  }
+
+  const snapName = ibx.snapshot || `${sanitizeMachinePart(slug)}-base`;
+  const snap = await ib.saveSnapshot(machine.id, snapName, {
+    description: `pi-dark-factory golden environment for ${cfg.repo}`,
+  });
+  await ib.deleteMachine(name);
+
+  let config_updated = false;
+  const cfgPath = join(repoCfgDir(stateDir, slug), "config.json");
+  if (!ibx.snapshot) {
+    const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
+    raw.env = raw.env ?? {};
+    raw.env.instabox = { ...(raw.env.instabox ?? {}), snapshot: snapName };
+    writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n");
+    config_updated = true;
+  }
+  receipt(stateDir, `bake ${slug}: snapshot ${snapName} ready (${Math.round((snap.rootSizeBytes ?? 0) / 2 ** 30)} GiB root)`);
+  return {
+    machine: name,
+    snapshot: snapName,
+    snapshotId: snap.id,
+    rootSizeBytes: snap.rootSizeBytes,
+    dataSizeBytes: snap.dataSizeBytes,
+    config_updated,
   };
 }
 
@@ -425,7 +511,44 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
       } catch {}
     }
   } catch {}
+
+  // instabox janitor: pdf-* machines are per-lap disposables; none of them
+  // should outlive its lap, so cleanup is allowed to reap every one it finds
+  const ibCfg = firstInstaboxConfig(stateDir);
+  if (ibCfg) {
+    try {
+      const ib = InstaBox.fromEnv(ibCfg);
+      const machines = await ib.listMachines();
+      const ours = machines.filter((m) => typeof m.name === "string" && m.name.startsWith("pdf-"));
+      for (const m of ours) {
+        try {
+          await ib.deleteMachine(m.id);
+          log.push(`deleted instabox machine ${m.name} (${m.state ?? "unknown"})`);
+        } catch (e: any) {
+          log.push(`could not delete ${m.name}: ${e.message?.slice(0, 120)}`);
+        }
+      }
+      if (ours.length === 0) log.push("no leftover instabox machines");
+    } catch (e: any) {
+      log.push(`instabox cleanup skipped: ${e.message?.slice(0, 150)}`);
+    }
+  }
   log.push("cleanup pass complete");
   receipt(stateDir, "cleanup pass complete");
   return log;
+}
+
+/** The first instabox-mode repo config found — machines are per-account, so one key cleans all. */
+function firstInstaboxConfig(stateDir: string): RepoConfig["env"]["instabox"] | null {
+  const reposDir = join(stateDir, "repos");
+  if (!existsSync(reposDir)) return null;
+  for (const slug of readdirSync(reposDir)) {
+    const cfgPath = join(reposDir, slug, "config.json");
+    if (!existsSync(cfgPath)) continue;
+    try {
+      const cfg = loadRepoConfig(cfgPath);
+      if (cfg.env.mode === "instabox") return cfg.env.instabox;
+    } catch {}
+  }
+  return null;
 }

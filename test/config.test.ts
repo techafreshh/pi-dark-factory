@@ -15,6 +15,21 @@ const cfg = (models: any): RepoConfig => ({
   timeouts: { stage_minutes: 30, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
   scenario: { ports: [] },
   skip_labels: [],
+  env: {
+    mode: "host",
+    compose_file: "docker-compose.yml",
+    service: "worker",
+    image: "ubuntu:24.04",
+    pass_env: [],
+    instabox: {
+      api_base: "https://api.instabox.sh",
+      api_key_env: "INSTABOX_API_KEY",
+      template: "basic",
+      snapshot: "",
+      repo_dir: "/data/repo",
+      bake: "",
+    },
+  },
   pi: {
     binary: "pi",
     tools: ["read"],

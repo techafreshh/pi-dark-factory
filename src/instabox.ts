@@ -1,144 +1,274 @@
 /**
- * InstaBox REST client — machine lifecycle and command execution for
- * env.mode "instabox". Auth: INSTABOX_API_KEY (ibk_...) via X-API-Key.
+ * InstaBox REST client (https://instabox.sh — Firecracker microVMs for coding
+ * agents). Zero dependencies: plain fetch against /v1 on api.instabox.sh,
+ * X-API-Key auth, Idempotency-Key on the writes that need it.
  *
- * Two transports matter for the factory:
- *  - REST exec: `bash -lc cmd` in the machine, full output at exit, hard
- *    10-minute cap — used for box control (clone, gates, verify, suspend).
- *  - SSH bridge: `instabox ssh <machine> -- <cmd>` streams stdin/stdout and
- *    has no such cap — what pi stage runs ride (see env.ts).
- *
- * Machines are per-lap by convention: the lap's caller derives a stable
- * name (pdf-<slug>-i<issue>) and ensureMachine reuses whatever exists
- * under that metadata name — stages of one lap share one box.
+ * Only the surface the factory needs: machine ensure/start/resume/delete,
+ * ssh-tokens (the transport for every stage), snapshots (golden per-repo
+ * environments), listing (the cleanup janitor) and usage reporting.
  */
-
-const DEFAULT_BASE = "https://api.instabox.sh";
-
-export interface InstaboxClient {
-  baseUrl: string;
-  apiKey: string;
+export interface InstaMachine {
+  id: string;
+  name: string;
+  state: string; // creating | booting | running | pausing | paused | stopping | stopped | deleting
+  desiredState?: string;
+  operationId?: string | null;
+  metadata?: Record<string, string>;
+  guestUser?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
-export class InstaboxError extends Error {
-  constructor(message: string, readonly status: number, readonly body?: string) {
-    super(message);
+export interface InstaOperation {
+  id: string;
+  machineId: string;
+  type: string;
+  state: string; // pending | running? | succeeded | failed (+ progress like "booting")
+  error?: string | null;
+  machine?: InstaMachine;
+}
+
+export interface InstaSshToken {
+  id: string;
+  host: string;
+  port: number;
+  token: string;
+  command?: string;
+  expiresAt?: string;
+}
+
+export interface InstaSnapshot {
+  id: string;
+  name: string;
+  status: string; // saving | ready | failed
+  sourceMachineId?: string;
+  rootSizeBytes?: number;
+  dataSizeBytes?: number;
+}
+
+export interface InstaUsage {
+  machines: number;
+  snapshots: number;
+  storedBytes: number;
+  limits?: { maxMachines?: number; maxSnapshots?: number; maxStoredGiB?: number };
+}
+
+export class InstaBoxError extends Error {
+  constructor(
+    public status: number,
+    public path: string,
+    public body: string
+  ) {
+    super(`instabox ${status} on ${path}: ${(body || "(no body)").slice(0, 300)}`);
   }
 }
 
-export function client(apiKey: string, baseUrl = process.env.INSTABOX_API_URL ?? DEFAULT_BASE): InstaboxClient {
-  if (!apiKey) throw new InstaboxError("INSTABOX_API_KEY is not set — provision instabox mode first", 0);
-  return { baseUrl: baseUrl.replace(/\/$/, ""), apiKey };
+export function machineNameFor(slug: string, issue: number): string {
+  return `pdf-${sanitizeMachinePart(slug)}-i${issue}`;
 }
 
-async function call<T = any>(
-  ib: InstaboxClient,
-  method: string,
-  path: string,
-  opts: { body?: unknown; idempotent?: boolean; timeoutMs?: number } = {}
-): Promise<T> {
-  const headers: Record<string, string> = {
-    "X-API-Key": ib.apiKey,
-    "content-type": "application/json",
-  };
-  if (opts.idempotent) headers["Idempotency-Key"] = crypto.randomUUID();
-  const res = await fetch(ib.baseUrl + path, {
-    method,
-    headers,
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
-  });
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new InstaboxError(`instabox ${method} ${path} -> ${res.status}: ${text.slice(0, 300)}`, res.status, text);
+/** Machine/snapshot-safe name part: [a-z0-9-], reasonably short. */
+export function sanitizeMachinePart(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "repo";
+}
+
+export interface CreateMachineInput {
+  name: string;
+  template?: string;
+  snapshotId?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface InstaBoxOptions {
+  /** poll cadence + deadlines for waits */
+  pollMs?: number;
+  fetchImpl?: typeof fetch;
+}
+
+const DEFAULT_POLL_MS = 2000;
+
+export class InstaBox {
+  private fetchFn: typeof fetch;
+
+  constructor(
+    public base: string,
+    public apiKey: string,
+    private opts: InstaBoxOptions = {}
+  ) {
+    this.base = base.replace(/\/+$/, "");
+    this.fetchFn = opts.fetchImpl ?? fetch;
   }
-  return (text ? JSON.parse(text) : {}) as T;
-}
 
-/** Stable per-lap machine name — matches how env.ts derives it from the
- *  stage uniqueName (`pdf-<slug>-<issue>-<stage>-<runTag>` minus the last
- *  two segments) so every stage of one lap lands in the same box. */
-export function machineName(slug: string, issue: number): string {
-  return `pdf-${slug}-${issue}`;
-}
-
-/** Find our machine for this lap, if one exists (list by metadata name). */
-export async function listByName(ib: InstaboxClient, name: string): Promise<{ id: string; state: string } | null> {
-  const res = await call<{ machines?: { id: string; state?: string; metadata?: Record<string, string> }[] }>(
-    ib, "GET", `/v1/machines?metadata=name:${encodeURIComponent(name)}`, { timeoutMs: 30_000 }
-  );
-  const hit = (res.machines ?? [])[0];
-  return hit ? { id: hit.id, state: hit.state ?? "?" } : null;
-}
-
-/** Ensure a running machine for the lap: reuse, or create from snapshot/template. */
-export async function ensureMachine(
-  ib: InstaboxClient,
-  name: string,
-  opts: { snapshot?: string; template?: string },
-  waitMs = 120_000
-): Promise<{ id: string; created: boolean }> {
-  const existing = await listByName(ib, name).catch(() => null);
-  if (existing) {
-    if (existing.state === "suspended" || existing.state === "stopped") {
-      await call(ib, "POST", `/v1/machines/${existing.id}/resume`, { idempotent: true, timeoutMs: 60_000 });
+  static fromEnv(cfg: { api_base: string; api_key_env: string }): InstaBox {
+    const key = process.env[cfg.api_key_env];
+    if (!key) {
+      throw new Error(`instabox mode needs the API key in $${cfg.api_key_env} (set it in the service unit or your shell)`);
     }
-    return { id: existing.id, created: false };
+    return new InstaBox(cfg.api_base, key);
   }
-  const body: Record<string, unknown> = { metadata: { name } };
-  if (opts.snapshot) body.snapshotId = opts.snapshot;
-  else body.template = opts.template ?? "universal";
-  const created = await call<{ id?: string; machineId?: string }>(
-    ib, "POST", "/v1/machines",
-    { body, idempotent: true, timeoutMs: 60_000 }
-  );
-  const id = created.id ?? created.machineId;
-  if (!id) throw new InstaboxError("instabox create returned no machine id", 200);
-  // wait for Running (states per docs; tolerate case)
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 3_000));
-    const cur = await call<{ state?: string; id?: string; machineId?: string }>(
-      ib, "GET", `/v1/machines/${id}`, { timeoutMs: 30_000 }
-    ).catch(() => null);
-    const state = (cur?.state ?? "").toLowerCase();
-    if (state === "running") return { id, created: true };
-    if (state === "failed" || state === "error") throw new InstaboxError(`machine ${name} failed to start`, 200);
-    if (Date.now() >= deadline) throw new InstaboxError(`machine ${name} did not reach Running in ${Math.round(waitMs / 1000)}s`, 408);
+
+  private async call<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    opts: { idempotent?: boolean; tolerate404?: boolean } = {}
+  ): Promise<T> {
+    const headers: Record<string, string> = { "X-API-Key": this.apiKey };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (opts.idempotent) headers["Idempotency-Key"] = crypto.randomUUID();
+    const res = await this.fetchFn(`${this.base}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text().catch(() => "");
+    if (res.status === 404 && opts.tolerate404) return null as T;
+    if (!res.ok) throw new InstaBoxError(res.status, path, text);
+    return (text ? JSON.parse(text) : null) as T;
   }
-}
 
-export interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
+  async machineByName(name: string): Promise<InstaMachine | null> {
+    return this.call<InstaMachine | null>("GET", `/v1/machines/${encodeURIComponent(name)}`, undefined, {
+      tolerate404: true,
+    });
+  }
 
-/** Run `bash -lc cmd` in the machine; hard 10-minute upstream cap. */
-export async function exec(
-  ib: InstaboxClient,
-  id: string,
-  cmd: string,
-  opts: { cwd?: string; envs?: Record<string, string>; timeoutSeconds?: number } = {}
-): Promise<ExecResult> {
-  const res = await call<ExecResult>(
-    ib, "POST", `/v1/machines/${id}/exec`,
-    {
-      body: { cmd, cwd: opts.cwd, envs: opts.envs, timeoutSeconds: opts.timeoutSeconds ?? 540 },
-      timeoutMs: (opts.timeoutSeconds ?? 540) * 1000 + 30_000,
+  async createMachine(input: CreateMachineInput): Promise<InstaOperation> {
+    // 202 Accepted → an operation; waitOperation tracks it to done
+    return this.call<InstaOperation>("POST", "/v1/machines", input, { idempotent: true });
+  }
+
+  private async lifecycle(id: string, action: "start" | "resume"): Promise<void> {
+    const op = await this.call<InstaOperation>(`POST`, `/v1/machines/${encodeURIComponent(id)}/${action}`);
+    await this.waitOperation(op.id);
+  }
+
+  async resume(id: string): Promise<void> {
+    await this.lifecycle(id, "resume");
+  }
+
+  async start(id: string): Promise<void> {
+    await this.lifecycle(id, "start");
+  }
+
+  async deleteMachine(id: string): Promise<void> {
+    try {
+      const op = await this.call<InstaOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`);
+      if (op?.id) await this.waitOperation(op.id);
+    } catch (e: any) {
+      if (!(e instanceof InstaBoxError && (e.status === 404 || e.status === 409))) throw e;
+      // already gone, or mid-operation — nothing a janitor can do about it now
     }
-  );
-  return {
-    stdout: String(res.stdout ?? ""),
-    stderr: String(res.stderr ?? ""),
-    exitCode: typeof res.exitCode === "number" ? res.exitCode : 1,
-  };
-}
+  }
 
-export async function suspend(ib: InstaboxClient, id: string): Promise<void> {
-  await call(ib, "POST", `/v1/machines/${id}/suspend`, { idempotent: true, timeoutMs: 60_000 }).catch(() => {});
-}
+  async saveSnapshot(machineId: string, name: string, opts: { description?: string; rootOnly?: boolean } = {}): Promise<InstaSnapshot> {
+    const snap = await this.call<InstaSnapshot>("POST", `/v1/machines/${encodeURIComponent(machineId)}/snapshots`, {
+      name,
+      description: opts.description,
+      rootOnly: opts.rootOnly,
+    });
+    return this.waitSnapshot(snap.id);
+  }
 
-export async function del(ib: InstaboxClient, id: string): Promise<void> {
-  await call(ib, "DELETE", `/v1/machines/${id}`, { idempotent: true, timeoutMs: 60_000 }).catch(() => {});
+  async deleteSnapshot(id: string): Promise<void> {
+    await this.call<void>("DELETE", `/v1/snapshots/${encodeURIComponent(id)}`).catch((e) => {
+      if (!(e instanceof InstaBoxError && e.status === 404)) throw e;
+    });
+  }
+
+  async listSnapshots(): Promise<InstaSnapshot[]> {
+    const res = await this.call<{ snapshots: InstaSnapshot[] }>("GET", "/v1/snapshots");
+    return res?.snapshots ?? [];
+  }
+
+  async listMachines(): Promise<InstaMachine[]> {
+    const out: InstaMachine[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 50; i++) {
+      const res: { machines: InstaMachine[]; nextCursor: string | null } | null = await this.call<{
+        machines: InstaMachine[];
+        nextCursor: string | null;
+      }>("GET", `/v1/machines${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+      out.push(...(res?.machines ?? []));
+      cursor = res?.nextCursor ?? null;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  async createSshToken(machineId: string, opts: { name?: string; ttlSeconds?: number } = {}): Promise<InstaSshToken> {
+    return this.call<InstaSshToken>(
+      "POST",
+      `/v1/machines/${encodeURIComponent(machineId)}/ssh-tokens`,
+      { name: opts.name ?? "factory", ttlSeconds: opts.ttlSeconds ?? 7200 }
+    );
+  }
+
+  async usage(): Promise<InstaUsage> {
+    return this.call<InstaUsage>("GET", "/v1/usage");
+  }
+
+  private deadline(ms: number): number {
+    return Date.now() + ms;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise((r) => setTimeout(r, ms));
+  }
+
+  /** Poll an operation until succeeded; throws with its error on failed. */
+  async waitOperation(opId: string, timeoutMs = 10 * 60_000): Promise<InstaOperation> {
+    const until = this.deadline(timeoutMs);
+    for (;;) {
+      const op = await this.call<InstaOperation>("GET", `/v1/operations/${encodeURIComponent(opId)}`);
+      const s = (op.state ?? "").toLowerCase();
+      if (s === "succeeded" || s === "finished" || s === "completed") return op;
+      if (s === "failed" || s === "errored") {
+        throw new InstaBoxError(500, `/v1/operations/${opId}`, `operation ${op.type} failed: ${op.error ?? "unknown"}`);
+      }
+      if (Date.now() >= until) throw new Error(`instabox operation ${op.type ?? opId} timed out after ${Math.round(timeoutMs / 1000)}s`);
+      await this.sleep(this.opts.pollMs ?? DEFAULT_POLL_MS);
+    }
+  }
+
+  private async waitSnapshot(id: string, timeoutMs = 30 * 60_000): Promise<InstaSnapshot> {
+    const until = this.deadline(timeoutMs);
+    for (;;) {
+      const snap = await this.call<InstaSnapshot>("GET", `/v1/snapshots/${encodeURIComponent(id)}`);
+      const s = (snap.status ?? "").toLowerCase();
+      if (s === "ready") return snap;
+      if (s === "failed" || s === "errored") throw new Error(`instabox snapshot ${snap.name} failed`);
+      if (Date.now() >= until) throw new Error(`instabox snapshot ${snap.name} not ready after ${Math.round(timeoutMs / 60000)}m`);
+      await this.sleep(this.opts.pollMs ?? DEFAULT_POLL_MS);
+    }
+  }
+
+  /**
+   * Machine exists (ours), is running, and stayed ours: get-or-create, then
+   * drive paused/stopped states to running. One operation at a time per
+   * machine — every lifecycle step waits for its operation.
+   */
+  async ensureRunning(
+    input: CreateMachineInput,
+    opts: { timeoutMs?: number; adoptExisting?: boolean } = {}
+  ): Promise<InstaMachine> {
+    const until = this.deadline(opts.timeoutMs ?? 10 * 60_000);
+    let m = await this.machineByName(input.name);
+    if (!m) {
+      const op = await this.createMachine(input);
+      m = (await this.waitOperation(op.id, opts.timeoutMs ?? 10 * 60_000)).machine ?? (await this.machineByName(input.name));
+      if (!m) throw new Error(`instabox machine ${input.name} vanished right after creation`);
+    }
+    for (;;) {
+      const state = (m.state ?? "").toLowerCase();
+      if (state === "running") return m;
+      if (state === "paused") await this.resume(m.id);
+      else if (state === "stopped") await this.start(m.id);
+      // creating/booting/pausing/stopping/deleting: just wait for the machine
+      if (Date.now() >= until) throw new Error(`instabox machine ${input.name} never reached running (state: ${m.state})`);
+      await this.sleep(this.opts.pollMs ?? DEFAULT_POLL_MS);
+      m = await this.machineByName(input.name);
+      if (!m) throw new Error(`instabox machine ${input.name} disappeared while waiting for it to run`);
+    }
+  }
 }

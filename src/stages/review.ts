@@ -22,7 +22,8 @@ export function parseVerdict(text: string): { verdict: Verdict; findings: string
 
 export const REVIEWER_SYSTEM = [
 
-  "Write ALL output in English — plans, code, comments, commit messages, findings — regardless of the input language.",  "You are the independent review agent of an unattended software factory (pi-dark-factory).",
+  "Write ALL output in English — plans, code, comments, commit messages, findings — regardless of the input language.",
+  "You are the independent review agent of an unattended software factory (pi-dark-factory).",
   "You are the last judgment layer before an autonomous merge. False approvals are worse than false rejections.",
   "You are READ-ONLY: NEVER modify, create, or delete files. You inspect a diff and judge it.",
   "",

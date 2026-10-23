@@ -1,10 +1,12 @@
 import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { loadRepoConfig, resolveModels } from "./config";
-import { buildStageCmd, readGitIdentity } from "./env";
+import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
-import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir as sourceDirOf, worktreeDir, addWorktree, commitsAhead, changedPaths, ensureSource, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { machineNameFor } from "./instabox";
+import { openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
@@ -14,10 +16,7 @@ import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
-import { evalExpects, loadScenario, resolveScenarioPort, type ProbeResult, type ScenarioResult } from "./scenario";
 import { buildRuntimeContext } from "./runtime-context";
-import * as ibx from "./instabox";
-import { waitChecks } from "./gh";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 
 export interface CallStageArgs {
@@ -29,8 +28,6 @@ export interface CallStageArgs {
   sessionDir: string;
   /** unique docker --name / receipt key for this stage invocation */
   name: string;
-  /** instabox mode: the lap's machine name (env.ts bridges via SSH to it) */
-  machine?: string;
   /** "where am I" brief — written to the cwd and prepended to the prompt */
   runtimeContext?: string;
 }
@@ -59,12 +56,10 @@ const QUIET_KILL_MS = 15 * 60_000;
 export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
   return async (stage, a) => {
     // container mode: pi runs inside the product's worker environment
-    const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name, { machine: a.machine });
+    const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name);
     const base = {
       binary: cfg.pi.binary,
-      // instabox: the spawn's LOCAL cwd is only process context (the box
-      // clone is remote) — any existing host dir works; stateDir always does
-      cwd: cfg.env?.mode === "instabox" ? stateDir : a.cwd,
+      cwd: a.cwd,
       tools: a.tools,
       sessionDir: a.sessionDir,
       systemPrompt: a.systemPrompt,
@@ -73,7 +68,9 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       quietMs: QUIET_KILL_MS,
     };
     // "where am I" brief: prepended to the prompt (zero tool calls to see
-    // it) and — where the working tree is local — written to disk beside it
+    // it) and — where the working tree is local — written to disk beside it.
+    // Machine-mode stages (implement/review in-box) get it prompt-only; the
+    // box clone holds no host-side file.
     if (a.runtimeContext) {
       if (cfg.env?.mode !== "instabox") {
         try {
@@ -278,6 +275,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   let pr: number | null = priorRow?.pr ?? null;
   let findings: string | null = null;
   let lastError = "attempts exhausted";
+  // instabox machine mode: one machine per issue's lap, created lazily at the
+  // first implement attempt and kept across repairs; destroyed when the lap
+  // books out (a crashed lap leaves it parked for reclaim + the janitor)
+  let machine: LapMachine | null = null;
 
   const recordStage = (
     stage: StageName,
@@ -297,22 +298,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   let outcome: string | null = null;
 
-  // instabox lap state: ONE ephemeral machine per lap (stable name), created
-  // and initialized below, reused by every stage via the SSH bridge (env.ts),
-  // suspended at lap end. The host keeps bookkeeping only (ledger, gh,
-  // receipts); every step that needs the code (gates, push, scenarios)
-  // executes inside the box over the machine exec API.
-  const ibMode = cfg.env?.mode === "instabox";
-  const ibName = ibx.machineName(cfg.slug, n);
-  const ibDir = cfg.env?.instabox?.box_dir ?? `/data/workspace/${cfg.slug}`;
-  const ibClient = ibMode ? ibx.client(process.env.INSTABOX_API_KEY ?? "") : null;
-  let ibId: string | null = null;
-  let ibInited = false;
-  const boxRun = async (cmd: string, opts?: { timeoutSeconds?: number; envs?: Record<string, string> }) => {
-    if (!ibClient || !ibId) throw new Error("instabox machine not initialized");
-    return ibx.exec(ibClient, ibId, cmd, { cwd: ibDir, timeoutSeconds: opts?.timeoutSeconds ?? 120, envs: opts?.envs });
-  };
-  const stageContext = (stage: StageName, attempt: number, cwd: string): string =>
+  // "where am I" brief builder — the per-stage runtime context every agent
+  // gets (prompt preamble; host/compose modes also write it to disk beside
+  // the work). The instabox branch keys the "where" on the stage: the plan
+  // runs host-side even in machine mode, implement/review run in the box.
+  const contextFor = (stage: StageName, attempt: number, cwd: string): string =>
     buildRuntimeContext(cfg, {
       repo: cfg.repo,
       slug: cfg.slug,
@@ -323,152 +313,25 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       attemptsMax: cfg.attempts,
       branch: branchName(n),
       base: cfg.default_branch,
-      mode: cfg.env?.mode ?? "host",
-      where: ibMode
-        ? `your own ephemeral InstaBox cloud machine "${ibName}" — its own kernel and root; /data persists for this lap; the clone of ${cfg.repo} lives at ${ibDir}; the model API and gh are preinstalled and signed in`
-        : cfg.env?.mode === "compose"
-          ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
-          : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
+      mode: cfg.env.mode,
+      where:
+        cfg.env.mode === "instabox"
+          ? stage === "plan"
+            ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
+            : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
+          : cfg.env.mode === "compose"
+            ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
+            : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
       cwd,
-      toolchain: ibMode
-        ? `whatever the machine snapshot ships — node, git, gh (signed in), curl; network egress allowed`
-        : cfg.env?.mode === "compose"
-          ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
-          : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
+      toolchain:
+        cfg.env.mode === "instabox"
+          ? `whatever the machine snapshot ships — node, git, gh (signed in), curl; network egress allowed`
+          : cfg.env.mode === "compose"
+            ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
+            : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
     });
 
-  if (ibMode) {
-    const ib = ibClient!;
-    receipt(stateDir, `instabox: ensuring machine ${ibName} for this lap`);
-    const r = await ibx.ensureMachine(ib, ibName, {
-      snapshot: cfg.env?.instabox?.snapshot,
-      template: cfg.env?.instabox?.template ?? "universal",
-    });
-    ibId = r.id;
-    receipt(stateDir, `instabox machine ${ibName} ${r.created ? "created" : "reused"} (${ibId})`);
-    const identity = readGitIdentity();
-    const idCfg = identity
-      ? `git config user.name "${identity.name}" && git config user.email "${identity.email}" && `
-      : "";
-    const init = await ibx.exec(
-      ib,
-      ibId,
-      `mkdir -p ${ibDir} && ` +
-        `(git -C ${ibDir} fetch origin 2>/dev/null || git clone -q https://github.com/${cfg.repo}.git ${ibDir}) && ` +
-        `git -C ${ibDir} fetch -q origin && ` +
-        `git -C ${ibDir} checkout -q -B ${branchName(n)} origin/${cfg.default_branch} && ` +
-        `${idCfg}true`,
-      { timeoutSeconds: 300 }
-    );
-    if (init.exitCode !== 0) {
-      throw new Error(`instabox init failed (exit ${init.exitCode}): ${init.stderr.slice(0, 300) || init.stdout.slice(0, 300)}`);
-    }
-    ibInited = true;
-    receipt(stateDir, `instabox machine initialized: ${ibDir} on branch ${branchName(n)} (base origin/${cfg.default_branch})`);
-  }
-
-  /** instabox verify: the same gates as runVerify, executed inside the box.
-   *  CI via GitHub; scenarios run the service in-box on 127.0.0.1 and probe
-   *  via exec, keeping evalExpects and the repair evidence host-side. */
-  const verifyInBox = async (
-    pr: number | null
-  ): Promise<{ pass: boolean; failures: { gate: string; detail: string; repair?: string }[]; scenarios: ScenarioResult[] }> => {
-    const failures: { gate: string; detail: string; repair?: string }[] = [];
-    const scenarioList: ScenarioResult[] = [];
-    const paths = (await boxRun(`git diff --name-only origin/${cfg.default_branch}`)).stdout.split("\n").filter(Boolean);
-    if (paths.length === 0) {
-      failures.push({ gate: "changed", detail: "no changed paths vs base — nothing was implemented" });
-    }
-    if (pr !== null) {
-      const ci = await waitChecks(deps.gh, pr, cfg.merge.required_checks, cfg.timeouts.checks_minutes * 60_000);
-      if (!ci.pass) failures.push({ gate: "ci", detail: ci.detail });
-    }
-    for (const [key, file] of [["runtime", cfg.scenario.runtime], ["holdout", cfg.scenario.holdout]] as const) {
-      if (!file) continue;
-      const path = join(stateDir, "repos", cfg.slug, file);
-      let spec;
-      try {
-        spec = loadScenario(path);
-        spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
-      } catch (e: any) {
-        failures.push({
-          gate: key,
-          detail: `bad scenario file ${path}: ${e.message}`,
-          repair: "the scenario file is broken — agents cannot fix it; the factory owner must correct it.",
-        });
-        continue;
-      }
-      await boxRun(`cd ${ibDir} && PORT=${spec.port} nohup ${spec.start} > /tmp/${key}-server.log 2>&1 & echo started`, {
-        timeoutSeconds: 30,
-      });
-      const results: { id: string; description: string; pass: boolean; detail: string; command?: string; body?: string }[] = [];
-      let pass = true;
-      try {
-        let ready = false;
-        for (let waited = 0; waited < cfg.timeouts.readiness_seconds; waited += 5) {
-          const r = await boxRun(
-            `curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:${spec.port}${spec.readiness_path ?? "/"}`
-          );
-          if (/^[1-5]\d{2}$/.test(r.stdout.trim())) {
-            ready = true;
-            break;
-          }
-          await new Promise((r2) => setTimeout(r2, 5000));
-        }
-        if (!ready) {
-          failures.push({
-            gate: key,
-            detail: `server never became ready within ${cfg.timeouts.readiness_seconds}s`,
-            repair: `your service did not come up on 127.0.0.1:${spec.port} inside the machine — start it yourself (${spec.start}) and read /tmp/${key}-server.log for the crash.`,
-          });
-          pass = false;
-        } else {
-          for (const probe of spec.probes) {
-            const timeoutS = Math.max(2, Math.ceil((probe.timeout_ms ?? cfg.timeouts.probe_ms) / 1000));
-            const r = await boxRun(probe.command, { timeoutSeconds: timeoutS, envs: { PORT: String(spec.port) } });
-            const verdict =
-              r.exitCode === 124 || r.exitCode === 137
-                ? { pass: false as const, failed: "timed out" }
-                : evalExpects(r.stdout, r.exitCode, probe.expect);
-            if (!verdict.pass) {
-              pass = false;
-              results.push({
-                id: probe.id,
-                description: probe.description,
-                pass: false,
-                detail: verdict.failed ?? "failed",
-                command: probe.command.slice(0, 240),
-                body: r.stdout.slice(0, 800),
-              });
-            } else {
-              results.push({ id: probe.id, description: probe.description, pass: true, detail: "ok" });
-            }
-          }
-          if (!pass) {
-            const failed = results.filter((r) => !r.pass);
-            failures.push({
-              gate: key,
-              detail: `${spec.name}: ${failed.map((r) => `${r.id} (${r.detail})`).join("; ")}`,
-              repair: failed
-                .map(
-                  (r) =>
-                    `✗ ${r.id} — ${r.description}\n  probe ran: ${r.command}\n  gate said: ${r.detail}\n  response body the server actually returned:\n${(r.body ?? "")
-                      .split("\n")
-                      .map((l) => "    " + l)
-                      .join("\n")}`
-                )
-                .join("\n"),
-            });
-          }
-        }
-      } finally {
-        await boxRun(`fuser -k -n tcp ${spec.port} 2>/dev/null; pkill -f node 2>/dev/null; true`, { timeoutSeconds: 30 });
-      }
-      scenarioList.push({ name: spec.name, pass, results: results as ScenarioResult["results"] });
-    }
-    return { pass: failures.length === 0, failures, scenarios: scenarioList };
-  };
-
+  try {
   // connection-blip backoff: an attempt that dies within ~2 minutes to a
   // connection-class error (model API/edge hiccup, router pass-through reset)
   // made zero progress — chained insta-fails must not burn the attempt
@@ -509,8 +372,26 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         tools: cfg.pi.plan_tools,
         sessionDir: sessDir,
         name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
-        machine: ibMode ? ibName : undefined,
-        runtimeContext: stageContext("plan", attempt, ibMode ? ibDir : join(stateDir, "repos", cfg.slug, "source")),
+        runtimeContext: buildRuntimeContext(cfg, {
+          repo: cfg.repo,
+          slug: cfg.slug,
+          issue: n,
+          issueTitle: issue.title.slice(0, 120),
+          stage: "plan",
+          attempt,
+          attemptsMax: cfg.attempts,
+          branch: branchName(n),
+          base: cfg.default_branch,
+          mode: cfg.env.mode,
+          where:
+            cfg.env.mode === "instabox"
+              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
+              : cfg.env.mode === "compose"
+                ? `on the factory VPS as plain processes (no container)`
+                : `on the factory VPS as plain processes (no container)`,
+          cwd: join(stateDir, "repos", cfg.slug, "source"),
+          toolchain: "factory user environment on the VPS: node, bun, git, gh all on PATH",
+        }),
       });
       recordStage("plan", attempt, models, res);
       if (res.outcome.kind !== "ok") {
@@ -547,22 +428,39 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       writeFileSync(join(issueDir(stateDir, cfg.slug, n), "plan.md"), plan);
     }
 
-    // ---- IMPLEMENT (worktree is created once, reused across repairs of this issue)
-    // instabox mode: the box clone initialized at lap start IS the working
-    // tree — no host worktree exists; gates/push/verify run over box exec.
-    const worktree = ibMode ? ibDir : await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
+    // ---- IMPLEMENT (machine mode: the machine's clone IS the worktree —
+    // created once, reused across repairs; the machine runs the same gates
+    // and pushes the branch itself)
     const implModels = resolveModels(cfg, "implement");
-    const implRes = await deps.callStage("implement", {
-      models: implModels,
-      prompt: buildImplementPrompt(cfg, issue, plan, { attempt, findings }),
-      systemPrompt: IMPLEMENTER_SYSTEM,
-      cwd: worktree,
-      tools: cfg.pi.tools,
-      sessionDir: sessDir,
-      name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
-      machine: ibMode ? ibName : undefined,
-      runtimeContext: stageContext("implement", attempt, worktree),
-    });
+    const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
+    let worktree: string | null = null;
+    let implRes: PiStageResult;
+    if (cfg.env.mode === "instabox") {
+      machine ??= openLapMachine(cfg, n, (m) => receipt(stateDir, m));
+      const machRes = await machine.callStage("implement", {
+        models: implModels,
+        prompt:
+          contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
+        systemPrompt: IMPLEMENTER_SYSTEM,
+        tools: cfg.pi.tools,
+        extraArgs: cfg.pi.extra_args,
+        timeoutMs: stageMinutes(cfg, "implement") * 60_000,
+      });
+      if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
+      implRes = machRes;
+    } else {
+      worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
+      implRes = await deps.callStage("implement", {
+        models: implModels,
+        prompt: implPrompt,
+        runtimeContext: contextFor("implement", attempt, worktree),
+        systemPrompt: IMPLEMENTER_SYSTEM,
+        cwd: worktree,
+        tools: cfg.pi.tools,
+        sessionDir: sessDir,
+        name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
+      });
+    }
     recordStage("implement", attempt, implModels, implRes);
     if (implRes.outcome.kind !== "ok") {
       lastError = `implement stage failed: ${"error" in implRes.outcome ? implRes.outcome.error : implRes.outcome.kind}`;
@@ -571,35 +469,45 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
 
-    // deterministic post-gates — self-report is never trusted. instabox:
-    // they execute inside the box over the exec API against the box clone.
-    const dirty = ibMode
-      ? (await boxRun("git status --porcelain")).stdout
-          .split("\n")
-          .filter((l) => l.trim())
-          .map((l) => l.trim().split(/\s+/).slice(1).join(" "))
-          .filter(Boolean)
-      : await uncommitted(worktree);
-    if (dirty.length > 0) {
-      lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
-      findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
-      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
-      continue outer;
+    // deterministic post-gates — self-report is never trusted. Machine mode
+    // already enforced cleanliness + commit-count inside the machine (their
+    // failure failed the stage); the host re-judges the pushed branch from
+    // its own git truth. Gate failures carry a repair directive into the next
+    // attempt's findings either way — the machine's clone persists across
+    // repair rounds, so the directive points the implementer back at it.
+    let paths: string[];
+    if (machine) {
+      await withSourceLock(cfg.slug, () => fetchBranch(stateDir, cfg, n));
+      const src = sourceDir(stateDir, cfg.slug);
+      const ahead = await commitsAheadRef(src, cfg.default_branch, branchName(n));
+      if (ahead === 0) {
+        lastError = "machine pushed no commits ahead of base — nothing was implemented";
+        findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + cfg.env.instabox.repo_dir + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      paths = await changedPathsFromRef(src, cfg.default_branch, branchName(n));
+    } else {
+      const dirty = await uncommitted(worktree!);
+      if (dirty.length > 0) {
+        lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
+        findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      const ahead = await commitsAhead(worktree!, cfg.default_branch);
+      if (ahead === 0) {
+        lastError = "no commits ahead of base — nothing was implemented";
+        findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        continue outer;
+      }
+      paths = await changedPaths(worktree!, cfg.default_branch);
+      await pushBranch(worktree!, n);
     }
-    const ahead = ibMode
-      ? Number((await boxRun(`git rev-list --count origin/${cfg.default_branch}..HEAD`)).stdout.trim() || "0")
-      : await commitsAhead(worktree, cfg.default_branch);
-    if (ahead === 0) {
-      lastError = "no commits ahead of base — nothing was implemented";
-      findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
-      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
-      continue outer;
-    }
-    const paths = ibMode
-      ? (await boxRun(`git diff --name-only origin/${cfg.default_branch}`)).stdout.split("\n").filter(Boolean)
-      : await changedPaths(worktree, cfg.default_branch);
     if (lockfileOnly(paths)) {
       lastError = `only lockfiles changed (${paths.join(", ")})`;
       findings = `The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`;
@@ -608,19 +516,6 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
 
-    // branch to origin — the box's gh sign-in (from the snapshot) carries it
-    if (ibMode) {
-      const pushed = await boxRun(`git push -u origin HEAD:refs/heads/${branchName(n)}`, { timeoutSeconds: 240 });
-      if (pushed.exitCode !== 0) {
-        lastError = `git push failed (exit ${pushed.exitCode}): ${pushed.stderr.trim().slice(0, 200)}`;
-        findings = `git push from your machine failed — CI, review and merge only see the branch on origin. Inspect the error, fix, commit, and push again (the machine's gh sign-in already works).`;
-        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        receipt(stateDir, `attempt ${attempt} failed at push: ${lastError}`);
-        continue outer;
-      }
-    } else {
-      await pushBranch(worktree, n);
-    }
     if (pr === null) {
       pr = await deps.gh.prCreate(branchName(n), cfg.default_branch, `[#${n}] ${issue.title}`, prBody(cfg, issue, plan));
       deps.ledger.setIssue(cfg.repo, n, { branch: branchName(n), pr });
@@ -628,9 +523,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- VERIFY (all deterministic)
-    const v = ibMode
-      ? await verifyInBox(pr)
-      : await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree, pr });
+    const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree: worktree ?? undefined, machine: machine ?? undefined, pr });
     if (!v.pass) {
       // receipt/ledger get the one-line summary; the repair round gets FULL
       // reproduction evidence (failing probe's command, expect, and the
@@ -647,20 +540,32 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     const revModels = resolveModels(cfg, "review");
+    const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
+    const reviewContext = contextFor("review", attempt, machine ? cfg.env.instabox.repo_dir : worktree!);
     const callReview = () =>
-      deps.callStage("review", {
-        models: revModels,
-        prompt: buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt }),
-        systemPrompt: REVIEWER_SYSTEM,
-        cwd: worktree,
-        tools: cfg.pi.plan_tools,
-        sessionDir: sessDir,
-        name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
-        machine: ibMode ? ibName : undefined,
-        runtimeContext: stageContext("review", attempt, worktree),
-      });
+      machine
+        ? machine.callStage("review", {
+            models: revModels,
+            prompt: reviewContext + "\n\n---\n\n" + revPrompt,
+            systemPrompt: REVIEWER_SYSTEM,
+            timeoutMs: stageMinutes(cfg, "review") * 60_000,
+          })
+        : deps.callStage("review", {
+            models: revModels,
+            prompt: revPrompt,
+            systemPrompt: REVIEWER_SYSTEM,
+            cwd: worktree!,
+            tools: cfg.pi.plan_tools,
+            sessionDir: sessDir,
+            name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
+            runtimeContext: reviewContext,
+          });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);
+    {
+      const raw = (revRes as PiStageResult & { raw?: string }).raw;
+      if (raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `review-${attempt}.jsonl`), raw);
+    }
     let reask = 0;
     while (
       revRes.outcome.kind === "ok" &&
@@ -697,10 +602,12 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);
     } catch {}
-    if (!ibMode) {
+    if (machine) {
+      // the machine's clone was the worktree — the host has nothing to clean;
+      // the machine itself is destroyed in the finally below
+    } else {
       // root-written files from containerized stages would EACCES the
-      // host-side worktree removal — hand ownership back first. instabox
-      // has no host worktree: the machine is suspended at lap end instead.
+      // host-side worktree removal — hand ownership back first
       await chownBack(stateDir, cfg, [worktreeDir(stateDir, cfg.slug, n)]);
       await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
     }
@@ -722,11 +629,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     receipt(stateDir, `lap #${n} BLOCKED after ${cfg.attempts} attempts: ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
     outcome = "blocked";
   }
-  // instabox: hand the box back at lap end (suspend keeps /data + forensic
-  // state; the 30-minute idle auto-suspense stops the meter from here)
-  if (ibMode && ibClient && ibId) {
-    await ibx.suspend(ibClient, ibId);
-    receipt(stateDir, `instabox machine ${ibName} suspended (lap ${outcome ?? "ended"})`);
+  } finally {
+    // booked laps destroy their machine; a crashed lap leaves it parked for
+    // reclaim (paused — storage only) and the cleanup janitor to reap
+    if (machine && outcome !== null) await machine.destroy();
   }
   return outcome;
 }

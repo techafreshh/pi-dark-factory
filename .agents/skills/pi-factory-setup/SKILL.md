@@ -2,11 +2,11 @@
 name: pi-factory-setup
 description: >-
   Install / provision pi-dark-factory ON ITS DEDICATED SERVER (VPS): the full
-  first-time setup — factory user, runtimes (bun, pi, gh, optional docker),
-  GitHub + provider auth, pi provisioning (models.json provider entries,
-  packages/extensions, thinking levels), code clone + state dir, systemd
-  timer + factoryd API (optional ClinePass key router), Caddy block, and an
-  optional first smoke lap. Use when the user
+  first-time setup — factory user, runtimes (bun, pi, gh, optional docker +
+  optional InstaBox machine mode), GitHub + provider auth, pi provisioning
+  (models.json provider entries, packages/extensions, thinking levels), code
+  clone + state dir, systemd timer + factoryd API (optional ClinePass key
+  router), Caddy block, and an optional first smoke lap. Use when the user
   says things like "set up the factory", "bootstrap/provision/install the
   factory on this server", "wire up factoryd", "get the factory running here",
   or is starting an agent session in a fresh clone of pi-dark-factory on a
@@ -29,7 +29,9 @@ description: >-
 `factoryd.env` (600); optionally `pi-keyrouter` healthy on :8099; pi fully
 provisioned for the factory user (provider auth, custom `models.json` entries,
 packages/extensions) with every `provider/model:thinking` string smoke-tested;
-optionally a first smoke lap ran its gates;
+if InstaBox machine mode was chosen, `INSTABOX_API_KEY` is in the service env
+and `/v1/me` + `/v1/usage` prove the account (machines/snapshots/storage
+quota); optionally a first smoke lap ran its gates;
 the user's laptop can `doctor` in over HTTPS.
 
 ## Operating rules
@@ -64,7 +66,7 @@ head -2 /etc/os-release                       # Ubuntu is the tested shape
 systemctl --version >/dev/null 2>&1 || echo "NO SYSTEMD — stop, this runbook is Linux+systemd"
 grep '"name"' package.json                    # confirm you are in the factory checkout
 id factory 2>/dev/null                        # already created?
-command -v git gh curl bun pi docker          # what's installed
+command -v git gh curl ssh bun pi docker      # what's installed
 systemctl status pi-factory.timer pi-factoryd.service 2>&1 | head -5
 test -f /home/factory/factoryd.env && echo "factoryd.env exists (key already generated)"
 ```
@@ -92,7 +94,15 @@ plain "just set it up"):
 7. **Container-mode repos planned?** (default: not now) — if yes, Phase 1
    installs docker (fresh VPSes have none) and adds the factory user to its
    group.
-8. **Smoke lap after install?** (recommended; spends a few cents of tokens on
+8. **InstaBox machine-mode repos planned?** (default: not now) — repos whose
+   implement+review stages run in disposable InstaBox microVMs
+   (https://instabox.sh, snapshot-booted, not your VPS's problem). If yes:
+   the `INSTABOX_API_KEY` goes into `factoryd.env` (Phase 5a), `ssh` presence
+   is ensured (Phase 1), and Phase 5f proves the account + quota live via the
+   API. Per-repo golden snapshots are built later at first-project time
+   (`foreman bake <slug>` — Phase 7). Docker is NOT needed for instabox-only
+   repos.
+9. **Smoke lap after install?** (recommended; spends a few cents of tokens on
    a toy repo) — vs. going straight to a real project via the `pi-factory`
    wizard.
 
@@ -106,6 +116,9 @@ command -v docker &>/dev/null || sudo apt-get update -qq
 command -v docker &>/dev/null || sudo apt-get install -y docker.io
 sudo systemctl enable --now docker
 id -nG factory | grep -qw docker || sudo usermod -aG docker factory
+# instabox machine mode planned? every machine stage + scenario server runs
+# through InstaBox's ssh gateway, so the host needs an ssh client:
+command -v ssh &>/dev/null || sudo apt-get install -y openssh-client
 ```
 
 Verify: `id factory` and `loginctl show-user factory -p Linger`.
@@ -209,8 +222,11 @@ text: the winners are exactly what config.json `models` gets.
 **5a. factoryd.env** — skip key generation if it exists (a re-run keeps the
 old key); otherwise generate and assemble in one sudo heredoc, never echoing
 the value: `PI_FACTORY_STATE=/home/factory/state`, `FACTORYD_PORT=8077`,
-`FACTORY_API_KEY=$(openssl rand -hex 32)`, and `GH_TOKEN=…` if Phase 4 used
-the token form. `chown factory: /home/factory/factoryd.env`, `chmod 600`.
+`FACTORY_API_KEY=$(openssl rand -hex 32)`, `GH_TOKEN=…` if Phase 4 used the
+token form, and `INSTABOX_API_KEY=…` if Phase 0 machine mode was chosen
+(secrets never echo into the transcript — pass them straight into the
+heredoc from the place the user handed them over).
+`chown factory: /home/factory/factoryd.env`, `chmod 600`.
 
 **5b. Units** — write `/etc/systemd/system/pi-factory.service`:
 
@@ -310,6 +326,23 @@ curl -fsS http://127.0.0.1:8099/health && curl -s :8099/pool   # key router: key
 tail -5 /home/factory/state/laps.log                           # timer already ticked? expect idle receipts
 ```
 
+**5f. InstaBox account check** (only if machine mode was chosen in Phase 0).
+The key lives in `factoryd.env` (600 — same no-echo rule as every other
+secret); source it without printing and prove both identity and quota:
+
+```sh
+sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
+  curl -fsS https://api.instabox.sh/v1/me -H "X-API-Key: $INSTABOX_API_KEY"' \
+  | head -c 300    # an identity object — never echo the key itself
+sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
+  curl -fsS https://api.instabox.sh/v1/usage -H "X-API-Key: $INSTABOX_API_KEY"'
+```
+
+`usage.limits` shows the account's ceilings (entry tier: 5 machines,
+10 snapshots, 200 GiB) — that machine quota is the instabox-mode counterpart
+of `--concurrency`, worth telling the user verbatim. A 401/failed curl here
+fails the phase: fix the key before any machine-mode repo is onboarded.
+
 ## Phase 6 — Caddy block (if remote control + domain)
 
 Write it to a 600-mode file and give the user the path — do not print the
@@ -350,6 +383,22 @@ scenario templates + reserves two scenario ports), edit
   compose up automatically once it lands as an issue deliverable. First
   container repo: run the §7 in-container smoke before the first lap
   (`docker run --rm -v ~/.pi:/root/.pi … ubuntu:24.04 pi --version`).
+- **InstaBox machine mode** (if Phase 0 planned it): the repo's config gets
+  `env.mode: "instabox"` + an `env.instabox.bake` shell (what to install
+  after the clone: deps, caches — write it with the user). Then bake the
+  golden snapshot once and watch the ceiling:
+
+  ```sh
+  sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake <slug>'
+  # → snapshot <slug>-base ready (root GiB reported; budget it against /v1/usage)
+  ```
+
+  During instabox laps machines appear and disappear
+  (name `pdf-<slug>-i<issue>`); scenario servers run inside the machine and
+  probes reach them over `ssh -L` on 127.0.0.1, so the host-side port
+  reservation must stay free. The ClinePass rotator is host-local — instabox
+  stages point their provider directly (the `pass_env` keys travel into every
+  stage). `foreman cleanup` reaps any machine a crashed lap left parked.
 
 Then write real `runtime.json` + `holdout.json` probes with the user,
 then:

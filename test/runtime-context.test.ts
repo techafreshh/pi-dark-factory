@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildRuntimeContext } from "../src/runtime-context";
-import { machineName } from "../src/instabox";
+import { machineNameFor } from "../src/instabox";
 import { buildStageCmd } from "../src/env";
 import type { RepoConfig } from "../src/types";
 
@@ -61,22 +61,22 @@ describe("buildRuntimeContext (the where-am-I brief)", () => {
 
 describe("instabox mode plumbing", () => {
   test("machine name is stable per lap and matches the env.ts derivation", () => {
-    expect(machineName("mdrender", 3)).toBe("pdf-mdrender-3");
+    expect(machineNameFor("mdrender", 3)).toBe("pdf-mdrender-i3");
     // stage env bridges over the same name when the caller passes it
-    const s = buildStageCmd(cfg("instabox"), "/any/worktree", "/state", "pdf-app-7-impl-1-mvkt", { machine: machineName("app", 7) });
+    const s = buildStageCmd(cfg("instabox"), "/any/worktree", "/state", "pdf-app-7-impl-1-mvkt", { machine: machineNameFor("app", 7) });
     expect(s.containerized).toBe(true);
-    expect(s.argvPrefix.slice(0, 3)).toEqual(["instabox", "ssh", "pdf-app-7"]);
+    expect(s.argvPrefix.slice(0, 3)).toEqual(["instabox", "ssh", "pdf-app-i7"]);
     expect(s.argvPrefix).toContain("--");
     expect(s.cleanup).toEqual([]);
   });
 
   test("box_dir default and override both reach the remote cd", () => {
-    const def = buildStageCmd(cfg("instabox"), "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineName("app", 2) });
+    const def = buildStageCmd(cfg("instabox"), "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineNameFor("app", 2) });
     const joined = def.argvPrefix.join(" ");
     expect(joined).toContain("/data/workspace/app");
     const custom = buildStageCmd(
       { ...cfg("instabox"), env: { ...cfg("instabox").env, instabox: { box_dir: "/data/ws/elsewhere" } } } as any,
-      "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineName("app", 2) }
+      "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineNameFor("app", 2) }
     );
     expect(custom.argvPrefix.join(" ")).toContain("/data/ws/elsewhere");
   });

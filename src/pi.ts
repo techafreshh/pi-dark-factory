@@ -106,8 +106,13 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
     } catch {}
     return s.slice(0, 20000);
   })();
-  proc.stdin.write(o.prompt);
-  try { proc.stdin.end(); } catch {} // FileSink.end() is sync in Bun
+  proc.stdin.on?.("error", () => {}); // a failed exec EPIPEs the write; the
+  // exit promise below reports it — an unhandled stdin error must never
+  // kill the worker
+  try {
+    proc.stdin.write(o.prompt);
+    proc.stdin.end();
+  } catch {}
 
   // heartbeat taps alongside the async-iterator drains below — any byte on
   // stdout/stderr (thinking delta, tool update, partial tool output) counts
