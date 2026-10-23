@@ -1,0 +1,18 @@
+{
+  "_readme": "ADVERSARIAL holdout: malformed input → 4xx never 5xx, escaping never breaks, boundaries hold. Same schema as runtime.json; port = \"second\". NEVER share this file's contents with the implementer — the scenarios live outside the product repo on purpose.",
+  "name": "holdout",
+  "port": "second",
+  "start": "node server.js",
+  "readiness_path": "/",
+  "probes": [
+    { "id": "malformed-json-400", "description": "malformed JSON body → 4xx, never 500, never hang",
+      "command": "curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{broken'",
+      "expect": "status:400 max_ms:5000" },
+    { "id": "oversized-rejected", "description": "oversized body is rejected with the exact boundary",
+      "command": "python3 -c \"print('{\\\"x\\\":\\\"'+'a'*1000000+'\\\"}')\" | curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' --data-binary @-",
+      "expect": "status:413 max_ms:10000" },
+    { "id": "html-injection-inert", "description": "active markup in input comes out inert (escaped, never executed)",
+      "command": "curl -s -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{\"md\":\"<script>alert(1)</script>\"}'",
+      "expect": "status:200 body_contains:&lt;script&gt;" }
+  ]
+}

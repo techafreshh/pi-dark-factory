@@ -1,0 +1,14 @@
+{
+  "_readme": "The exact models/env shape a real onboarding converged to (2026-10-23, after six rejected attempts). Fill provider/model and env.mode. Rules: models entries are OBJECTS — provider + bare model + thinking as its OWN field; never a dotted string, never a ':thinking' suffix inside model (silently stored broken / invalid model id at the provider). The provider/model:thinking string form is valid ONLY in fallback arrays. Re-read the POST echo after every push and verify every models.* shows an object with a provider. A {} patch silently writes defaults — don't probe with it.",
+  "models": {
+    "default":   { "provider": "river", "model": "zai-org/GLM-5.3-Flash", "thinking": "max",
+                   "fallback": ["clinepass-rotator/cline-pass/glm-5.3-flash", "deepseek/deepseek-flash:high"] },
+    "plan":      { "provider": "river", "model": "zai-org/GLM-5.3-Flash", "thinking": "low",
+                   "fallback": ["clinepass-rotator/cline-pass/glm-5.3-flash", "deepseek/deepseek-flash:low"] },
+    "implement": { "provider": "river", "model": "zai-org/GLM-5.3-Flash", "thinking": "max",
+                   "fallback": ["clinepass-rotator/cline-pass/glm-5.3-flash", "deepseek/deepseek-flash:max"] },
+    "review":    { "provider": "river", "model": "zai-org/GLM-5.3-Flash", "thinking": "high",
+                   "fallback": ["clinepass-rotator/cline-pass/glm-5.3-flash", "deepseek/deepseek-flash:high"] }
+  },
+  "env": { "mode": "compose", "image": "node:22" }
+}

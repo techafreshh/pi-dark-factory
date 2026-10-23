@@ -1,0 +1,17 @@
+{
+  "_readme": "POSITIVE-path scenario. port = the repo's RESERVED pair via \"first\"/\"second\" (never a literal); $PORT is injected into every command's env — never hardcode a port. start is a single foreground command (the harness owns its life and kills it authoritatively). Probes: id unique, command shell, expect = space-separated tokens: status:N, json:path=value, body_contains:, body_matches:^regex$, exit:N, max_ms:N. Values must be space-free (use body_matches: with \\s patterns for spaces). Size probes to the currently claimable issue — grow per lap, never front-load the whole PRD.",
+  "name": "runtime",
+  "port": "first",
+  "start": "node server.js",
+  "readiness_path": "/",
+  "probes": [
+    { "id": "health-200", "description": "GET /health answers 200 with ok true body",
+      "command": "curl -s http://127.0.0.1:$PORT/health", "expect": "status:200 body_contains:ok" },
+    { "id": "main-endpoint", "description": "the product's primary endpoint answers its contract",
+      "command": "curl -s -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{}'",
+      "expect": "status:200 body_matches:^\\{", "timeout_ms": 10000 },
+    { "id": "unknown-404", "description": "unknown paths answer 4xx, never 5xx",
+      "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/definitely-not-a-route",
+      "expect": "status:404" }
+  ]
+}

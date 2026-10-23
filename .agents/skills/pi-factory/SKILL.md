@@ -133,20 +133,12 @@ stored broken or rejected one field at a time, costing ~6 attempts:**
   every `models.*` renders as an object with a `provider`.
 - A `{}` patch **silently writes and echoes defaults**; don't use it to probe.
 
-Copy-paste skeleton (the exact shape a real onboarding converged to after six
-rejected attempts — fill provider/model and mode):
+**The canonical config skeleton ships as `templates/config.skeleton.json` in
+this skill's folder** (river → clinepass → deepseek tiers, per-stage thinking,
+compose mode) — read it, fill the provider/model + `env.mode`, then:
 
 ```bash
-factory-remote config <slug> --json '{
-  "models": {
-    "default":   {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"max",
-                  "fallback":["clinepass-rotator/cline-pass/glm-5.3-flash","deepseek/deepseek-flash:high"]},
-    "plan":      {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"low"},
-    "implement": {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"max"},
-    "review":    {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"high"}
-  },
-  "env": {"mode":"compose","image":"node:22"}
-}'
+factory-remote config <slug> --json "$(cat .agents/skills/pi-factory/templates/config.skeleton.json | python3 -c 'import json,sys;d=json.load(sys.stdin);d.pop("_readme",None);print(json.dumps(d))')"
 ```
 
 - **models**: default tier for everything + per-stage overrides. Suggest the
@@ -240,6 +232,23 @@ boundaries) as local files, show both in full, get a yes, then:
 factory-remote scenario <slug> runtime --file runtime.json
 factory-remote scenario <slug> holdout --file holdout.json
 ```
+
+**Full schema — shipped as files in THIS skill's `templates/` directory** (same
+folder as this SKILL.md; the laptop install carries them). Don't rediscover it
+by probing the validator — kvstore's agent burned ~8 attempts and big tokens
+doing exactly that. Read them, adapt to the PRD:
+
+- `templates/scenario.runtime.json` — positive path: `port: "first"`,
+  `start` (single foreground command — the harness owns its life and kills it
+  authoritatively), `readiness_path`, optional `setup`/`teardown`,
+  `probes[{id, description, command, expect, timeout_ms}]`.
+- `templates/scenario.holdout.json` — adversarial shape (4xx-never-500,
+  escape-inert, boundary probes at `port: "second"`).
+- **`$PORT` is injected into every command's env** (resolved from the repo's
+  reserved pair) — never hardcode a port number.
+- Probe `expect` = the space-separated token contract below; `values must be
+  space-free` means `body_contains:` can't hold a literal space (use
+  `body_matches:` with `\s` patterns).
 
 Server-side validation fails fast (rejections name the problem) — a bad
 scenario can never burn a lap. Probe contract: `status:N` (curl -s -o /dev/null
