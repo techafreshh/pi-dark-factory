@@ -87,7 +87,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       // spawning — a container from a killed lap holds the published
       // scenario ports and would fail every spawn with "port is already
       // allocated"
-      await sh(
+      const sweep = await sh(
         ["bash", "-c",
          // root-owned files from container stages (sessions, trust state)
          // would starve the factory user's own pi — repair ownership via a
@@ -101,14 +101,18 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
          (cfg.scenario.ports ?? []).map((p) => `; docker ps -aq --filter publish=${p} | xargs -r docker rm -f`).join("") +
          // self-heal the pi launcher's node seed: /usr/local/bin/pi (mounted
          // from .pi/agent/bin/pi) execs .pi/host-runtimes/node/bin/node —
-         // when that binary goes missing (vanished once, cause unknown) every
-         // container spawn dies with exit 127. Re-copy it from the factory
-         // user's node before the stage needs it.
+         // when that binary goes missing (vanished twice on 2026-10-23, actor
+         // unknown) every container spawn dies with exit 127. Re-copy it from
+         // the factory user's node before the stage needs it, and RECEIPT the
+         // repair so the disappearance window is time-stamped in laps.log.
          `; SEED=/home/factory/.pi/host-runtimes/node/bin/node; ` +
          `if [ ! -x $SEED ] && SRC=$(bash -lc 'command -v node' 2>/dev/null) && [ -x $SRC ]; ` +
          `then mkdir -p $(dirname $SEED) && cp $SRC $SEED && echo seed-repaired; fi`],
         { timeoutMs: 30000 }
-      ).catch(() => {});
+      ).catch(() => null);
+      if (sweep?.stdout?.includes("seed-repaired")) {
+        receipt(stateDir, `seed-repaired: .pi/host-runtimes/node/bin/node was missing and re-copied — container spawns would have exited 127 (no /root/.pi mount change; a copy-erasing actor is at work — monitor laps.log for this line's timestamps)`);
+      }
     }
     let res = await callPiWithFallback(
       { ...base, prompt: withContext, runnerPrefix },
