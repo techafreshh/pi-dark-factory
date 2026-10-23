@@ -371,6 +371,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const dirty = await uncommitted(worktree);
     if (dirty.length > 0) {
       lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
+      findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
       continue outer;
@@ -378,6 +379,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const ahead = await commitsAhead(worktree, cfg.default_branch);
     if (ahead === 0) {
       lastError = "no commits ahead of base — nothing was implemented";
+      findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
       continue outer;
@@ -385,6 +387,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const paths = await changedPaths(worktree, cfg.default_branch);
     if (lockfileOnly(paths)) {
       lastError = `only lockfiles changed (${paths.join(", ")})`;
+      findings = `The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
       continue outer;
@@ -400,10 +403,16 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // ---- VERIFY (all deterministic)
     const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree, pr });
     if (!v.pass) {
-      findings = v.failures.map((f) => `[${f.gate}] ${f.detail}`).join("\n");
-      lastError = `verification failed:\n${findings}`;
+      // receipt/ledger get the one-line summary; the repair round gets FULL
+      // reproduction evidence (failing probe's command, expect, and the
+      // actual response body) — the agent reproduces instead of guessing
+      const summary = v.failures.map((f) => `[${f.gate}] ${f.detail}`).join("\n");
+      findings = v.failures
+        .map((f) => `[${f.gate}] ${f.detail}${f.repair ? "\n" + f.repair : ""}`)
+        .join("\n\n");
+      lastError = `verification failed:\n${summary}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at verify: ${findings.replace(/\n/g, " ; ")}`);
+      receipt(stateDir, `attempt ${attempt} failed at verify: ${summary.replace(/\n/g, " ; ")}`);
       continue outer;
     }
 

@@ -11,6 +11,10 @@ import type { RepoConfig } from "../types";
 export interface GateFailure {
   gate: string;
   detail: string;
+  /** multi-line reproduction evidence for the repair round: the failing
+   *  probe's command, expect, gate verdict, and the actual response body —
+   *  the implementing agent must not have to guess at the failing input */
+  repair?: string;
 }
 
 export interface VerifyOutcome {
@@ -23,6 +27,24 @@ function summarizeScenario(s: ScenarioResult): string {
   if (s.error) return `${s.name}: ${s.error}`;
   const failed = s.results.filter((r) => !r.pass).map((r) => `${r.id} (${r.detail})`);
   return failed.length === 0 ? `${s.name}: all ${s.results.length} probes green` : `${s.name}: ${failed.join("; ")}`;
+}
+
+/** The repair round's eyes: for every failed probe, what was sent, what the
+ *  gate expected, and (capped) what the product actually answered. Evidence,
+ *  not verdicts — the agent reproduces, it doesn't take our word. */
+function repairForScenario(s: ScenarioResult): string {
+  if (s.error) return `The ${s.name} scenario itself errored before probing: ${s.error}`;
+  const lines: string[] = [];
+  for (const r of s.results.filter((x) => !x.pass)) {
+    lines.push(`✗ ${r.id} — ${r.description}`);
+    if (r.command) lines.push(`  probe ran: ${r.command}`);
+    lines.push(`  gate said: ${r.detail}`);
+    if (r.body !== undefined) {
+      lines.push("  response body the server actually returned:");
+      lines.push(r.body.split("\n").map((l) => "    " + l).join("\n"));
+    }
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -46,9 +68,17 @@ export async function runVerify(
   // 1. changed gate (re-checked here so repairs are judged the same way)
   const paths = await changedPaths(opts.worktree, cfg.default_branch);
   if (paths.length === 0) {
-    failures.push({ gate: "changed", detail: "no changed paths vs base — nothing was implemented" });
+    failures.push({
+      gate: "changed",
+      detail: "no changed paths vs base — nothing was implemented",
+      repair: "The previous attempt produced no commits ahead of the base branch. Implement the issue per the plan and git-commit every change before finishing — an uncommitted worktree is indistinguishable from no work.",
+    });
   } else if (lockfileOnly(paths)) {
-    failures.push({ gate: "changed", detail: `only lockfiles changed (${paths.join(", ")}) — no substantive work` });
+    failures.push({
+      gate: "changed",
+      detail: `only lockfiles changed (${paths.join(", ")}) — no substantive work`,
+      repair: `Only lockfiles changed (${paths.join(", ")}). The commit gate needs substantive changes on top of the base branch.`,
+    });
   }
 
   // 2. CI gate
@@ -94,7 +124,7 @@ export async function runVerify(
     });
     scenarios.push(result);
     if (!result.pass) {
-      failures.push({ gate: key, detail: summarizeScenario(result) });
+      failures.push({ gate: key, detail: summarizeScenario(result), repair: repairForScenario(result) });
     }
   }
 

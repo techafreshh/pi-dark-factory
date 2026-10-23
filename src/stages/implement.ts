@@ -23,6 +23,8 @@ export function buildImplementPrompt(
         "- CRITICAL and HIGH findings: fix all of them.",
         "- MEDIUM findings: fix if straightforward; otherwise decline.",
         "- A finding you will not fix: mark `declined: <one-line reason>` in your final summary — silence is not a disposition.",
+        "- Gate findings come with reproduction facts: the failing probe's exact command, what it expected, and the response body the server actually returned. REPRODUCE the probe against your own running server before changing code, fix the code path, then re-run the probe — do not guess from the probe's name.",
+        "- If a finding says the changed gate rejected the attempt (uncommitted changes / no commits): your previous edits persist in the worktree — run git status, finish that work, and git add -A && git commit ALL of it before you finish.",
         "Fix in the smallest possible way: no new patterns, no drive-by refactors; re-run whatever proves the fix before moving on.",
         "",
         "FINDINGS:",

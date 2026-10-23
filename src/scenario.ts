@@ -28,6 +28,11 @@ export interface ProbeResult {
   description: string;
   pass: boolean;
   detail: string;
+  /** failed probes only — the reproduction facts the repair round needs:
+   *  exactly what was sent and (capped) what came back, so the implementing
+   *  agent doesn't guess at the failing input from a probe name */
+  command?: string;
+  body?: string;
 }
 
 export interface ScenarioResult {
@@ -295,13 +300,19 @@ export async function runScenario(
       const verdict = res.timedOut
         ? { pass: false, failed: `timed out after ${timeoutMs}ms` }
         : evalExpects(res.stdout, res.code, probe.expect);
-      if (!verdict.pass) pass = false;
-      results.push({
-        id: probe.id,
-        description: probe.description,
-        pass: verdict.pass,
-        detail: verdict.failed ?? "ok",
-      });
+      if (!verdict.pass) {
+        pass = false;
+        results.push({
+          id: probe.id,
+          description: probe.description,
+          pass: false,
+          detail: verdict.failed ?? "failed",
+          command: probe.command.length > 240 ? probe.command.slice(0, 240) + " …" : probe.command,
+          body: res.stdout.length > 800 ? res.stdout.slice(0, 800) + ` …(+${res.stdout.length} bytes total)` : res.stdout,
+        });
+      } else {
+        results.push({ id: probe.id, description: probe.description, pass: true, detail: "ok" });
+      }
     }
     return { name: spec.name, pass, results };
   } finally {
