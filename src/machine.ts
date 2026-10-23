@@ -155,6 +155,12 @@ export function bootstrapScriptFor(cfg: RepoConfig, branch: string): string {
   return [
     `set -eu`,
     `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
+    // /data ships root-owned (it is the machine's persistent disk); the agent
+    // user must own the clone's parent — and any half-cloned leftovers —
+    // before git can create the work tree. sudo -n is baked into the factory
+    // snapshots (used at bake time for the global pi install); best-effort,
+    // so a sudo-less snapshot still fails at the clone with git's own message.
+    `P=$(dirname ${b(ibx.repo_dir)}); sudo -n mkdir -p "$P" 2>/dev/null || true; sudo -n chown -R "$(id -u):$(id -g)" "$P" 2>/dev/null || true`,
     `if [ ! -d ${b(ibx.repo_dir)}/.git ]; then`,
     `  git clone --no-checkout ${b(originUrlFor(cfg))} ${b(ibx.repo_dir)} || git clone ${b(originUrlFor(cfg))} ${b(ibx.repo_dir)}`,
     `else`,
