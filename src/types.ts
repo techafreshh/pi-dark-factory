@@ -48,14 +48,22 @@ export interface RepoConfig {
     holdout?: string;
   };
   /**
-   * Execution environment for agent stages. "host" = plain processes.
-   * "compose" = every stage runs via `docker compose run --rm <service>`
-   * (product-owned compose file in the worktree) or a fallback `docker run`
-   * image until the repo ships one — root inside, so pip/apt/go/npm install
-   * anything freely; the host stays clean.
+   * Execution environment for agent stages — chosen PER PROJECT:
+   *  - "host": plain processes on the VPS.
+   *  - "compose" (default): stages run via `docker compose run --rm <service>`
+   *    (product-owned compose file in the worktree) or a fallback `docker run`
+   *    image until the repo ships one — root inside, so pip/apt/go/npm install
+   *    anything freely; the host stays clean.
+   *  - "instabox": each lap gets its own ephemeral InstaBox cloud machine
+   *    (own kernel, root, Docker; persistent /data). The box clones the repo,
+   *    runs every stage inside itself, and gates/scenarios execute over the
+   *    machine exec API; nothing is shared with the host — no bind mounts,
+   *    no port reservations, no root-owned leftovers. Requires the `instabox`
+   *    CLI on the VPS (authed by INSTABOX_API_KEY) and a snapshot with the
+   *    repo's toolchain preinstalled (node, git, gh signed in).
    */
   env: {
-    mode: "host" | "compose";
+    mode: "host" | "compose" | "instabox";
     /** repo-relative path of the product-owned compose file */
     compose_file: string;
     /** service in that compose file the factory runs stages in */
@@ -64,6 +72,15 @@ export interface RepoConfig {
     image: string;
     /** host env vars forwarded into the container when present */
     pass_env: string[];
+    /** instabox mode machine source (snapshot wins over template) */
+    instabox?: {
+      /** snapshot id to start machines from (has the toolchain + gh sign-in) */
+      snapshot?: string;
+      /** template when no snapshot (default "universal") */
+      template?: string;
+      /** repo clone dir inside the machine (default /data/workspace/<slug>) */
+      box_dir?: string;
+    };
   };
   skip_labels: string[];
   pi: {
