@@ -158,6 +158,27 @@ NOTE: config pushes deep-merge — two writers (this skill and a VPS-side
 session) can interleave; the LAST write wins per key. After any config
 disagreement, re-echo the effective config once before proceeding.
 
+### Choosing env.mode (per project — ask the user at Stage 2)
+
+- **`compose`** (considered default for services): stages run in the
+  product's own docker compose `worker` service (fallback `env.image` until
+  lap 1 ships the compose file). Strong reproducibility; ports reserved per
+  repo; git auto-provided by the factory.
+- **`host`**: plain processes on the VPS. Zero overhead; no isolation.
+- **`instabox`**: each lap gets its own ephemeral InstaBox cloud machine
+  (own kernel + root + Docker; snapshot with the toolchain and a signed-in
+  `gh`). Gates and scenarios execute inside the box over the machine exec
+  API; the box suspends at lap end. **Prerequisites**: the `instabox` CLI
+  installed and `INSTABOX_API_KEY` set for the factory systemd units, a
+  snapshot with node/git/gh signed in (`env.instabox.snapshot`), and the
+  repo's model-API keys presentable to in-box pi. Best for parallel-heavy
+  workloads or products whose builds want a whole machine.
+- **Every agent, every mode, receives a generated "Where you are running"
+  brief** — `.factory-context.md` in the working tree plus the same facts
+  prepended to the stage prompt (mode identity, toolchain, working dir,
+  branch/base, gate list, boundaries incl. commit discipline). The agent
+  never spends turns discovering its environment.
+
 ### Stage 3 — scenario gate (the acceptance contract)
 
 The scenarios live OUTSIDE the product repo so the implementer can never tune

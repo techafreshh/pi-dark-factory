@@ -5,6 +5,7 @@ import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { machineNameFor } from "./instabox";
 import { openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
@@ -15,6 +16,7 @@ import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
+import { buildRuntimeContext } from "./runtime-context";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 
 export interface CallStageArgs {
@@ -26,6 +28,8 @@ export interface CallStageArgs {
   sessionDir: string;
   /** unique docker --name / receipt key for this stage invocation */
   name: string;
+  /** "where am I" brief — written to the cwd and prepended to the prompt */
+  runtimeContext?: string;
 }
 
 export type CallStageFn = (
@@ -63,6 +67,18 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       timeoutMs: stageMinutes(cfg, stage) * 60_000,
       quietMs: QUIET_KILL_MS,
     };
+    // "where am I" brief: prepended to the prompt (zero tool calls to see
+    // it) and — where the working tree is local — written to disk beside it.
+    // Machine-mode stages (implement/review in-box) get it prompt-only; the
+    // box clone holds no host-side file.
+    if (a.runtimeContext) {
+      if (cfg.env?.mode !== "instabox") {
+        try {
+          writeFileSync(a.cwd + "/.factory-context.md", a.runtimeContext + "\n");
+        } catch {}
+      }
+    }
+    const withContext = a.runtimeContext ? a.runtimeContext + "\n\n---\n\n" + a.prompt : a.prompt;
     const runnerPrefix = envBuild.containerized
       ? { argvPrefix: envBuild.argvPrefix, cleanupArgv: envBuild.cleanup }
       : undefined;
@@ -87,7 +103,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       ).catch(() => {});
     }
     let res = await callPiWithFallback(
-      { ...base, prompt: a.prompt, runnerPrefix },
+      { ...base, prompt: withContext, runnerPrefix },
       a.models
     );
     // Stream-death continue: when the model stream is cut or the stage burns
@@ -118,6 +134,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
         {
           ...base,
           prompt:
+            (a.runtimeContext ? a.runtimeContext + "\n\n---\n\n" : "") +
             "Continue from exactly where you left off in this session — complete the outstanding work and produce the required final output.",
           runnerPrefix,
           extraArgs: [...base.extraArgs, "--session", newest],
@@ -281,6 +298,39 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   let outcome: string | null = null;
 
+  // "where am I" brief builder — the per-stage runtime context every agent
+  // gets (prompt preamble; host/compose modes also write it to disk beside
+  // the work). The instabox branch keys the "where" on the stage: the plan
+  // runs host-side even in machine mode, implement/review run in the box.
+  const contextFor = (stage: StageName, attempt: number, cwd: string): string =>
+    buildRuntimeContext(cfg, {
+      repo: cfg.repo,
+      slug: cfg.slug,
+      issue: n,
+      issueTitle: issue.title.slice(0, 120),
+      stage,
+      attempt,
+      attemptsMax: cfg.attempts,
+      branch: branchName(n),
+      base: cfg.default_branch,
+      mode: cfg.env.mode,
+      where:
+        cfg.env.mode === "instabox"
+          ? stage === "plan"
+            ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
+            : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
+          : cfg.env.mode === "compose"
+            ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
+            : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
+      cwd,
+      toolchain:
+        cfg.env.mode === "instabox"
+          ? `whatever the machine snapshot ships — node, git, gh (signed in), curl; network egress allowed`
+          : cfg.env.mode === "compose"
+            ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
+            : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
+    });
+
   try {
   // connection-blip backoff: an attempt that dies within ~2 minutes to a
   // connection-class error (model API/edge hiccup, router pass-through reset)
@@ -322,6 +372,26 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         tools: cfg.pi.plan_tools,
         sessionDir: sessDir,
         name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
+        runtimeContext: buildRuntimeContext(cfg, {
+          repo: cfg.repo,
+          slug: cfg.slug,
+          issue: n,
+          issueTitle: issue.title.slice(0, 120),
+          stage: "plan",
+          attempt,
+          attemptsMax: cfg.attempts,
+          branch: branchName(n),
+          base: cfg.default_branch,
+          mode: cfg.env.mode,
+          where:
+            cfg.env.mode === "instabox"
+              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
+              : cfg.env.mode === "compose"
+                ? `on the factory VPS as plain processes (no container)`
+                : `on the factory VPS as plain processes (no container)`,
+          cwd: join(stateDir, "repos", cfg.slug, "source"),
+          toolchain: "factory user environment on the VPS: node, bun, git, gh all on PATH",
+        }),
       });
       recordStage("plan", attempt, models, res);
       if (res.outcome.kind !== "ok") {
@@ -369,7 +439,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       machine ??= openLapMachine(cfg, n, (m) => receipt(stateDir, m));
       const machRes = await machine.callStage("implement", {
         models: implModels,
-        prompt: implPrompt,
+        prompt:
+          contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
         systemPrompt: IMPLEMENTER_SYSTEM,
         tools: cfg.pi.tools,
         extraArgs: cfg.pi.extra_args,
@@ -382,6 +453,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       implRes = await deps.callStage("implement", {
         models: implModels,
         prompt: implPrompt,
+        runtimeContext: contextFor("implement", attempt, worktree),
         systemPrompt: IMPLEMENTER_SYSTEM,
         cwd: worktree,
         tools: cfg.pi.tools,
@@ -469,11 +541,12 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     const revModels = resolveModels(cfg, "review");
     const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
+    const reviewContext = contextFor("review", attempt, machine ? cfg.env.instabox.repo_dir : worktree!);
     const callReview = () =>
       machine
         ? machine.callStage("review", {
             models: revModels,
-            prompt: revPrompt,
+            prompt: reviewContext + "\n\n---\n\n" + revPrompt,
             systemPrompt: REVIEWER_SYSTEM,
             timeoutMs: stageMinutes(cfg, "review") * 60_000,
           })
@@ -485,6 +558,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
             tools: cfg.pi.plan_tools,
             sessionDir: sessDir,
             name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
+            runtimeContext: reviewContext,
           });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);

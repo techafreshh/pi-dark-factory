@@ -42,8 +42,30 @@ export function buildStageCmd(
   worktree: string,
   stateDir: string,
   uniqueName: string,
-  opts: { passEnv?: string[]; extraEnv?: Record<string, string>; publishPorts?: boolean } = {}
+  opts: { passEnv?: string[]; extraEnv?: Record<string, string>; publishPorts?: boolean; machine?: string } = {}
 ): StageEnv {
+  if (cfg.env.mode === "instabox") {
+    // stages bridge over SSH into this lap's InstaBox machine — streamed
+    // stdin/stdout (callPi writes the prompt to stdin), signals relayed, no
+    // wall-clock cap (unlike the REST exec API's 10 minutes). The machine
+    // itself is lifecycle-managed at lap start (ensureMachine in tick.ts):
+    // stable name, one box per lap, /data persists across stages.
+    // the lap machine, derived from the stage name when not passed: strip
+    // the trailing stage word and its run tag (attempt + random36)
+    const machine =
+      opts.machine ??
+      (uniqueName.match(/^(.*)-(plan|impl|review|rev|runtime|holdout|verify)(-\d+(-[a-z0-9]+)?)?$/)?.[1] ??
+        `pdf-${cfg.slug}`);
+    if (!machine) return { argvPrefix: [], containerized: false };
+    const boxDir = cfg.env.instabox?.box_dir ?? `/data/workspace/${cfg.slug}`;
+    const argvPrefix = [
+      "instabox", "ssh", machine, "--",
+      "bash", "-c", `cd ${boxDir} && exec "$@"`, "--",
+    ];
+    // cleanup is a no-op: the box outlives stages (suspend/deletion is a
+    // lap-level decision, not a stage-level one)
+    return { argvPrefix, cleanup: [], containerized: true };
+  }
   if (cfg.env.mode !== "compose") return { argvPrefix: [], containerized: false };
 
   // same-path mirroring: worktree + state at identical container paths,
