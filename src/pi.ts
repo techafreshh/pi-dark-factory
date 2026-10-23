@@ -121,9 +121,18 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
   proc.stdout?.on?.("data", () => { lastActivity = Date.now(); });
   proc.stderr?.on?.("data", () => { lastActivity = Date.now(); });
 
+  // the spawn 'error' event fires when the process never started (ENOENT,
+  // ENOMEM under memory pressure, EACCES) — its message was previously
+  // discarded, collapsing every spawn failure into an empty "pi exited 127"
+  // that read like a provider problem. Carry the reason out so the receipt
+  // names the actual failure.
+  let spawnErr: string | null = null;
   const exited = new Promise<number>((resolve) => {
     proc.on("exit", (c: any) => resolve(c ?? 137));
-    proc.on("error", () => resolve(127));
+    proc.on("error", (e: any) => {
+      spawnErr = e?.message ? String(e.message) : "spawn failed";
+      resolve(127);
+    });
   });
   let timedOut = false;
   let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
@@ -167,7 +176,9 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
   const [lines, stderr] = await Promise.all([stdoutP, stderrP]);
   const parsed = parseEventStream(lines);
   if (code !== 0) {
-    const detail = parsed.errorHint ?? stderr.trim().split("\n").slice(-5).join("\n");
+    const detail = spawnErr
+      ? `spawn error — ${spawnErr}`
+      : parsed.errorHint ?? stderr.trim().split("\n").slice(-5).join("\n");
     return { kind: "provider_error", error: `pi exited ${code}: ${detail.slice(0, 500)}` };
   }
   if (parsed.assistantText === null) {
