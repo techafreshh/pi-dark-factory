@@ -83,6 +83,12 @@ before every mutating step**. Never skip a failed preflight: report and stop.
 
 ### Stage 0 — precheck (local `gh`, read-only)
 
+BOUNDARY (from a real session, 2026-10-23): the skill + `factory-remote` are
+the ENTIRE factory interface — never read a local `pi-dark-factory` checkout
+for config shapes, templates, or "grounding" (the user forbids it and the
+skill is the source of truth); never push to or configure the user's GitHub
+repo content beyond what the staged verbs do, without explicit consent.
+
 1. `gh repo view <owner>/<name> --json name,owner,defaultBranchRef,primaryLanguage`
    — repo exists, capture default branch (never assume `main`).
 2. **PRD check**: look for the product document —
@@ -107,6 +113,41 @@ skip to ops mode. Report the factory's version and current repos.
 reserves two scenario ports, writes `config.json` + scenario templates on the
 VPS. Before firing, tell the user what will be written. Then surface the
 decisions they must confirm (the API returns `next_steps`):
+
+**⚠ Config is WRITE-ONLY and the schema is strict — these shape rules come
+from a real onboarding (kvstore, 2026-10-23) where wrong shapes were silently
+stored broken or rejected one field at a time, costing ~6 attempts:**
+
+- `models` entries are OBJECTS: `{ "provider": "...", "model": "...",
+  "thinking": "low|medium|high|max" }` plus optional
+  `"fallback": ["provider/model:thinking", …]` — fallbacks are the ONLY place
+  the `provider/model:thinking` string form is valid.
+- **Never** write a dotted string as a stage value (`"models": {"default":
+  "acme/glm:high"}` is silently stored broken and breaks every stage and the
+  backlog slicer that uses it — the server does not validate at write time).
+- **Never** put the thinking suffix inside `model` — `"model": "acme/glm:high"`
+  sends an invalid model id to the provider (slicer symptom: deterministic
+  `empty streamed completion`).
+- `config` is write-only: the only "read" is the POST response echo showing
+  the merged result — **always re-read the echo after every push** and verify
+  every `models.*` renders as an object with a `provider`.
+- A `{}` patch **silently writes and echoes defaults**; don't use it to probe.
+
+Copy-paste skeleton (the exact shape a real onboarding converged to after six
+rejected attempts — fill provider/model and mode):
+
+```bash
+factory-remote config <slug> --json '{
+  "models": {
+    "default":   {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"max",
+                  "fallback":["clinepass-rotator/cline-pass/glm-5.3-flash","deepseek/deepseek-flash:high"]},
+    "plan":      {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"low"},
+    "implement": {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"max"},
+    "review":    {"provider":"river","model":"zai-org/GLM-5.3-Flash","thinking":"high"}
+  },
+  "env": {"mode":"compose","image":"node:22"}
+}'
+```
 
 - **models**: default tier for everything + per-stage overrides. Suggest the
   tier lesson from the runbooks: disciplined model for implement/review,
@@ -206,6 +247,40 @@ scenario can never burn a lap. Probe contract: `status:N` (curl -s -o /dev/null
 `exit:N` (implicit), `max_ms:`; values must be space-free; unknown tokens fail
 closed.
 
+**Full schema** (don't rediscover it by probing the validator — kvstore's
+agent burned ~8 attempts and big tokens doing exactly that):
+
+```json
+{
+  "name": "runtime",
+  "port": "first",
+  "start": "node server.js",
+  "readiness_path": "/",
+  "setup": "optional shell run before start (e.g. npm install) — unset = skip",
+  "teardown": "optional shell run after probes",
+  "probes": [
+    {
+      "id": "health-200",
+      "description": "GET /health answers 200 {ok:true}",
+      "command": "curl -s http://127.0.0.1:$PORT/health",
+      "expect": "status:200 body_contains:ok",
+      "timeout_ms": 10000
+    }
+  ]
+}
+```
+
+- **`$PORT` is injected into every probe/setup/start/teardown command's env**
+  (resolved from the repo's reserved pair) — never hardcode a port number.
+- Probe `expect` is the space-separated token string from the probe contract
+  above; `values must be space-free` means a `body_contains:` value cannot
+  include a literal space (use `body_matches:` with `\s` patterns).
+- Every field name matters: `port` / `start` / `readiness_path` / `probes[].id`
+  / `probes[].command` / `probes[].expect` — the validator names missing ones
+  one at a time. Without `$PORT`, a nod to `127.0.0.1:$PORT` fails closed.
+- The harness runs `start` in the foreground and kills it authoritatively
+  after probes — write `start` as a single command, never a backgrounded one.
+
 ### Stage 4 — backlog gate
 
 Needs the PRD text locally (Stage 0 put it in the repo — `gh api` it down or
@@ -219,6 +294,18 @@ Show the slice (titles + depends), then `--create` on explicit confirmation
 (creates real GitHub issues, wired with `Depends on: #n`, deduped by title).
 The first sliced issue is the walking skeleton by contract — verify the
 preview starts with one.
+
+**Slicer facts** (learned on kvstore's onboarding, 2026-10-23):
+- The slicer runs VPS-side and calls the **plan-stage model** with low
+  reasoning — a broken `models.plan` (dotted string, or a thinking suffix
+  inside `model`) fails it with the deterministic
+  `empty streamed completion (check provider quota/max_tokens)`.
+  Fix the config shape first; it is almost never provider quota.
+- If it still fails with a valid-looking config, report it to the factory
+  owner with the exact config — do NOT keep rotating models/blind-probing
+  (six permutations were burned on kvstore before the shape was found).
+- `logs --repo <slug>` receipts are FACTORY-GLOBAL rows filtered by repo
+  mention — unrelated repos' rows can appear; don't read aliasing into it.
 
 ### Stage 5 — first lap (spends real tokens)
 
