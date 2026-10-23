@@ -80,6 +80,26 @@ describe("resolveModels", () => {
   test("throws when the base model is undefined", () => {
     expect(() => resolveModels(cfg({ default: { thinking: "low" } }), "plan")).toThrow(/provider and model/);
   });
+  test("a thinking suffix baked into model is normalized to the thinking field", () => {
+    // kvstore onboarding: "acme/glm:high" went to the provider verbatim and
+    // failed as unknown-model — config.ts strips and lifts it instead
+    const models = resolveModels(cfg({ default: { provider: "river", model: "zai-org/GLM-5.3-Flash:max" } }), "plan");
+    expect(models.base.model).toBe("zai-org/GLM-5.3-Flash");
+    expect(models.base.thinking).toBe("max");
+  });
+  test("explicit thinking wins over a baked-in suffix; unknown suffixes stay in the model", () => {
+    const lo = resolveModels(cfg({ default: { provider: "a", model: "m:high", thinking: "low" } }), "plan");
+    expect(lo.base.model).toBe("m");
+    expect(lo.base.thinking).toBe("low");
+    const odd = resolveModels(cfg({ default: { provider: "a", model: "weird-model:flavor" } }), "plan");
+    expect(odd.base.model).toBe("weird-model:flavor"); // not a thinking level — left alone
+    expect(odd.base.thinking).toBeUndefined();
+  });
+  test("a dotted string for a stage entry throws with the object-form hint", () => {
+    expect(() =>
+      resolveModels(cfg({ default: { provider: "a", model: "m" }, plan: "river/x:low" as any }), "plan")
+    ).toThrow(/must be an object/);
+  });
 });
 
 describe("loadRepoConfig", () => {

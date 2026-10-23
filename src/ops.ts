@@ -362,7 +362,19 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
   }
   try { rmSync(outFile); } catch {}
   if (!text.trim()) throw new Error("slicer failed: empty streamed completion (check provider quota/max_tokens)");
-  return parseSlicerOutput(text);
+  const parsed = parseSlicerOutput(text);
+  if (parsed.length === 0) {
+    // parse returned nothing — park the raw model output where the operator
+    // (and the laptop agent) can read it instead of masking the failure
+    // behind an undefined variable
+    const rawPath = join(tmpdir(), `pdf-slicer-raw-${Date.now()}.txt`);
+    try { writeFileSync(rawPath, text); } catch {}
+    throw new Error(
+      `slicer completed but 0 issues parsed from its output — raw saved to ${rawPath}; ` +
+        `sharpen the PRD's deliverables or adjust models.plan in config`
+    );
+  }
+  return parsed;
 }
 
 const CONFIG_PATCH_ALLOW = [
@@ -386,6 +398,37 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   const bad = Object.keys(patch).filter((k) => !CONFIG_PATCH_ALLOW.includes(k));
   if (bad.length > 0)
     throw new Error("config patch keys outside the allowlist (" + CONFIG_PATCH_ALLOW.join(", ") + "): " + bad.join(", "));
+  // shape-validate models at WRITE time — the silent-broken shapes (dotted
+  // strings, thinking suffixes inside the model id) passed this write-only
+  // merge and cost a whole onboarding session (kvstore 2026-10-23)
+  if (patch.models && typeof patch.models === "object") {
+    for (const [stage, entry] of Object.entries(patch.models)) {
+      if (entry === null) continue;
+      if (typeof entry !== "object" || Array.isArray(entry))
+        throw new Error(
+          `models.${stage} must be an object {provider, model, thinking?, fallback?} — ` +
+            `a dotted string ("provider/model:thinking") is valid only in fallback arrays`
+        );
+      const model = (entry as any).model;
+      if (model !== undefined && (typeof model !== "string" || model.includes(":")))
+        throw new Error(
+          `models.${stage}.model must be the bare model id (got ${JSON.stringify(model)}) — ` +
+            `put the level in models.${stage}.thinking; the provider/model:thinking form belongs in fallback arrays`
+        );
+      if ((entry.provider !== undefined || model !== undefined) && !model)
+        throw new Error(`models.${stage} must set both provider and model`);
+      const fb = (entry as any).fallback;
+      if (fb !== undefined) {
+        if (!Array.isArray(fb))
+          throw new Error(`models.${stage}.fallback must be an array of "provider/model[:thinking]" strings`);
+        for (const f of fb)
+          if (typeof f !== "string" || !/^[^\s]+\/[^\s]+(:\w+)?$/.test(f))
+            throw new Error(
+              `models.${stage}.fallback entries must be "provider/model[:thinking]" strings (got ${JSON.stringify(f)})`
+            );
+      }
+    }
+  }
   const path = join(repoCfgDir(stateDir, slug), "config.json");
   if (!existsSync(path)) throw new Error("repo " + slug + " is not onboarded");
   const merged = deepMerge(JSON.parse(readFileSync(path, "utf8")), patch);
@@ -403,11 +446,8 @@ export async function opsBacklog(
   const cfg: RepoConfig = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
   const gh = new Gh(cfg.repo);
   const sliced = await slice(prdText, cfg, opts.max ?? 40);
-  if (sliced.length === 0) {
-    const rawPath = join(stateDir, `slicer-raw-${Date.now()}.txt`);
-    writeFileSync(rawPath, res.text);
-    throw new Error(`slicer output unparsable — raw output saved to ${rawPath}`);
-  }
+  // note: slice() throws if its output parses to zero issues (raw kept in
+  // /tmp), so `sliced` always carries at least one build order here
   const existing = await gh.issueList("all", 500);
   const fresh = filterNew(sliced, existing.map((i) => i.title));
   const preview = fresh.map((s) => ({ title: s.title, depends: s.dependsOn }));

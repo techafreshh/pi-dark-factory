@@ -43,18 +43,45 @@ export function parseModelString(s: string): ModelSpec {
 }
 
 function baseSpec(entry: ModelEntry, where: string): ModelSpec {
-  if (!entry.provider || !entry.model) {
-    throw new Error(`models.${where} must define provider and model (stage entries inherit from models.default)`);
+  if (!entry.provider || typeof entry.model !== "string" || !entry.model) {
+    throw new Error(
+      `models.${where} must define provider and model as an OBJECT {provider, model, thinking?, fallback?} — ` +
+        `stage entries inherit from models.default, and a dotted string ("provider/model:thinking") belongs in fallback arrays only`
+    );
+  }
+  // normalize a thinking level baked into the model field ("acme/glm:high"):
+  // the raw string goes onto the wire as the model id, so a suffix silently
+  // produced an invalid-model failure at the provider (kvstore onboarding
+  // 2026-10-23 — the slicer showed it as "empty streamed completion")
+  let model = entry.model;
+  let thinking = entry.thinking;
+  const baked = model.match(/^(.+):(\w+)$/);
+  if (baked && /^(low|medium|high|max|xhigh)$/i.test(baked[2])) {
+    model = baked[1];
+    thinking = thinking ?? baked[2].toLowerCase();
   }
   return {
     provider: entry.provider,
-    model: entry.model,
-    ...(entry.thinking ? { thinking: entry.thinking } : {}),
+    model,
+    ...(thinking ? { thinking } : {}),
   };
 }
 
 /** A stage entry overrides the default entry; unspecified fields inherit. */
 export function resolveModels(cfg: RepoConfig, stage: string): StageModels {
+  // dotted-string entries degrade silently through the spread ({...string}
+  // only sets index keys) — reject them with the object-form hint instead
+  const entry = (cfg.models as any)[stage];
+  if (entry !== undefined && (typeof entry !== "object" || Array.isArray(entry)))
+    throw new Error(
+      `models.${stage} must be an object {provider, model, thinking?, fallback?} — ` +
+        `a dotted string ("provider/model:thinking") is valid only in fallback arrays`
+    );
+  if (typeof (cfg.models as any).default === "string")
+    throw new Error(
+      `models.default must be an object {provider, model, thinking?, fallback?} — ` +
+        `a dotted string ("provider/model:thinking") is valid only in fallback arrays`
+    );
   const merged: ModelEntry = { ...cfg.models.default, ...cfg.models[stage] };
   const base = baseSpec(merged, stage);
   const fallback = (merged.fallback ?? []).map(parseModelString);
