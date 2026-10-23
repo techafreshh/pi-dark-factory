@@ -42,7 +42,7 @@ export function buildStageCmd(
   worktree: string,
   stateDir: string,
   uniqueName: string,
-  opts: { passEnv?: string[]; extraEnv?: Record<string, string> } = {}
+  opts: { passEnv?: string[]; extraEnv?: Record<string, string>; publishPorts?: boolean } = {}
 ): StageEnv {
   if (cfg.env.mode !== "compose") return { argvPrefix: [], containerized: false };
 
@@ -116,7 +116,12 @@ export function buildStageCmd(
     ];
     const argvPrefix = [
       "docker", "compose", "-f", composePath, "-f", overridePath, "run", "--rm",
-      "--service-ports",
+      // publish the scenario ports ONLY for scenario runs: agent stages test
+      // their server container-locally (localhost inside the container), and
+      // a stage container squatting 127.0.0.1:8108/8110 collides with every
+      // subsequent spawn ("port is already allocated", observed mdrender
+      // 10:27) — the port pair belongs to the verifier, nobody else
+      ...(opts.publishPorts ? ["--service-ports"] : []),
       "--name", uniqueName, "--workdir", worktree,
       ...mounts, ...envFlags, cfg.env.service, ...wrap,
     ];
@@ -124,9 +129,10 @@ export function buildStageCmd(
   }
 
   // No compose in the worktree yet — generic fallback image, factory-owned:
-  // cache volumes keep pip/uv/npm installs cheap across stages, and the
-  // scenario ports are published on 127.0.0.1 for host-side verification.
-  const ports = cfg.scenario.ports.map((p) => ["-p", `127.0.0.1:${p}:${p}`]).flat();
+  // cache volumes keep pip/uv/npm installs cheap across stages, and — only
+  // for scenario runs — the scenario ports are published on 127.0.0.1 for
+  // host-side verification.
+  const ports = (opts.publishPorts ? cfg.scenario.ports : []).map((p) => ["-p", `127.0.0.1:${p}:${p}`]).flat();
   const caches = ["-v", "pdf-uv:/root/.cache/uv", "-v", "pdf-pip:/root/.cache/pip", "-v", "pdf-npm:/root/.npm"];
   const argvPrefix = [
     // -i is load-bearing: callPi writes the stage prompt to the spawned

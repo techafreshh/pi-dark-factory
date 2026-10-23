@@ -111,6 +111,7 @@ export async function runVerify(
       cfg.env.mode === "compose"
         ? buildStageCmd(cfg, opts.worktree, opts.stateDir, `pdf-${cfg.slug}-${opts.issue}-${key}`, {
             extraEnv: { PORT: String(spec.port), WORKTREE: opts.worktree },
+            publishPorts: true, // scenario runs are the ONLY publishers of the port pair
           })
         : undefined;
     const result = await runScenario(spec, scratch, {

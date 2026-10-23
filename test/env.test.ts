@@ -38,6 +38,7 @@ describe("buildStageCmd (container execution environment)", () => {
     const wt = mkdtempSync(join(tmpdir(), "pdfenv-")); // no compose file inside
     const s = buildStageCmd(cfg({ mode: "compose", image: "ubuntu:24.04" }, [8100, 8102]), wt, "/state", "lap-1", {
       extraEnv: { PORT: "8100" },
+      publishPorts: true, // scenario runs are the only publishers
     });
     expect(s.containerized).toBe(true);
     expect(s.argvPrefix[0]).toBe("docker");
@@ -54,6 +55,9 @@ describe("buildStageCmd (container execution environment)", () => {
     expect(args).toContain("GIT_CONFIG_VALUE_0=*");   // cross-uid git safety
     expect(s.argvPrefix[s.argvPrefix.length - 1]).toBe("ubuntu:24.04"); // image last, inner cmd appended by caller
     expect(s.cleanup).toEqual(["docker", "rm", "-f", "lap-1"]);
+    // agent stages never publish the reserved ports — only scenario runs do
+    const agent = buildStageCmd(cfg({ mode: "compose", image: "ubuntu:24.04" }, [8100, 8102]), wt, "/state", "lap-1b");
+    expect(agent.argvPrefix.join(" ")).not.toContain("-p 127.0.0.1:");
   });
 
   test("compose mode: product -f + factory override -f, host-gateway plumbing, git wrap", () => {
@@ -69,8 +73,11 @@ describe("buildStageCmd (container execution environment)", () => {
     expect(args).not.toContain("-p 127.0.0.1:"); // absent — product compose owns port publishing
     expect(args).not.toContain("pdf-uv:");   // no factory caches in product compose mode
     expect(args).toContain(`--workdir ${wt}`);
-    expect(args).toContain("--service-ports"); // `compose run` publishes nothing by default
+    expect(args).not.toContain("--service-ports"); // agent stages never publish the port pair
     expect(args).toContain("stage-sh");        // git self-heal wrapper before the caller's command
+    // scenario runs opt into publishing via --service-ports
+    const scen = buildStageCmd(cfg({ mode: "compose", service: "worker" }), wt, st, "lap-2-runtime", { publishPorts: true });
+    expect(scen.argvPrefix.join(" ")).toContain("--service-ports");
     const override = readFileSync(join(st, "compose-override.yml"), "utf8");
     expect(override).toContain("host.docker.internal:host-gateway");
     expect(override).toContain("worker:");

@@ -76,7 +76,12 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
          // would starve the factory user's own pi — repair ownership via a
          // root container through the docker socket (factory has no host sudo)
          `docker run --rm -v /home/factory/.pi:/fix alpine chown -R 1001:1001 /fix 2>/dev/null || true; ` +
-         `docker ps -aq --filter name=pdf-${cfg.slug}- | xargs -r docker rm -f`],
+         `docker ps -aq --filter name=pdf-${cfg.slug}- | xargs -r docker rm -f` +
+         // a container publishing this repo's reserved scenario ports (any
+         // name: a leaked compose stack, a foreign project) blocks every
+         // spawned stage with "port is already allocated" — remove holders
+         // name-agnostically; the ports are reserved to this repo by config
+         (cfg.scenario.ports ?? []).map((p) => `; docker ps -aq --filter publish=${p} | xargs -r docker rm -f`).join("")],
         { timeoutMs: 30000 }
       ).catch(() => {});
     }
