@@ -60,30 +60,19 @@ describe("buildRuntimeContext (the where-am-I brief)", () => {
 });
 
 describe("instabox mode plumbing", () => {
-  test("machine name is stable per lap and matches the env.ts derivation", () => {
+  test("machine name is stable per lap", () => {
     expect(machineNameFor("mdrender", 3)).toBe("pdf-mdrender-i3");
-    // stage env bridges over the same name when the caller passes it
-    const s = buildStageCmd(cfg("instabox"), "/any/worktree", "/state", "pdf-app-7-impl-1-mvkt", { machine: machineNameFor("app", 7) });
-    expect(s.containerized).toBe(true);
-    expect(s.argvPrefix.slice(0, 3)).toEqual(["instabox", "ssh", "pdf-app-i7"]);
-    expect(s.argvPrefix).toContain("--");
-    expect(s.cleanup).toEqual([]);
   });
 
-  test("box_dir default and override both reach the remote cd", () => {
-    const def = buildStageCmd(cfg("instabox"), "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineNameFor("app", 2) });
-    const joined = def.argvPrefix.join(" ");
-    expect(joined).toContain("/data/workspace/app");
-    const custom = buildStageCmd(
-      { ...cfg("instabox"), env: { ...cfg("instabox").env, instabox: { box_dir: "/data/ws/elsewhere" } } } as any,
-      "/wt", "/state", "pdf-app-2-plan-1-x", { machine: machineNameFor("app", 2) }
-    );
-    expect(custom.argvPrefix.join(" ")).toContain("/data/ws/elsewhere");
-  });
-
-  test("without machine the instabox branch still produces a safe bridge", () => {
-    const s = buildStageCmd(cfg("instabox"), "/wt", "/state", "pdf-app-9-impl-1-x");
-    expect(s.containerized).toBe(true);
-    expect(s.argvPrefix[2]).toBe("pdf-app-9");
+  test("stages without a machine bridge run host-side in instabox mode", () => {
+    // the CLI-bridge design that prefixed stages with `instabox ssh <machine>`
+    // lost to machine.callStage — and that binary was never installed
+    // host-side, so the old name derivation turned every plan spawn into an
+    // empty "pi exited 127" (spawn ENOENT). Plan is host-side by design; the
+    // in-box stages (implement/review/scenarios) never reach buildStageCmd.
+    const s = buildStageCmd(cfg("instabox"), "/wt", "/state", "pdf-app-9-plan-1-x");
+    expect(s.containerized).toBe(false);
+    expect(s.argvPrefix).toEqual([]);
+    expect(s.cleanup).toBeUndefined();
   });
 });
