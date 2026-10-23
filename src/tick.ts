@@ -677,7 +677,7 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
               // revive (the daily cap and stagnation breaker still bind), and
               // re-intake once. Bounded: at most one cooldown per repo/tick.
               revivedInTick = true;
-              receipt(opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000}s before one in-tick revive attempt (fuses: daily cap, stagnation)`);
+              receipt(opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
               await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
               autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
               next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
