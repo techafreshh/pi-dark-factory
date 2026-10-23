@@ -98,7 +98,15 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
          // name: a leaked compose stack, a foreign project) blocks every
          // spawned stage with "port is already allocated" — remove holders
          // name-agnostically; the ports are reserved to this repo by config
-         (cfg.scenario.ports ?? []).map((p) => `; docker ps -aq --filter publish=${p} | xargs -r docker rm -f`).join("")],
+         (cfg.scenario.ports ?? []).map((p) => `; docker ps -aq --filter publish=${p} | xargs -r docker rm -f`).join("") +
+         // self-heal the pi launcher's node seed: /usr/local/bin/pi (mounted
+         // from .pi/agent/bin/pi) execs .pi/host-runtimes/node/bin/node —
+         // when that binary goes missing (vanished once, cause unknown) every
+         // container spawn dies with exit 127. Re-copy it from the factory
+         // user's node before the stage needs it.
+         `; SEED=/home/factory/.pi/host-runtimes/node/bin/node; ` +
+         `if [ ! -x $SEED ] && SRC=$(bash -lc 'command -v node' 2>/dev/null) && [ -x $SRC ]; ` +
+         `then mkdir -p $(dirname $SEED) && cp $SRC $SEED && echo seed-repaired; fi`],
         { timeoutMs: 30000 }
       ).catch(() => {});
     }
