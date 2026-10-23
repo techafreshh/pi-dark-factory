@@ -16,12 +16,21 @@ description: >-
 > Installed copy lives in the user's second-brain (`~/.agents/skills/pi-factory/`).
 > Edit THIS file (in the factory repo) and re-copy: it is the source of truth.
 
-The pi-dark-factory is an unattended loop on the VPS: a systemd timer fires
-`foreman tick`, one lap per repo takes the oldest claimable GitHub issue
+The pi-dark-factory is an unattended loop on the VPS: a systemd **timer fires
+`foreman tick` every 15 minutes** (armed 2026-10-23 at the user's request —
+"full dark factory"; `Persistent=true` catches up after reboots), and each
+tick **chains laps down the dependency chain**: after a merge or block the
+same tick re-intakes and runs the next claimable issue (bounded at 6
+laps/repo/tick), auto-revives blocked issues (fresh attempt budget; fuses:
+max 3 revive rounds/issue/day and a stagnation breaker when the identical
+failure signature repeats), and waits out one 10-min in-tick cooldown to
+retry its own recovery. Every lap takes the oldest claimable GitHub issue
 through intake → plan → implement → verify (CI + black-box runtime/holdout
 scenarios) → review → squash-merge → close. The **claim ledger** (SQLite on
-the VPS) is the source of truth — a delivered issue is never re-claimed; the
-lap advances the dependency chain one link per tick.
+the VPS) is the source of truth — a delivered issue is never re-claimed.
+Manual `tick` is always safe: the pidfile no-ops it while the timer's tick
+is live. To PAUSE the factory: `sudo systemctl disable --now pi-factory.timer`
+(VPS-side, user only).
 
 **This skill never SSHes into the VPS.** Everything runs through the remote
 client (`bin/factory-remote` in this checkout, python stdlib) against the
@@ -249,7 +258,7 @@ All verbs run from any directory (creds are read from env or
 | `config SLUG --json '{…}'` | deep-merge a config patch | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Two-writer caveat: last write wins per key — re-echo after a disagreement |
 | `scenario SLUG runtime\|holdout --file F` | write + server-side validate a scenario JSON | holdout = adversarial layer; see Stage 3 probe language |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
-| `tick SLUG` | fire a lap now | returns immediately (`queued`); tokens are spent server-side — confirm with the user first; the pidfile arbitrates against the systemd timer |
+| `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
 | `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
 | `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
 
