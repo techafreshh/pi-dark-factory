@@ -118,15 +118,24 @@ export function newestSessionFileForSlug(stateDir: string, slug: string, issue?:
   }
   let best: { f: string; m: number } | null = null;
   for (const dir of dirs) {
+    // machine-mode (instabox) stages run in the box: their event streams are
+    // captured beside the issue dir as implement-<attempt>.jsonl /
+    // review-<attempt>.jsonl (written when the stage settles) rather than in
+    // sessions/ — same pi event format, so they compete on newest-wins
+    const candidates: string[] = [];
     const sdir = join(root, dir, "sessions");
-    let files: string[];
     try {
-      files = readdirSync(sdir).filter((f) => f.endsWith(".jsonl"));
-    } catch {
-      continue;
-    }
-    for (const f of files) {
-      const p = join(sdir, f);
+      candidates.push(...readdirSync(sdir).filter((f) => f.endsWith(".jsonl")).map((f) => join(sdir, f)));
+    } catch {}
+    const idir = join(root, dir);
+    try {
+      candidates.push(
+        ...readdirSync(idir)
+          .filter((f) => /^(implement|review)-\d+\.jsonl$/.test(f))
+          .map((f) => join(idir, f))
+      );
+    } catch {}
+    for (const p of candidates) {
       try {
         const m = statSync(p).mtimeMs;
         if (!best || m > best.m) best = { f: p, m };
