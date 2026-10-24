@@ -262,7 +262,9 @@ export class InstaBox {
     for (;;) {
       const state = (m.state ?? "").toLowerCase();
       if (state === "running") return m;
-      if (state === "paused") await this.resume(m.id);
+      // "suspended" is what the platform (and its idle auto-suspend) leaves
+      // behind — same recovery as an explicit pause: resume it
+      if (state === "paused" || state === "suspended") await this.resume(m.id);
       else if (state === "stopped") await this.start(m.id);
       // creating/booting/pausing/stopping/deleting: just wait for the machine
       if (Date.now() >= until) throw new Error(`instabox machine ${input.name} never reached running (state: ${m.state})`);
