@@ -285,14 +285,61 @@ agent burned ~8 attempts and big tokens doing exactly that):
   "probes": [
     {
       "id": "health-200",
-      "description": "GET /health answers 200 {ok:true}",
+      "description": "GET /health answers 200",
+      "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health",
+      "expect": "status:200",
+      "timeout_ms": 10000
+    },
+    {
+      "id": "health-body",
+      "description": "GET /health body says ok:true",
       "command": "curl -s http://127.0.0.1:$PORT/health",
-      "expect": "status:200 body_contains:ok",
+      "expect": "json:ok=true",
       "timeout_ms": 10000
     }
   ]
 }
 ```
+
+**Probe-token spec — the matcher, exactly as the runner implements it** (derive
+nothing; this IS the contract):
+
+- The matcher sees the probe command's **stdout only** — stderr never reaches
+  it; the exit code is a separate token. An empty `expect` means `exit:0`,
+  and an implicit `exit:0` is added whenever no explicit `exit:` token
+  is present.
+- `status:N` — the **last non-empty stdout line must equal `N` exactly**. The
+  runner never makes the HTTP call itself: the command must emit the code
+  (`curl -s -o /dev/null -w '%{http_code}'`). A plain `curl -s URL` puts the
+  BODY on stdout and `status:200` fails as `got "{…}", want "200"` — this
+  exact trap cost a blocked lap on kvstore.
+- `json:path=value` — ALL of stdout must be one valid JSON document; the path
+  walks objects/arrays with dot segments and optional `[N]` indices
+  (`data.items[0].id`); the value parses leniently (JSON literal or raw
+  string).
+- `body_contains:VAL` — substring test on stdout; VAL cannot contain a
+  space (tokens split on whitespace — switch to `body_matches` for those).
+- `body_matches:REGEX` — a **JavaScript RegExp** (not ERE, not BRE): `\s`,
+  `\d`, `[\s\S]`, lazy quantifiers all work; it is **unanchored by default** —
+  write your own `^…$`; an invalid regex fails the probe closed.
+- `exit:N` — the command's exit code. `max_ms:N` — the wall-clock budget the
+  runner enforces around the command (the token itself always passes).
+- Unknown tokens fail closed at run time; `--lint` catches them at authoring
+  time instead.
+
+**Lint before every write** — the dry-run verb validates the full shape AND
+lints the probes, with nothing written:
+
+```bash
+factory-remote scenario <slug> runtime --file runtime.json --lint
+```
+
+Deterministic failures (unknown tokens from space-split values, uncompilable
+regexes) are rejected; likely-trap warnings (a `status:` probe whose command
+never emits the code, hardcoded port numbers instead of `$PORT`) are printed.
+`--dump` prints the stored scenario back — the read side of a formerly
+write-only verb (todos-api postmortem: these two would have saved every
+blocked lap).
 
 - **`$PORT` is injected into every probe/setup/start/teardown command's env**
   (resolved from the repo's reserved pair) — never hardcode a port number.
@@ -393,6 +440,26 @@ Every signature below was paid for on mdrender/kvstore/todos-api. Read the
 | river `provider_error` bursts (upstream `terminated` etc.) | upstream flakiness; the 3-tier chain advances on its own | watch only; worry when fallbacks also fail |
 | `402 insufficient_credits` (clinepass) or router `429` | wrong billing surface vs weekly pool — see the clinepass row above | fix model ids / add a key |
 
+Operator discipline from both postmortems: after a VPS-side infra failure is
+fixed, do NOT immediately re-drive `unblock`+`tick` — wait for a positive
+canary (the fixed path proven green once) first; kvstore burned two full
+attempt cycles against a still-broken mount that way.
+
+### InstaBox machine lifecycle (and why machines linger)
+
+One machine per issue (`pdf-<slug>-i<issue>`): created lazily at the first
+implement attempt, kept across ALL of that lap's repair rounds AND later
+revive rounds (its `/data/repo` clone IS the worktree — destroying it
+mid-lap destroys the work), and deleted the moment the lap books out
+(merged OR terminally blocked). Idle boxes auto-suspend platform-side —
+they still count against the account's machine quota — and the factory
+resumes them on the next attempt. Strays cannot pile up: every tick's tail
+and `cleanup` both reap any `pdf-*` machine whose issue has no `in_progress`
+ledger row, and neither ever touches a live lap's machine. If a machine
+looks "running" long after its lap finished, suspect the platform's stale
+listing first (phantom running records were observed ~2h after successful
+deletes) — the janitor reaps it next tick regardless.
+
 ## factory-remote — full CLI reference
 
 All verbs run from any directory (creds are read from env or
@@ -406,8 +473,8 @@ All verbs run from any directory (creds are read from env or
 | `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | 200 lines default |
 | `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |
 | `onboard OWNER/NAME` | register a repo: config template, scenario templates, port pair | idempotent (`already` if done) |
-| `config SLUG --json '{…}'` | deep-merge a config patch | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Two-writer caveat: last write wins per key — re-echo after a disagreement |
-| `scenario SLUG runtime\|holdout --file F` | write + server-side validate a scenario JSON | holdout = adversarial layer; see Stage 3 probe language |
+| `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the effective config** (write-only state forced probe-by-mutation — kvstore postmortem lesson 7) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
+| `scenario SLUG runtime\|holdout --file F [--lint] [--dump]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario** | holdout = adversarial layer; ALWAYS `--lint` before the write; see Stage 3 for the probe-token spec |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
 | `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |

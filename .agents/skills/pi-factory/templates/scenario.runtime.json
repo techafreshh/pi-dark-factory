@@ -5,11 +5,13 @@
   "start": "node server.js",
   "readiness_path": "/",
   "probes": [
-    { "id": "health-200", "description": "GET /health answers 200 with ok true body",
-      "command": "curl -s http://127.0.0.1:$PORT/health", "expect": "status:200 body_contains:ok" },
-    { "id": "main-endpoint", "description": "the product's primary endpoint answers its contract",
+    { "id": "health-200", "description": "GET /health answers 200 — the command EMITS the code; the matcher judges stdout",
+      "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health", "expect": "status:200" },
+    { "id": "health-body", "description": "GET /health body is JSON ok:true (json: needs ALL of stdout to be one JSON doc)",
+      "command": "curl -s http://127.0.0.1:$PORT/health", "expect": "json:ok=true" },
+    { "id": "main-endpoint", "description": "the product's primary endpoint answers its contract (exit:0 is implicit)",
       "command": "curl -s -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{}'",
-      "expect": "status:200 body_matches:^\\{", "timeout_ms": 10000 },
+      "expect": "body_matches:^\\{", "timeout_ms": 10000 },
     { "id": "unknown-404", "description": "unknown paths answer 4xx, never 5xx",
       "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/definitely-not-a-route",
       "expect": "status:404" }

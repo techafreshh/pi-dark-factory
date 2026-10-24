@@ -92,11 +92,20 @@ def _print_slugs(prefix: str, rows: list, key: str):
 
 # ── commands ─────────────────────────────────────────────────────────────────
 
-def cmd_health(_a):
+def _url() -> str:
     url = os.environ.get("FACTORY_URL", "").rstrip("/")
     if not url:
-        die("FACTORY_URL is not set")
-    req = urllib.request.Request(url + "/health")
+        try:
+            url = open(os.path.join(os.path.expanduser("~/.config/factory-remote"), "url"), encoding="utf-8").read().strip()
+        except OSError:
+            pass
+    if not url:
+        die("FACTORY_URL is not set (or stored in ~/.config/factory-remote/url)")
+    return url
+
+
+def cmd_health(_a):
+    req = urllib.request.Request(_url() + "/health")
     with urllib.request.urlopen(req, timeout=10) as r:
         print(json.dumps(json.loads(r.read())))
 
@@ -221,7 +230,19 @@ def cmd_onboard(a):
 def cmd_scenario(a):
     if a.kind not in ("runtime", "holdout"):
         die("kind must be runtime or holdout")
+    if a.dump:
+        code, body = _api("GET", f"/repos/{a.slug}/scenario?kind={a.kind}")
+        print(json.dumps(body.get("scenario"), indent=2))
+        return
+    if not a.file:
+        die("provide --file F (write or --lint) or --dump")
     content = open(a.file, encoding="utf-8").read()
+    if a.lint:
+        code, body = _api("PUT", f"/repos/{a.slug}/scenario", {"kind": a.kind, "content": content, "lint": True})
+        print(f"LINT OK for {a.kind}.json (nothing written)")
+        for w in body.get("warnings", []):
+            print(f"  warn: {w}")
+        return
     code, body = _api("PUT", f"/repos/{a.slug}/scenario", {"kind": a.kind, "content": content})
     print(f"{a.kind}.json updated for {a.slug}: {body.get('path')}")
 
@@ -256,18 +277,27 @@ def cmd_unblock(a):
     print(json.dumps(body, indent=2))
 
 
-def cmd_config(a):
-    patch = json.loads(a.json)
-    code, body = _api("POST", "/repos/" + a.slug + "/config", patch, timeout=TIMEOUT_FAST)
-    cfg = body.get("config") or {}
+def _print_config(cfg):
     env = cfg.get("env") or {}
     merge = cfg.get("merge") or {}
-    print("config updated: " + str(body.get("config_path")))
     print("  env.mode=" + str(env.get("mode")) + " image=" + str(env.get("image")) + " service=" + str(env.get("service")))
     print("  required_checks=" + json.dumps(merge.get("required_checks")))
     for k, v in (cfg.get("models") or {}).items():
         if isinstance(v, dict) and v.get("provider"):
             print("  models." + k + " = " + str(v.get("provider")) + "/" + str(v.get("model")) + " fallback=" + json.dumps(v.get("fallback")))
+
+
+def cmd_config(a):
+    if not a.json:
+        code, body = _api("GET", "/repos/" + a.slug + "/config")
+        print(f"effective config for {a.slug}:")
+        _print_config(body.get("config") or {})
+        return
+    patch = json.loads(a.json)
+    code, body = _api("POST", "/repos/" + a.slug + "/config", patch, timeout=TIMEOUT_FAST)
+    cfg = body.get("config") or {}
+    print("config updated: " + str(body.get("config_path")))
+    _print_config(cfg)
 
 
 def cmd_cleanup(_a):
@@ -287,10 +317,13 @@ def main():
     sp.add_argument("--think", action="store_true", help="include the model's reasoning text (capped per turn)")
     sp.add_argument("--issue", type=int, help="pin a specific issue's session (default: newest for the repo)")
     sp = sub.add_parser("onboard"); sp.add_argument("repo", metavar="OWNER/NAME")
-    sp = sub.add_parser("scenario"); sp.add_argument("slug"); sp.add_argument("kind", choices=["runtime", "holdout"]); sp.add_argument("--file", required=True)
+    sp = sub.add_parser("scenario"); sp.add_argument("slug"); sp.add_argument("kind", choices=["runtime", "holdout"])
+    sp.add_argument("--file", help="scenario JSON to write (or validate with --lint)")
+    sp.add_argument("--lint", action="store_true", help="validate + lint WITHOUT writing — run this before every write")
+    sp.add_argument("--dump", action="store_true", help="print the stored scenario instead of writing")
     sp = sub.add_parser("backlog"); sp.add_argument("slug"); sp.add_argument("--prd-file", required=True); sp.add_argument("--max", type=int, default=40); sp.add_argument("--create", action="store_true")
-    sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json", required=True,
-                        help="config patch JSON: models, env, merge, timeouts keys")
+    sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json",
+                        help="config patch JSON: models, env, merge, timeouts keys (omit to READ the effective config)")
     sp = sub.add_parser("tick"); sp.add_argument("slug")
     sp = sub.add_parser("unblock"); sp.add_argument("slug"); sp.add_argument("issue", type=int); sp.add_argument("--prune", action="store_true")
     sub.add_parser("cleanup")

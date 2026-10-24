@@ -17,6 +17,7 @@ import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import { buildRuntimeContext } from "./runtime-context";
+import { reapOrphanMachines } from "./ops";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 
 export interface CallStageArgs {
@@ -867,6 +868,13 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
     const limit = opts.concurrency ?? 0;
     receipt(opts.stateDir, `dispatching ${tasks.length} lap(s), concurrency=${limit > 0 ? limit : "unlimited"}`);
     await runWithConcurrency(tasks, limit, (t) => t());
+    // instabox janitor at the tick's tail: machines are per-lap disposables,
+    // but crashed laps park them (and the platform list has shown phantom
+    // "running" records after deletes) — reap anything whose issue has no
+    // in_progress ledger row, so quota never silently fills with orphans
+    try {
+      await reapOrphanMachines(opts.stateDir, ledger, (m) => receipt(opts.stateDir, m));
+    } catch {}
   } finally {
     releaseTickLock(opts.stateDir);
   }

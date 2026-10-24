@@ -8,7 +8,7 @@
  * can never double-run a lap.
  */
 import { statSync } from "node:fs";
-import { opsBacklog, opsCleanup, opsLogs, opsOnboard, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsScenarioLint, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { runTick } from "./tick";
 import {
   newRenderState,
@@ -143,6 +143,13 @@ export function startFactoryd(opts: FactorydOpts) {
             headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
           });
         }
+        if (req.method === "GET" && tickEnd === undefined && path.endsWith("/config")) {
+          return respond(opsGetConfig(opts.stateDir, slug));
+        }
+        if (req.method === "GET" && tickEnd === undefined && path.endsWith("/scenario")) {
+          const kind = url.searchParams.get("kind") === "holdout" ? "holdout" : "runtime";
+          return respond(opsGetScenario(opts.stateDir, slug, kind));
+        }
         if (req.method === "POST" && path === "/repos") {
           return respond(await opsOnboard(opts.stateDir, String((await readJson(req)).repo ?? "")));
         }
@@ -153,7 +160,10 @@ export function startFactoryd(opts: FactorydOpts) {
           const body = await readJson(req);
           const kind = body.kind === "holdout" ? "holdout" : "runtime";
           if (typeof body.content !== "string" || !body.content.trim()) {
-            return fail(422, "body must be {kind: 'runtime'|'holdout', content: '<json string>'}");
+            return fail(422, "body must be {kind: 'runtime'|'holdout', content: '<json string>', lint?}");
+          }
+          if (body.lint === true) {
+            return respond(opsScenarioLint(opts.stateDir, slug, kind, body.content));
           }
           return respond(await Promise.resolve(opsScenarioSet(opts.stateDir, slug, kind, body.content)));
         }

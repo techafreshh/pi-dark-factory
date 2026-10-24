@@ -11,8 +11,8 @@
     { "id": "oversized-rejected", "description": "oversized body is rejected with the exact boundary",
       "command": "python3 -c \"print('{\\\"x\\\":\\\"'+'a'*1000000+'\\\"}')\" | curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' --data-binary @-",
       "expect": "status:413 max_ms:10000" },
-    { "id": "html-injection-inert", "description": "active markup in input comes out inert (escaped, never executed)",
-      "command": "curl -s -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{\"md\":\"<script>alert(1)</script>\"}'",
+    { "id": "html-injection-inert", "description": "active markup in input comes out inert (escaped, never executed) — the \\n%{http_code} suffix puts the code on stdout's LAST line so status: and body_contains share one command",
+      "command": "curl -s -w '\\n%{http_code}' -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{\"md\":\"<script>alert(1)</script>\"}'",
       "expect": "status:200 body_contains:&lt;script&gt;" }
   ]
 }

@@ -294,6 +294,54 @@ export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" |
   return { ok: true, path };
 }
 
+/**
+ * Dry-run the scenario gate: the same shape validation as opsScenarioSet
+ * plus probe-token linting, with NO write. Deterministic runtime failures
+ * (unknown tokens from space-split values, uncompilable regexes) reject;
+ * the classic authoring traps (status:N whose command never emits the code,
+ * hardcoded ports) warn. todos-api postmortem 2026-10-24: "a scenario
+ * lint verb would have saved every blocked lap we had."
+ */
+export function opsScenarioLint(stateDir: string, slug: string, kind: "runtime" | "holdout", content: string) {
+  const dir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(dir, "config.json"))) throw new Error(`repo ${slug} is not onboarded`);
+  JSON.parse(content);
+  const warnings: string[] = [];
+  const tmp = join(dir, `.${kind}.json.lint-${Date.now()}`);
+  writeFileSync(tmp, content);
+  let spec;
+  try {
+    spec = loadScenario(tmp);
+  } catch (e: any) {
+    throw new Error(`rejected ${kind}.json: ${e.message}`);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+  const KNOWN = /^(status|json|body_contains|body_matches|exit|max_ms):/;
+  for (const p of spec.probes ?? []) {
+    for (const t of (p.expect ?? "").trim().split(/\s+/).filter(Boolean)) {
+      if (!KNOWN.test(t))
+        throw new Error(
+          `probe ${p.id}: unknown token "${t}" — expect values cannot contain spaces (tokens split on whitespace; use body_matches with \\s patterns)`
+        );
+      if (t.startsWith("body_matches:")) {
+        try {
+          new RegExp(t.slice("body_matches:".length));
+        } catch {
+          throw new Error(`probe ${p.id}: body_matches regex does not compile — the matcher is a JavaScript RegExp (not ERE/BRE)`);
+        }
+      }
+    }
+    if ((p.expect ?? "").includes("status:") && /\bcurl\b/.test(p.command ?? "") && !/-w\s+(['"])(\\n)?%\{http_code\}\1/.test(p.command ?? ""))
+      warnings.push(
+        `probe ${p.id}: status:N compares the command's LAST stdout line — the command must emit the code itself (curl -s -o /dev/null -w '%{http_code}'; a plain curl -s puts the BODY there and the probe fails as got "{…}", want "200")`
+      );
+    if (/(127\.0\.0\.1|localhost):\d{4,5}/.test(p.command ?? ""))
+      warnings.push(`probe ${p.id}: command hardcodes a port — use $PORT (injected per run from the repo's reserved pair)`);
+  }
+  return { ok: true, slug, kind, warnings };
+}
+
 const SLICER_TIMEOUT_MS = 900_000;
 
 /**
@@ -437,6 +485,23 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   return { config_path: path, config: merged };
 }
 
+/** Read verb the config gate always needed: the EFFECTIVE config, not an
+ *  echo — write-only state forced operators to probe by mutation and the
+ *  probes wrote (kvstore postmortem 2026-10-24, lesson 7). */
+export function opsGetConfig(stateDir: string, slug: string) {
+  const path = join(repoCfgDir(stateDir, slug), "config.json");
+  if (!existsSync(path)) throw new Error("repo " + slug + " is not onboarded");
+  return { slug, config: loadRepoConfig(path) };
+}
+
+/** Same read need for scenarios: dump the stored verifier, don't re-derive
+ *  it from validator behavior. */
+export function opsGetScenario(stateDir: string, slug: string, kind: "runtime" | "holdout") {
+  const path = join(repoCfgDir(stateDir, slug), `${kind}.json`);
+  if (!existsSync(path)) throw new Error(`no ${kind} scenario for ${slug} (onboard templates or a validated upload would have written one)`);
+  return { slug, kind, scenario: loadScenario(path) };
+}
+
 export async function opsBacklog(
   stateDir: string,
   slug: string,
@@ -552,43 +617,78 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
     }
   } catch {}
 
-  // instabox janitor: pdf-* machines are per-lap disposables; none of them
-  // should outlive its lap, so cleanup is allowed to reap every one it finds
-  const ibCfg = firstInstaboxConfig(stateDir);
-  if (ibCfg) {
-    try {
-      const ib = InstaBox.fromEnv(ibCfg);
-      const machines = await ib.listMachines();
-      const ours = machines.filter((m) => typeof m.name === "string" && m.name.startsWith("pdf-"));
-      for (const m of ours) {
-        try {
-          await ib.deleteMachine(m.id);
-          log.push(`deleted instabox machine ${m.name} (${m.state ?? "unknown"})`);
-        } catch (e: any) {
-          log.push(`could not delete ${m.name}: ${e.message?.slice(0, 120)}`);
-        }
-      }
-      if (ours.length === 0) log.push("no leftover instabox machines");
-    } catch (e: any) {
-      log.push(`instabox cleanup skipped: ${e.message?.slice(0, 150)}`);
-    }
+  // instabox janitor — guarded: a LIVE lap's machine must never be reaped
+  // (its clone is the worktree), so only machines whose issue has no
+  // in_progress ledger row are deleted
+  try {
+    const reaped = await reapOrphanMachines(stateDir, ledger, (m) => log.push(m));
+    if (reaped === 0) log.push("no orphaned instabox machines");
+  } catch (e: any) {
+    log.push(`instabox cleanup skipped: ${e.message?.slice(0, 150)}`);
   }
   log.push("cleanup pass complete");
   receipt(stateDir, "cleanup pass complete");
   return log;
 }
 
-/** The first instabox-mode repo config found — machines are per-account, so one key cleans all. */
-function firstInstaboxConfig(stateDir: string): RepoConfig["env"]["instabox"] | null {
+/**
+ * InstaBox janitor: pdf-* machines are per-lap disposables, but a live lap's
+ * machine must survive (its /data clone IS the worktree). A machine is an
+ * orphan unless its issue's ledger row is in_progress — merged/blocked/no-row
+ * machines (crashed laps, phantom platform records, de-onboarded repos) get
+ * deleted. Runs at every tick's tail and inside `cleanup`.
+ */
+export async function reapOrphanMachines(
+  stateDir: string,
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void
+): Promise<number> {
   const reposDir = join(stateDir, "repos");
-  if (!existsSync(reposDir)) return null;
+  if (!existsSync(reposDir)) return 0;
+  const instaboxBySlug = new Map<string, RepoConfig>();
   for (const slug of readdirSync(reposDir)) {
     const cfgPath = join(reposDir, slug, "config.json");
     if (!existsSync(cfgPath)) continue;
     try {
       const cfg = loadRepoConfig(cfgPath);
-      if (cfg.env.mode === "instabox") return cfg.env.instabox;
+      if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxBySlug.set(slug, cfg);
     } catch {}
   }
-  return null;
+  if (instaboxBySlug.size === 0) return 0;
+  const ib = InstaBox.fromEnv(instaboxBySlug.values().next().value!.env.instabox!);
+  let machines;
+  try {
+    machines = await ib.listMachines();
+  } catch (e: any) {
+    log(`instabox janitor skipped: ${e.message?.slice(0, 150)}`);
+    return 0;
+  }
+  let reaped = 0;
+  for (const m of machines) {
+    const hit = /^pdf-(.+)-i(\d+)$/.exec(m.name ?? "");
+    if (!hit) continue;
+    const cfg = instaboxBySlug.get(hit[1]);
+    if (cfg) {
+      const row = ledger.getIssue(cfg.repo, Number(hit[2]));
+      if (row && row.state === "in_progress") continue; // a lap is live in it
+      try {
+        await ib.deleteMachine(m.id);
+        reaped++;
+        log(`janitor deleted instabox machine ${m.name} (${row?.state ?? "no ledger row"})`);
+      } catch (e: any) {
+        log(`janitor could not delete ${m.name}: ${e.message?.slice(0, 120)}`);
+      }
+    } else {
+      // unknown slug (repo de-onboarded or switched off machine mode) — the
+      // machine can't belong to any live lap we know; reap it
+      try {
+        await ib.deleteMachine(m.id);
+        reaped++;
+        log(`janitor deleted instabox machine ${m.name} (unknown repo)`);
+      } catch (e: any) {
+        log(`janitor could not delete ${m.name}: ${e.message?.slice(0, 120)}`);
+      }
+    }
+  }
+  return reaped;
 }
