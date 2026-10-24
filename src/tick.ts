@@ -737,12 +737,20 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
  * chown runs through a throwaway root container (same pattern as the .pi
  * sweep before stages).
  */
-const FACTORY_UID_GID = "1001:1001";
+/** Chown target: the invoking user — the factory user (1001) in production,
+ * whoever runs the tests elsewhere. A hardcoded 1001 left test trees owned by
+ * factory after the docker-root chown, and the test runner (ubuntu) then
+ * EACCESed on its own cleanup. */
+const chownTarget = () => {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 1001;
+  const gid = typeof process.getgid === "function" ? process.getgid() : 1001;
+  return `${uid}:${gid}`;
+};
 
 export async function chownBack(stateDir: string, cfg: RepoConfig, extraDirs: string[] = []): Promise<void> {
   const dirs = [sourceDirOf(stateDir, cfg.slug), ...extraDirs];
   for (const d of dirs) {
-    await sh(["docker", "run", "--rm", "-v", `${d}:/fix`, "alpine", "chown", "-R", FACTORY_UID_GID, "/fix"], {
+    await sh(["docker", "run", "--rm", "-v", `${d}:/fix`, "alpine", "chown", "-R", chownTarget(), "/fix"], {
       timeoutMs: 600000,
     }).catch(() => {});
   }
