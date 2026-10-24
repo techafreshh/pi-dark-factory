@@ -153,7 +153,11 @@ export class InstaBox {
 
   async deleteMachine(id: string): Promise<void> {
     try {
-      const op = await this.call<InstaOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`);
+      // the API requires Idempotency-Key on DELETE too — without it every
+      // machine cleanup 400s and the box lingers for the janitor
+      const op = await this.call<InstaOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`, undefined, {
+        idempotent: true,
+      });
       if (op?.id) await this.waitOperation(op.id);
     } catch (e: any) {
       if (!(e instanceof InstaBoxError && (e.status === 404 || e.status === 409))) throw e;
