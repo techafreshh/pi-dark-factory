@@ -240,7 +240,17 @@ describe("beginTick (per-repo locks + honest refusals)", () => {
     releaseTickLock(st);
     await third.run;
 
+    // a bare daemon-shaped holder ("bun src/factoryd.ts", repo only as cwd)
+    // was once judged not-factory and stolen — add that shape to the holder
+    const holder2 = Bun.spawn(["bash", "-c", "exec -a 'bun src/factoryd.ts' sleep 30"], { cwd: import.meta.dir + "/../.." });
+    await new Promise((r) => setTimeout(r, 300)); // let it exec
+    writeFileSync(join(st, "tick-daemonish.lock"), `${holder2.pid}\n`);
+    const { acquireRepoLock, releaseRepoLock } = await import("../src/lock");
+    expect(acquireRepoLock(st, "daemonish")).toBe(false); // alive + factory-cwd = NOT stealable
+
     holder.kill();
+    holder2.kill();
     await holder.exited;
+    await holder2.exited;
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function isAlive(pid: number): boolean {
@@ -14,10 +14,21 @@ function isAlive(pid: number): boolean {
 function looksLikeFactory(pid: number): boolean {
   try {
     const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
-    return /foreman|pi-dark-factory/.test(cmdline);
+    if (/foreman|pi-dark-factory|factoryd/.test(cmdline)) return true;
   } catch {
     // no /proc (non-Linux dev box) — trust liveness alone
     return true;
+  }
+  // the daemon runs slug ticks in-process: its cmdline can be a bare
+  // "bun src/factoryd.ts" with the repo only as its CWD — and a lock it
+  // holds was once stolen as "dead" because the name check missed it,
+  // double-working two repos for a full afternoon (2026-10-24). CWD is the
+  // second witness.
+  try {
+    const cwd = realpathSync(`/proc/${pid}/cwd`);
+    return /pi-dark-factory/.test(cwd);
+  } catch {
+    return false;
   }
 }
 
