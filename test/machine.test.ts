@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LapMachine, buildMachineEnvFile, callMachineStage, machineBash, PortForwarder, type SshTarget } from "../src/machine";
+import { LapMachine, bootstrapScriptFor, buildMachineEnvFile, callMachineStage, machineBash, PortForwarder, type SshTarget } from "../src/machine";
 import { InstaBox } from "../src/instabox";
 import { callPi } from "../src/pi";
 import type { RepoConfig, StageModels } from "../src/types";
@@ -267,6 +267,44 @@ describe("LapMachine (fake control plane)", () => {
       delete process.env.INSTABOX_API_KEY;
     }
   }, 60000);
+});
+
+describe("buildMachineEnvFile (token resolution)", () => {
+  const miniCfg = {
+    repo: "acme/toy",
+    slug: "toy",
+    default_branch: "main",
+    pi: { binary: "pi", tools: [], plan_tools: [], extra_args: [] },
+    env: { mode: "instabox", instabox: { api_base: "", api_key_env: "X", repo_dir: "/data/repo" }, pass_env: ["GITHUB_TOKEN"] },
+  } as unknown as RepoConfig;
+
+  afterEach(() => {
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+  });
+
+  test("GH_TOKEN (the service env name) exports as GITHUB_TOKEN", () => {
+    process.env.GH_TOKEN = "gh_test_token";
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).toContain("export GITHUB_TOKEN='gh_test_token'");
+  });
+
+  test("an explicit GITHUB_TOKEN wins over GH_TOKEN", () => {
+    process.env.GH_TOKEN = "gh_loser";
+    process.env.GITHUB_TOKEN = "gh_winner";
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).toContain("export GITHUB_TOKEN='gh_winner'");
+  });
+
+  test("bootstrap sources the env file before its script", async () => {
+    process.env.GH_TOKEN = "gh_test_token";
+    // LapMachine.bootstrap concatenates env + script — the fake-plane test
+    // exercises it end-to-end; here we assert the script half still carries
+    // the insteadOf rewrite that consumes the exported token
+    const script = bootstrapScriptFor(miniCfg, "factory/issue-1");
+    expect(script).toContain("GITHUB_TOKEN");
+    expect(script).toContain("insteadOf");
+  });
 });
 
 describe("PortForwarder", () => {

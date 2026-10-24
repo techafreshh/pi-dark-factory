@@ -148,6 +148,12 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
     const v = process.env[key];
     if (v !== undefined && v !== "") lines.push(`export ${key}=${escapeSh(v)}`);
   }
+  // the service env names the token GH_TOKEN while pass_env lists GITHUB_TOKEN
+  // — resolve either, or the box's git and gh silently run credential-less
+  // (observed: every machine push dying as "could not read from remote
+  // repository" while the host held a valid token the whole time)
+  const gh = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (gh) lines.push(`export GITHUB_TOKEN=${escapeSh(gh)}`);
   // the box's pi needs the factory's own provider credentials: compose mode
   // gets them for free by bind-mounting ~/.pi into the stage container, but
   // a machine has its own root — ship auth.json/models.json over the same
@@ -425,7 +431,16 @@ export class LapMachine {
 
   /** Clone/fetch + check out the issue branch — idempotent, per attempt. */
   async bootstrap(): Promise<void> {
-    const res = await this.bash(bootstrapScriptFor(this.cfg, branchName(this.issue)), { timeoutMs: 10 * 60_000 });
+    // source the machine env before the bootstrap: its insteadOf rewrite
+    // needs the GitHub token, and a bare ssh exec never sees the stage
+    // driver's env.sh — without this the clone runs anonymous and every
+    // later push from the box dies credential-less
+    const env = buildMachineEnvFile(this.cfg, {
+      gates: false,
+      branch: branchName(this.issue),
+      base: this.cfg.default_branch,
+    });
+    const res = await this.bash(env + "\n" + bootstrapScriptFor(this.cfg, branchName(this.issue)), { timeoutMs: 10 * 60_000 });
     if (res.code !== 0 || !res.stdout.includes("BOOTSTRAP_OK")) {
       throw new Error(`machine bootstrap failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300) || res.stdout.trim().slice(0, 300)}`);
     }
