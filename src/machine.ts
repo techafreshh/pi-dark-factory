@@ -485,7 +485,13 @@ export class LapMachine {
   async destroy(): Promise<void> {
     this.conn = null;
     try {
-      await this.ib.deleteMachine(this.name);
+      // DELETE resolves machine IDs only — a name-path delete 404s, and the
+      // client swallowed that 404 as "already gone": every lap logged a
+      // false "deleted" while its machine lingered running (tic-tac-toe
+      // 2026-10-24: three merged-issue boxes outlived their own destroy
+      // receipts until a janitor killed them by id)
+      const m = this.machine ?? (await this.ib.machineByName(this.name));
+      if (m) await this.ib.deleteMachine(m.id);
       this.log(`machine ${this.name} deleted`);
     } catch (e: any) {
       this.log(`machine ${this.name} delete failed (janitor will catch it): ${String(e.message).slice(0, 150)}`);

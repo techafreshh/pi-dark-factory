@@ -233,6 +233,10 @@ describe("LapMachine (fake control plane)", () => {
           return new Response(JSON.stringify({ id: "cn1", host: "127.0.0.1", port: 2222, token: "ibssh_fake", expiresAt: new Date(Date.now() + 3600_000).toISOString() }));
         }
         if (req.method === "DELETE" && p.startsWith("/v1/machines/")) {
+          // the real API resolves machine IDs only (a name-path DELETE 404s —
+          // it once silently no-op'd every lap's destroy); enforce that here
+          const seg = p.split("/")[3];
+          if (!seg.startsWith("m_")) return new Response("name not resolvable", { status: 404 });
           deletes.push(p);
           delete machines[p];
           return new Response(JSON.stringify({ id: "op", state: "pending" }), { status: 202 });
