@@ -92,7 +92,11 @@ const STAGE_BOOTSTRAP_REMOTE =
  * The stage driver. Static code; all per-run values arrive through env.sh.
  * Gate order mirrors the host implementation exactly: clean tree, ≥1 real
  * commit ahead of base, then the push — because state gates stay deterministic
- * no matter which side of an SSH tunnel they run on.
+ * no matter which side of an SSH tunnel they run on. The push is a FORCE:
+ * factory/issue-* branches are factory-owned (humans never commit there),
+ * and a polluted remote branch (the 2026-10-24 double-work era left PR
+ * branches with racing commits) would otherwise reject every fresh
+ * machine's non-fast-forward push and wedge the issue's whole repair ladder.
  */
 const STAGE_DRIVER = [
   `set -u`,
@@ -124,9 +128,9 @@ const STAGE_DRIVER = [
   `    AHEAD=$(git rev-list --count "origin/$PDF_BASE..HEAD" 2>/dev/null || echo 0)`,
   `    if [ "\${AHEAD:-0}" -lt 1 ]; then`,
   `      MARK="PDFGATE=no commits ahead of base — nothing was implemented"`,
-  `    elif ! git push -q origin "HEAD:refs/heads/$PDF_BRANCH" 2> "$D/push.err"; then`,
-  `      tail -c 600 "$D/push.err" >&2`,
-  `      MARK="PDFGATE=git push of $PDF_BRANCH failed"`,
+    `    elif ! git push -q --force origin "HEAD:refs/heads/$PDF_BRANCH" 2> "$D/push.err"; then`,
+    `      tail -c 600 "$D/push.err" >&2`,
+    `      MARK="PDFGATE=git push of $PDF_BRANCH failed"`,
   `    fi`,
   `  fi`,
   `fi`,

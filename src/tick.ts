@@ -847,33 +847,34 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
 
 async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency?: number }, scoped: boolean) {
   const ledger = new Ledger(join(opts.stateDir, "factory.db"));
-  const held: string[] = []; // per-repo locks taken by a FULL tick, released at exit
   try {
     const tasks: (() => Promise<void>)[] = [];
     for (const cfg of discoverConfigs(opts.stateDir, opts.repoSlug)) {
-      // a full tick must not double-work a repo a manual slug tick holds
-      if (!scoped) {
-        if (!acquireRepoLock(opts.stateDir, cfg.slug)) {
+      // per-repo lock taken inside the task, released when THIS repo's work
+      // ends: a full tick that chains one repo for hours must not lock out
+      // manual slug ticks for every OTHER repo until the whole tick exits
+      // (magpie starved behind tic-tac-toe's chain exactly that way,
+      // 2026-10-24). A scoped tick already holds its one repo's lock from
+      // beginTick — its single task never re-acquires.
+      tasks.push(async () => {
+        if (!scoped && !acquireRepoLock(opts.stateDir, cfg.slug)) {
           receipt(opts.stateDir, `skipping ${cfg.slug}: another tick is working it (per-repo pidfile)`);
-          continue;
+          return;
         }
-        held.push(cfg.slug);
-      }
-      try {
-        const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
-        // revive before prepareRepo/reconcile — see tickRepo's ordering note
-        autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
-        await prepareRepo(cfg, opts.stateDir, deps);
-        const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
-        // Chained laps: a merge (or block/idle) re-intakes immediately, so one
-        // tick drains the dependency chain instead of doling out one issue per
-        // manual tick. Strictly ordered one-lap-at-a-time still holds inside a
-        // repo (that ordering is what keeps main conflict-free), and
-        // MAX_LAPS bounds a pathological loop — the chain continues next tick.
-        if (claimable.length === 0) continue;
-        const MAX_LAPS_PER_TICK_PER_REPO = 6;
-        receipt(opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
-        tasks.push(async () => {
+        try {
+          const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
+          // revive before prepareRepo/reconcile — see tickRepo's ordering note
+          autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
+          await prepareRepo(cfg, opts.stateDir, deps);
+          const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
+          // Chained laps: a merge (or block/idle) re-intakes immediately, so one
+          // tick drains the dependency chain instead of doling out one issue per
+          // manual tick. Strictly ordered one-lap-at-a-time still holds inside a
+          // repo (that ordering is what keeps main conflict-free), and
+          // MAX_LAPS bounds a pathological loop — the chain continues next tick.
+          if (claimable.length === 0) return;
+          const MAX_LAPS_PER_TICK_PER_REPO = 6;
+          receipt(opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
           let laps = 0;
           let issue = claimable[0];
           let revivedInTick = false;
@@ -915,10 +916,12 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
               receipt(opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
             }
           }
-        });
-      } catch (e: any) {
-        receipt(opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
-      }
+        } catch (e: any) {
+          receipt(opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+        } finally {
+          if (!scoped) releaseRepoLock(opts.stateDir, cfg.slug);
+        }
+      });
     }
     const limit = opts.concurrency ?? 0;
     receipt(opts.stateDir, `dispatching ${tasks.length} lap(s), concurrency=${limit > 0 ? limit : "unlimited"}`);
@@ -931,8 +934,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
       await reapOrphanMachines(opts.stateDir, ledger, (m) => receipt(opts.stateDir, m));
     } catch {}
   } finally {
-    // a full tick releases every per-repo lock it took; a scoped tick's
-    // single lock is released by beginTick's own finally
-    for (const slug of held) releaseRepoLock(opts.stateDir, slug);
+    // per-repo locks are released per task; a scoped tick's single lock by
+    // beginTick's own finally — nothing left to release at whole-tick level
   }
 }
