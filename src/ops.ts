@@ -39,23 +39,35 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
   const repoList: OpsStatus["repos"] = [];
   let repoForStages: string | undefined;
   if (existsSync(reposDir)) {
-    for (const entry of readdirSync(reposDir).filter((e) => e !== "source")) {
+    // every repo's chain count probes LIVE GitHub (issues, PRs, depends) —
+    // done serially that is seconds of gh subprocess round-trips per repo,
+    // and the status route once stalled past every proxy's patience while
+    // four repos queued up (laptop saw 502s, 2026-10-24). Parallel with a
+    // cap: a repo whose GitHub probe outruns 5s reports chain -1 instead of
+    // hanging the whole status read.
+    const probe = async (entry: string): Promise<OpsStatus["repos"][number] | null> => {
       const cfgPath = join(reposDir, entry, "config.json");
-      if (!existsSync(cfgPath)) continue;
+      if (!existsSync(cfgPath)) return null;
       try {
         const cfg = loadRepoConfig(cfgPath);
-        if (slug && cfg.slug !== slug) continue;
+        if (slug && cfg.slug !== slug) return null;
         if (slug) repoForStages = cfg.repo; // stage rows are keyed by repo (owner/name), not slug
         const ledger = new Ledger(join(stateDir, "factory.db"));
-        const chain = (await (await import("./stages/intake")).listClaimable(cfg, ledger, new Gh(cfg.repo))).length;
+        const claimable = (await import("./stages/intake")).listClaimable(cfg, ledger, new Gh(cfg.repo));
+        const chain = await Promise.race([
+          claimable.then((r) => r.length),
+          new Promise<number>((resolve) => setTimeout(() => resolve(-1), 5000)),
+        ]);
         const inFlight = ledger
           .listIssues(cfg.repo)
           .filter((r) => r.state === "in_progress").length;
-        repoList.push({ slug: cfg.slug, repo: cfg.repo, chain, in_flight: inFlight });
+        return { slug: cfg.slug, repo: cfg.repo, chain, in_flight: inFlight };
       } catch (e: any) {
-        repoList.push({ slug: entry, repo: `unloadable: ${e.message?.slice(0, 80)}`, chain: 0, in_flight: 0 });
+        return { slug: entry, repo: `unloadable: ${e.message?.slice(0, 80)}`, chain: 0, in_flight: 0 };
       }
-    }
+    };
+    const rows = await Promise.all(readdirSync(reposDir).filter((e) => e !== "source").map(probe));
+    repoList.push(...(rows.filter(Boolean) as OpsStatus["repos"][]));
   }
   const ledger = new Ledger(join(stateDir, "factory.db"));
   const worktrees: string[] = [];

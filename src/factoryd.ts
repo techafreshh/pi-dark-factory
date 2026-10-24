@@ -9,7 +9,7 @@
  */
 import { statSync } from "node:fs";
 import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsScenarioLint, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
-import { runTick } from "./tick";
+import { beginTick } from "./tick";
 import {
   newRenderState,
   newestSessionFileForSlug,
@@ -180,9 +180,15 @@ export function startFactoryd(opts: FactorydOpts) {
           );
         }
         if (req.method === "POST" && tickEnd === "tick") {
-          // detached: laps run for up to hours; the pidfile arbitrates with the timer
-          void runTick({ stateDir: opts.stateDir, repoSlug: slug }).catch(() => {});
-          return respond({ queued: true, slug, note: "lap dispatched — watch GET /status (pidfile arbitrates with the systemd timer)" });
+          // lock acquisition is synchronous — the reply is TRUE, not hopeful:
+          // a skipped tick answers 409 with the reason (a slug-scoped tick
+          // only waits on its OWN repo's lock, never a neighbor's churn)
+          const b = beginTick({ stateDir: opts.stateDir, repoSlug: slug });
+          if (!b.started) {
+            return respond({ queued: false, skipped: b.reason, hint: "retry when the running tick settles — logs --tail shows the live activity" }, 409);
+          }
+          void b.run.catch(() => {});
+          return respond({ queued: true, slug, note: "lap dispatched — watch GET /status (per-repo pidfile arbitrates with the systemd timer)" });
         }
         if (req.method === "POST" && tickEnd === "unblock") {
           const body = await readJson(req);

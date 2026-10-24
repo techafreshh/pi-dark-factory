@@ -18,6 +18,7 @@ import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import { buildRuntimeContext } from "./runtime-context";
 import { reapOrphanMachines } from "./ops";
+import { acquireRepoLock, acquireTickLock, releaseRepoLock, releaseTickLock } from "./lock";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 
 export interface CallStageArgs {
@@ -793,17 +794,71 @@ export async function runWithConcurrency<T>(items: T[], limit: number, fn: (item
   await Promise.all(workers);
 }
 
-export async function runTick(opts: { stateDir: string; repoSlug?: string; concurrency?: number }) {
+export interface BeginTick {
+  started: boolean;
+  reason?: string;
+  run: Promise<void>;
+}
+
+/**
+ * Lock-first tick entry: acquisition is SYNCHRONOUS, so the factoryd route
+ * can answer honestly instead of "dispatched" for a tick the pidfile then
+ * skips (observed 2026-10-24: seven laptop ticks answered queued while the
+ * log said "tick skipped"). A slug-scoped tick takes ONLY that repo's lock —
+ * a neighbor repo's revive churn cannot starve it; a full tick keeps the
+ * global pidfile and skips repos another tick is already working.
+ */
+export function beginTick(opts: { stateDir: string; repoSlug?: string; concurrency?: number }): BeginTick {
   mkdirSync(opts.stateDir, { recursive: true });
-  const { acquireTickLock, releaseTickLock } = await import("./lock");
-  if (!acquireTickLock(opts.stateDir)) {
-    receipt(opts.stateDir, "tick skipped: another tick is live (pidfile)");
+  const scoped = !!opts.repoSlug;
+  const acquired = scoped
+    ? acquireRepoLock(opts.stateDir, opts.repoSlug!)
+    : acquireTickLock(opts.stateDir);
+  if (!acquired) {
+    const reason = scoped
+      ? `a tick for ${opts.repoSlug} is already live (per-repo pidfile)`
+      : "another tick is live (pidfile)";
+    return { started: false, reason, run: Promise.resolve() };
+  }
+  const release = () =>
+    scoped ? releaseRepoLock(opts.stateDir, opts.repoSlug!) : releaseTickLock(opts.stateDir);
+  const run = (async () => {
+    try {
+      await tickBody(opts, scoped);
+    } catch (e: any) {
+      // body errors (a bogus slug's ENOENT, a crashed prepare) must receipt,
+      // not escape as unhandled rejections into the CLI or the daemon
+      receipt(opts.stateDir, `tick crashed${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${e.message?.slice(0, 300)}`);
+    } finally {
+      release();
+    }
+  })();
+  return { started: true, run };
+}
+
+export async function runTick(opts: { stateDir: string; repoSlug?: string; concurrency?: number }) {
+  const b = beginTick(opts);
+  if (!b.started) {
+    receipt(opts.stateDir, `tick skipped${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${b.reason}`);
     return;
   }
+  await b.run;
+}
+
+async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency?: number }, scoped: boolean) {
+  const ledger = new Ledger(join(opts.stateDir, "factory.db"));
+  const held: string[] = []; // per-repo locks taken by a FULL tick, released at exit
   try {
-    const ledger = new Ledger(join(opts.stateDir, "factory.db"));
     const tasks: (() => Promise<void>)[] = [];
     for (const cfg of discoverConfigs(opts.stateDir, opts.repoSlug)) {
+      // a full tick must not double-work a repo a manual slug tick holds
+      if (!scoped) {
+        if (!acquireRepoLock(opts.stateDir, cfg.slug)) {
+          receipt(opts.stateDir, `skipping ${cfg.slug}: another tick is working it (per-repo pidfile)`);
+          continue;
+        }
+        held.push(cfg.slug);
+      }
       try {
         const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
         // revive before prepareRepo/reconcile — see tickRepo's ordering note
@@ -876,6 +931,8 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
       await reapOrphanMachines(opts.stateDir, ledger, (m) => receipt(opts.stateDir, m));
     } catch {}
   } finally {
-    releaseTickLock(opts.stateDir);
+    // a full tick releases every per-repo lock it took; a scoped tick's
+    // single lock is released by beginTick's own finally
+    for (const slug of held) releaseRepoLock(opts.stateDir, slug);
   }
 }

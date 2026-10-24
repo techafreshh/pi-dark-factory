@@ -55,7 +55,7 @@ def _cfg() -> tuple[str, str]:
     return url, key
 
 
-def _api(method: str, path: str, body: dict | None = None, timeout: int = TIMEOUT_FAST, allow_401: bool = False):
+def _api(method: str, path: str, body: dict | None = None, timeout: int = TIMEOUT_FAST, allow_401: bool = False, allow_status: tuple = ()):
     url, key = _cfg()
     req = urllib.request.Request(
         url + path,
@@ -73,6 +73,8 @@ def _api(method: str, path: str, body: dict | None = None, timeout: int = TIMEOU
             payload = json.loads(e.read() or b"{}")
         except Exception:
             payload = {}
+        if e.code in allow_status:
+            return e.code, payload
         die(f"{method} {path} -> HTTP {e.code}: {payload.get('error', payload)}")
     except urllib.error.URLError as e:
         die(f"{method} {path} failed to connect: {e.reason} — factoryd down? wrong FACTORY_URL?")
@@ -268,7 +270,9 @@ def cmd_backlog(a):
 
 
 def cmd_tick(a):
-    code, body = _api("POST", f"/repos/{a.slug}/tick", {})
+    code, body = _api("POST", f"/repos/{a.slug}/tick", {}, allow_status=(409,))
+    if body.get("queued") is False or code == 409:
+        die("tick SKIPPED: " + str(body.get("skipped")) + " — retry when the running tick settles (only a `queued: <slug> #N` log line means a lap truly started)")
     print(f"lap dispatched for {body['slug']} — follow with: factory-remote status --repo {a.slug} (or logs)")
 
 

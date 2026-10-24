@@ -198,3 +198,49 @@ describe("reapOrphanMachines (guarded janitor)", () => {
     expect(reaped).toBe(0);
   });
 });
+
+describe("beginTick (per-repo locks + honest refusals)", () => {
+  test("a slug tick refused while its repo lock is held; neighbor repo free; global lock untouched", async () => {
+    const { beginTick } = await import("../src/tick");
+    const { acquireTickLock, releaseTickLock } = await import("../src/lock");
+    const st = mkdtempSync(join(tmpdir(), "pdflock-"));
+    mkdirSync(join(st, "repos"), { recursive: true }); // configured factory, zero repos processed
+    // minimal onboarding for the two slugs the test ticks (their lap intake
+    // fails inside the per-repo try — receipted, body completes cleanly)
+    for (const s of ["other", "third"]) {
+      const d = join(st, "repos", s);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, "config.json"),
+        JSON.stringify({
+          repo: `acme/${s}`, slug: s, default_branch: "main",
+          models: { default: { provider: "x", model: "y" } },
+          scenario: { ports: [] }, env: { mode: "host" },
+        })
+      );
+    }
+    // a LIVE holder whose cmdline looks like the factory (exec -a rewrites argv[0])
+    const holder = Bun.spawn(["bash", "-c", "exec -a foreman-tick-holder sleep 30"]);
+    await new Promise((r) => setTimeout(r, 300)); // let it exec
+    writeFileSync(join(st, "tick-demo.lock"), `${holder.pid}\n`);
+
+    const refused = beginTick({ stateDir: st, repoSlug: "demo" });
+    expect(refused.started).toBe(false);
+    expect(refused.reason).toContain("demo");
+
+    // a different repo is NOT blocked by demo's lock, and the run completes
+    const other = beginTick({ stateDir: st, repoSlug: "other" });
+    expect(other.started).toBe(true);
+    await other.run;
+
+    // a slug lock never takes the GLOBAL tick lock
+    const third = beginTick({ stateDir: st, repoSlug: "third" });
+    expect(third.started).toBe(true);
+    expect(acquireTickLock(st)).toBe(true); // global still free while third runs
+    releaseTickLock(st);
+    await third.run;
+
+    holder.kill();
+    await holder.exited;
+  });
+});
