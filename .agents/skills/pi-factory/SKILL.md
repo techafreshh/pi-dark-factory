@@ -133,9 +133,12 @@ stored broken or rejected one field at a time, costing ~6 attempts:**
   every `models.*` renders as an object with a `provider`.
 - A `{}` patch **silently writes and echoes defaults**; don't use it to probe.
 
-**The canonical config skeleton ships as `templates/config.skeleton.json` in
-this skill's folder** (river → clinepass → deepseek tiers, per-stage thinking,
-compose mode) — read it, fill the provider/model + `env.mode`, then:
+**The canonical config skeletons ship in `templates/` in this skill's
+folder** — `config.skeleton.json` (river → clinepass → deepseek tiers,
+per-stage thinking, compose mode) and `config.skeleton.instabox.json`
+(same tiers, `env.mode: "instabox"` with the `factory-base` snapshot).
+Read the one matching your env.mode choice, fill the provider/model +
+env fields, then:
 
 ```bash
 factory-remote config <slug> --json "$(cat .agents/skills/pi-factory/templates/config.skeleton.json | python3 -c 'import json,sys;d=json.load(sys.stdin);d.pop("_readme",None);print(json.dumps(d))')"
@@ -172,9 +175,11 @@ factory-remote config <slug> --json "$(cat .agents/skills/pi-factory/templates/c
   publish the scenario ports on `127.0.0.1`). For a compose-mode Node
   project, set the **fallback image** `env.image` to a Node-bearing image
   (use a **full** node image like `node:22` — `node:22-slim` has no git, and the implementer cannot commit its work): until lap 1's PR lands the compose file, stages
-  run in `env.image` — a bare `ubuntu:24.04` has no Node. (Last-resort
-  safety net: the factory mounts its own Node 22 into every container at
-  `/root/.pi/host-runtimes/node/bin/node`.)
+  run in `env.image` — a bare `ubuntu:24.04` has no Node. (The factory
+  mounts its own launcher at `/usr/local/bin/pi` in every container: it
+  prefers the image's own `node` and falls back to the factory-mounted
+  Node 22 — so musl images like `node:22-alpine` work, as do images with
+  no Node at all.)
 
 Apply all decisions with the config verb (deep-merges, allowlisted keys:
 models, env, timeouts, merge, default_branch, attempts, skip_labels, pi —
@@ -198,14 +203,24 @@ disagreement, re-echo the effective config once before proceeding.
   lap 1 ships the compose file). Strong reproducibility; ports reserved per
   repo; git auto-provided by the factory.
 - **`host`**: plain processes on the VPS. Zero overhead; no isolation.
-- **`instabox`**: each lap gets its own ephemeral InstaBox cloud machine
-  (own kernel + root + Docker; snapshot with the toolchain and a signed-in
-  `gh`). Gates and scenarios execute inside the box over the machine exec
-  API; the box suspends at lap end. **Prerequisites**: the `instabox` CLI
-  installed and `INSTABOX_API_KEY` set for the factory systemd units, a
-  snapshot with node/git/gh signed in (`env.instabox.snapshot`), and the
-  repo's model-API keys presentable to in-box pi. Best for parallel-heavy
-  workloads or products whose builds want a whole machine.
+- **`instabox`**: each issue's lap gets its own disposable InstaBox microVM
+  (`pdf-<slug>-i<issue>`; own kernel — the ssh-gateway login is `user`,
+  with passwordless sudo inside factory-baked snapshots). Stages run over
+  the ssh gateway (token-as-username, no exec-API wall-clock cap); the
+  machine is created lazily at the first implement attempt, kept across
+  repair rounds (its clone at `/data/repo` IS the worktree), and deleted
+  when the lap books out. The platform auto-suspends idle boxes and the
+  factory resumes them automatically — a `suspended` machine in a
+  status readout is normal, not an outage. **Prerequisites**:
+  `INSTABOX_API_KEY` in the service env, `ssh` on the VPS, and a golden
+  snapshot baked VPS-side (`foreman bake <slug>`; free plans boot only
+  the `agent-browser` template or snapshots — the bake starts from
+  agent-browser and snapshots the result). No credentials live in the
+  snapshot: the factory ships its own pi auth/models plus the GitHub
+  token into the box over ssh on every stage, so clone AND push are
+  authed. The ClinePass router is host-local, so in-box fallback chains
+  effectively run river → deepseek. Best for parallel-heavy workloads
+  or products whose builds want a whole machine.
 - **Every agent, every mode, receives a generated "Where you are running"
   brief** — `.factory-context.md` in the working tree plus the same facts
   prepended to the stage prompt (mode identity, toolchain, working dir,
@@ -340,7 +355,9 @@ Add `--think` to see the actual reasoning text, `--issue N` to pin an issue,
 run without `--follow` for a one-shot playback of the whole session. The
 stream follows the newest session for the repo, streams a `·` heartbeat when
 idle (a long silent gap with no heartbeats at all is a dead connection, not a
-quiet lap), and auto-reconnects if the transport drops.
+quiet lap), and auto-reconnects if the transport drops. Machine-mode
+(instabox) implement/review sessions stream through the same viewer — a lap
+running in a box is as watchable as a host-side one.
 
 ## Ops mode (daily driving)
 
@@ -359,6 +376,22 @@ Reading results honestly: `terminal ≠ good` — a lap showing `merged` in the
 ledger is confirmed by the merged PR on GitHub (`gh pr view`); a failed lap's
 story is in `status`'s `last_error` plus `logs`. When a provider hit
 `provider_error`, note which models were tried before proposing unblock.
+
+## Failure signatures (2026-10-24 playbook — match the receipt, don't re-derive)
+
+Every signature below was paid for on mdrender/kvstore/todos-api. Read the
+`last_error` / receipt, find its row, act.
+
+| Receipt says | What it means | What to do |
+|---|---|---|
+| `pi exited 127 … node: not found` from a compose service | libc mismatch: the product's service image is musl (alpine) while the mounted Node is glibc. The launcher self-adapts (image's node first), so seeing this means the VPS-side launcher `~/.pi/agent/bin/pi` was altered | report it; restore the libc-agnostic launcher (pi-factory-setup Phase 4f) |
+| bare `pi exited 127:` with nothing after the colon | spawn ENOENT — the binary in the argv never existed. Receipts name the actual path since e6b6970; pre-fix receipts were empty | read the named path; if the error is still empty, the daemon predates e6b6970 |
+| `machine … never reached running (state: suspended)` | platform auto-suspend of an idle box; the factory resumes it on the next attempt | nothing — self-healing. Flag only if it repeats every single lap |
+| `machine gate failed (git push of …)` | GitHub credentials didn't reach the box (fixed 2026-10-24: the lane resolves `GH_TOKEN`→`GITHUB_TOKEN` and the bootstrap sources the machine env before cloning) | should not recur; if it does, check `factoryd.env` carries the token |
+| `[runtime] server never became ready within 120s` | scenario `start` command / `readiness_path` mismatch, or the implementer's server exits or binds wrong — the repair loop usually chews through real bugs | watch one repair round before touching the scenario or `timeouts.readiness_seconds` |
+| `seed-repaired` in `logs` | the mounted Node 22 vanished host-side AGAIN (twice on 2026-10-23, actor never attributed; the sweep re-copies it and receipts the event) | note the timestamp — these mark recurrence windows |
+| river `provider_error` bursts (upstream `terminated` etc.) | upstream flakiness; the 3-tier chain advances on its own | watch only; worry when fallbacks also fail |
+| `402 insufficient_credits` (clinepass) or router `429` | wrong billing surface vs weekly pool — see the clinepass row above | fix model ids / add a key |
 
 ## factory-remote — full CLI reference
 

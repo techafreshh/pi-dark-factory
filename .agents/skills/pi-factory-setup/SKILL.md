@@ -217,13 +217,59 @@ trust in `~/.pi/agent/settings.json` (or pass flags via repo configs'
 can answer. A lineup entry is not "done" until its smoke returned assistant
 text: the winners are exactly what config.json `models` gets.
 
+**4f. Container launcher wrapper** (skip if no container-mode repos are
+planned). Compose stages exec `/usr/local/bin/pi`, bind-mounted from
+`~/.pi/agent/bin/pi` — a fresh install has NO such file and every
+container stage dies instantly without it. It must also be
+libc-agnostic: product compose services may be musl-based
+(`node:22-alpine`), where the factory's glibc Node cannot exec
+("not found"). Discover the pi cli.js path, then write the launcher:
+
+```sh
+# pi's self-managed runtime layout first, npm/bun global installs second:
+CLI=$(sudo -u factory -H bash -lc 'ls ~/.pi/host-runtimes/pi-coding-agent/dist/bundle/cli.js 2>/dev/null || find ~/.local/node ~/.bun /usr/lib/node_modules -path "*pi-coding-agent/dist/bundle/cli.js" 2>/dev/null | head -1')
+test -n "$CLI" || echo "NO cli.js FOUND — stop, resolve the pi install"
+sudo -u factory -H mkdir -p /home/factory/.pi/agent/bin
+sudo -u factory -H bash -c 'cat > /home/factory/.pi/agent/bin/pi <<WRAP
+#!/bin/sh
+# libc-agnostic launcher: stage containers may be musl-based (e.g. a product
+# compose worker on node:22-alpine) where the mounted host node — a glibc
+# build — cannot exec ("not found"). Prefer the container'"'"'s own node when it
+# ships one; fall back to the mounted host runtime for node-less images.
+if command -v node >/dev/null 2>&1; then
+  exec node '"$CLI"' "\$@"
+fi
+exec /root/.pi/host-runtimes/node/bin/node '"$CLI"' "\$@"
+WRAP'
+sudo -u factory -H chmod 775 /home/factory/.pi/agent/bin/pi
+# the fallback leg needs the factory node binary inside .pi (the pre-stage
+# sweep re-copies it if it ever goes missing; ensure it exists once here):
+SEED=/home/factory/.pi/host-runtimes/node/bin/node
+sudo -u factory -H mkdir -p "$(dirname $SEED)"
+sudo -u factory -H test -x "$SEED" || sudo -u factory -H bash -lc "cp \$(command -v node) $SEED"
+```
+
+Verify BOTH libcs — alpine proves the launcher's image-node leg, plain
+node:22 proves the mounted-runtime fallback leg:
+
+```sh
+for IMG in node:22-alpine node:22; do
+  sudo -u factory -H docker run --rm -v /home/factory/.pi:/root/.pi \
+    -v /home/factory/.pi/agent/bin/pi:/usr/local/bin/pi:ro $IMG \
+    /usr/local/bin/pi --version || echo "FAILED on $IMG"
+done
+```
+
 ## Phase 5 — systemd (units, env file, enable)
 
 **5a. factoryd.env** — skip key generation if it exists (a re-run keeps the
 old key); otherwise generate and assemble in one sudo heredoc, never echoing
 the value: `PI_FACTORY_STATE=/home/factory/state`, `FACTORYD_PORT=8077`,
 `FACTORY_API_KEY=$(openssl rand -hex 32)`, `GH_TOKEN=…` if Phase 4 used the
-token form, and `INSTABOX_API_KEY=…` if Phase 0 machine mode was chosen
+token form — **also write `GITHUB_TOKEN=` with the same value**: machine-mode
+stages and `pass_env` use that name (the code resolves either, but carrying
+both removes the whole mismatch class; it cost todos-api a full day,
+2026-10-23→24) — and `INSTABOX_API_KEY=…` if Phase 0 machine mode was chosen
 (secrets never echo into the transcript — pass them straight into the
 heredoc from the place the user handed them over).
 `chown factory: /home/factory/factoryd.env`, `chmod 600`.
@@ -381,8 +427,9 @@ scenario templates + reserves two scenario ports), edit
   worker contract (the compose must publish the scenario ports on
   `127.0.0.1`); repos without one stay on the fallback `env.image` and pick
   compose up automatically once it lands as an issue deliverable. First
-  container repo: run the §7 in-container smoke before the first lap
-  (`docker run --rm -v ~/.pi:/root/.pi … ubuntu:24.04 pi --version`).
+  container repo: run the in-container smoke before the first lap — BOTH
+  libcs (`node:22` and `node:22-alpine`), proving the launcher's fallback
+  leg and its image-node leg (Phase 4f's verify does exactly this).
 - **InstaBox machine mode** (if Phase 0 planned it): the repo's config gets
   `env.mode: "instabox"` + an `env.instabox.bake` shell (what to install
   after the clone: deps, caches — write it with the user). Then bake the
@@ -394,11 +441,14 @@ scenario templates + reserves two scenario ports), edit
   ```
 
   During instabox laps machines appear and disappear
-  (name `pdf-<slug>-i<issue>`); scenario servers run inside the machine and
-  probes reach them over `ssh -L` on 127.0.0.1, so the host-side port
-  reservation must stay free. The ClinePass rotator is host-local — instabox
-  stages point their provider directly (the `pass_env` keys travel into every
-  stage). `foreman cleanup` reaps any machine a crashed lap left parked.
+  (name `pdf-<slug>-i<issue>`); the platform auto-suspends idle boxes and
+  the factory resumes them — a suspended machine in a status readout is
+  normal, not an outage. Credentials never live in the snapshot: the
+  factory ships its own pi auth/models and the GitHub token into the box
+  over ssh on every stage (clone AND push authed; requires `GITHUB_TOKEN`
+  or `GH_TOKEN` in the service env). The ClinePass rotator is host-local,
+  so in-box fallback chains effectively run river → deepseek.
+  `foreman cleanup` reaps any machine a crashed lap left parked.
 
 Then write real `runtime.json` + `holdout.json` probes with the user,
 then:

@@ -1,0 +1,44 @@
+{
+  "_readme": "instabox-mode skeleton — one disposable InstaBox microVM per issue's lap. Requires INSTABOX_API_KEY in the service env and a golden snapshot baked VPS-side (foreman bake). The factory ships pi auth/models + the GitHub token into the box over ssh every stage; the clinepass router is host-local so in-box fallbacks effectively run river -> deepseek.",
+  "models": {
+    "default": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "max",
+      "fallback": [
+        "clinepass-rotator/cline-pass/glm-5.3-flash",
+        "deepseek/deepseek-flash:high"
+      ]
+    },
+    "plan": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "low",
+      "fallback": ["deepseek/deepseek-flash:low"]
+    },
+    "implement": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "max",
+      "fallback": ["deepseek/deepseek-flash:max"]
+    },
+    "review": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "high",
+      "fallback": ["deepseek/deepseek-flash:high"]
+    }
+  },
+  "merge": {
+    "method": "squash",
+    "required_checks": ["*"],
+    "delete_branch": true
+  },
+  "env": {
+    "mode": "instabox",
+    "instabox": {
+      "snapshot": "factory-base"
+    },
+    "pass_env": ["GITHUB_TOKEN", "ZAI_API_KEY", "DEEPSEEK_API_KEY"]
+  }
+}
