@@ -28,6 +28,9 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { InstaBox, machineNameFor, type InstaMachine, type InstaSshToken } from "./instabox";
 import type { ModelSpec, RepoConfig, StageModels } from "./types";
 import { branchName } from "./stages/intake";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface SshTarget {
   host: string;
@@ -102,6 +105,11 @@ const STAGE_DRIVER = [
   `printf %s "\${L_ARGS#PDFARGS }" | base64 -d > "$D/args.bin"`,
   `printf %s "\${L_PROMPT#PDFPROMPT }" | base64 -d > "$D/prompt.md"`,
   `. "$D/env.sh"`,
+  // provider credentials for the box's own pi (see buildMachineEnvFile) —
+  // land before any stage exec so the first model call is already authed
+  `AD="$HOME/.pi/agent"; mkdir -p "$AD"`,
+  `[ -n "\${PDF_PI_AUTH_B64:-}" ] && printf %s "$PDF_PI_AUTH_B64" | base64 -d > "$AD/auth.json" || true`,
+  `[ -n "\${PDF_PI_MODELS_B64:-}" ] && printf %s "$PDF_PI_MODELS_B64" | base64 -d > "$AD/models.json" || true`,
   `cd "$REPO_DIR" || { echo "PDFRC=94" >&2; echo "cd $REPO_DIR failed" >&2; exit 94; }`,
   `mapfile -d '' PI_ARGS < "$D/args.bin"`,
   `"$PI_BIN" "\${PI_ARGS[@]}" < "$D/prompt.md" > "$D/pi.jsonl" 2> "$D/pi.err"`,
@@ -139,6 +147,20 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
   for (const key of cfg.env.pass_env ?? []) {
     const v = process.env[key];
     if (v !== undefined && v !== "") lines.push(`export ${key}=${escapeSh(v)}`);
+  }
+  // the box's pi needs the factory's own provider credentials: compose mode
+  // gets them for free by bind-mounting ~/.pi into the stage container, but
+  // a machine has its own root — ship auth.json/models.json over the same
+  // ssh channel that already carries GITHUB_TOKEN, and the stage driver
+  // materializes them under $HOME/.pi/agent before pi starts
+  for (const [name, file] of [
+    ["PDF_PI_AUTH_B64", "auth.json"],
+    ["PDF_PI_MODELS_B64", "models.json"],
+  ] as const) {
+    try {
+      const p = join(homedir(), ".pi", "agent", file);
+      if (existsSync(p)) lines.push(`export ${name}=${escapeSh(readFileSync(p).toString("base64"))}`);
+    } catch {}
   }
   return lines.join("\n") + "\n";
 }
