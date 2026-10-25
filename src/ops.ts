@@ -389,9 +389,11 @@ export async function opsScenarioTest(
   kind: "runtime" | "holdout",
   branch?: string
 ): Promise<{ slug: string; kind: string; branch: string; result: ScenarioResult; machine?: string }> {
-  const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  const cfgDir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(cfgDir, "config.json"))) throw new Error(`repo ${slug} is not onboarded`);
+  const cfg = loadRepoConfig(join(cfgDir, "config.json"));
   const file = kind === "runtime" ? cfg.scenario.runtime : cfg.scenario.holdout;
-  const path = join(repoCfgDir(stateDir, slug), file);
+  const path = join(cfgDir, file);
   if (!existsSync(path)) throw new Error(`no ${kind} scenario for ${slug} — onboard templates or a validated upload would have written one`);
   const spec = loadScenario(path);
   spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
@@ -400,7 +402,7 @@ export async function opsScenarioTest(
   if (cfg.env.mode === "instabox" && cfg.env.instabox) {
     const ib = InstaBox.fromEnv(cfg.env.instabox);
     const name = `pdf-${sanitizeMachinePart(slug)}-scen-test`;
-    const marker = join(repoCfgDir(stateDir, slug), "scen-test.running");
+    const marker = join(cfgDir, "scen-test.running");
     let snaps: Awaited<ReturnType<InstaBox["listSnapshots"]>> = [];
     try {
       snaps = await ib.listSnapshots();
