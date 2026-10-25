@@ -309,6 +309,19 @@ describe("buildMachineEnvFile (token resolution)", () => {
     expect(script).toContain("GITHUB_TOKEN");
     expect(script).toContain("insteadOf");
   });
+
+  test("bootstrap checkout base: a fresh clone lands on origin/<default> (lap semantics)", () => {
+    // fresh machine → no local branch → the else arm must base at the default
+    // branch (escapeSh single-quotes the branch name)
+    const script = bootstrapScriptFor(miniCfg, "factory/issue-1");
+    expect(script).toContain(`git checkout -q -B 'factory/issue-1' "origin/${miniCfg.default_branch}"`);
+  });
+
+  test("bootstrap from:'branch': the test bench lands on the BRANCH's tree (bi-ai-ui --test ENOENT, 2026-10-25)", () => {
+    const script = bootstrapScriptFor(miniCfg, "factory/issue-1", { from: "branch" });
+    expect(script).toContain("git checkout -q -B 'factory/issue-1' origin/'factory/issue-1'");
+    expect(script).not.toContain(`"origin/${miniCfg.default_branch}"`);
+  });
 });
 
 describe("PortForwarder", () => {

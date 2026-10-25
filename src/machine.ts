@@ -180,10 +180,17 @@ export function originUrlFor(cfg: RepoConfig): string {
   return cfg.origin_url ?? `https://github.com/${cfg.repo}.git`;
 }
 
-/** Idempotent: clone once, fetch after; keep a repair round's local branch. */
-export function bootstrapScriptFor(cfg: RepoConfig, branch: string): string {
+/** Idempotent: clone once, fetch after; keep a repair round's local branch.
+ *  `from: "branch"` starts the branch at origin/<branch> (the scenario TEST
+ *  BENCH: the branch's tree must be what's under test — the default
+ *  origin/<default_branch> base left --test machines on main's tree, so
+ *  web/ was missing and setup ENOENT'd, bi-ai-ui 2026-10-25). Laps keep the
+ *  default: a new issue's branch starts at the base branch, and the
+ *  implementer commits on top. */
+export function bootstrapScriptFor(cfg: RepoConfig, branch: string, opts: { from?: "base" | "branch" } = {}): string {
   const ibx = cfg.env.instabox;
   const b = (s: string) => escapeSh(s);
+  const startRef = opts.from === "branch" ? `origin/${b(branch)}` : `"origin/${cfg.default_branch}"`;
   return [
     `set -eu`,
     `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
@@ -202,7 +209,7 @@ export function bootstrapScriptFor(cfg: RepoConfig, branch: string): string {
     `if git show-ref --verify -q refs/heads/${b(branch)}; then`,
     `  git checkout -q ${b(branch)}`,
     `else`,
-    `  git checkout -q -B ${b(branch)} "origin/${cfg.default_branch}"`,
+    `  git checkout -q -B ${b(branch)} ${startRef}`,
     `fi`,
     `echo "BOOTSTRAP_OK"`,
   ].join("\n");
@@ -335,6 +342,7 @@ export async function callMachineStage(
 export class PortForwarder {
   private proc: any = null;
   private exit: Promise<number> = Promise.resolve(0);
+  private exited = false;
 
   static start(conn: SshTarget, ports: number[]): PortForwarder {
     if (ports.length === 0) return new PortForwarder();
@@ -345,6 +353,13 @@ export class PortForwarder {
       "-o", "ExitOnForwardFailure=yes",
       "-o", "StrictHostKeyChecking=accept-new",
       "-o", "ConnectTimeout=15",
+      // keepalives: an idle tunnel through the gateway dies mid-setup
+      // (bi-ai-ui 2026-10-25: the runtime forward idled through minutes of
+      // npm install, then readiness polled a corpse — "server never became
+      // ready" while the in-box server was demonstrably healthy; the
+      // short-setup holdout forward on the same machine always survived)
+      "-o", "ServerAliveInterval=30",
+      "-o", "ServerAliveCountMax=3",
       "-p", String(conn.port),
       `${conn.user}@${conn.host}`,
       ...ports.flatMap((p) => ["-L", `127.0.0.1:${p}:127.0.0.1:${p}`]),
@@ -364,9 +379,20 @@ export class PortForwarder {
     }
     f.proc = child;
     f.exit = new Promise<number>((resolve) => {
-      child.once("exit", (code) => resolve(code ?? 0));
+      child.once("exit", (code) => {
+        f.exited = true;
+        resolve(code ?? 0);
+      });
     }).catch(() => 0) as Promise<number>;
     return f;
+  }
+
+  /** Did the tunnel survive its first `ms`? With ExitOnForwardFailure, an
+   *  early exit means the forward never bound — infra, not the server. */
+  async established(ms = 2500): Promise<boolean> {
+    if (!this.proc) return false;
+    await new Promise((r) => setTimeout(r, ms));
+    return !this.exited;
   }
 
   async stop(): Promise<void> {

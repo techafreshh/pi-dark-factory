@@ -378,13 +378,26 @@ export async function runScenarioInMachine(
   const goto = `cd ${escapeSh(target.repoDir)} || exit 95\nexport PORT=${port}\nexport WORKTREE=${escapeSh(target.repoDir)}\n`;
   const runIn = (cmd: string) => machineBash(conn, goto + cmd, { timeoutMs: 600000 });
 
-  const fwd = PortForwarder.start(conn, [port]);
+  let fwd: PortForwarder | null = null;
   try {
     if (spec.setup) {
       const res = await runIn(spec.setup);
       if (res.code !== 0) {
         return mkResults(false, `setup failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300)}`);
       }
+    }
+
+    // the forward starts AFTER setup, not before: setup can take minutes
+    // (installs, builds) and an idle tunnel through the gateway dies
+    // mid-setup — readiness then polls a dead forward while the in-box
+    // server is perfectly healthy (bi-ai-ui #1, 2026-10-25: 5 of 6 attempts
+    // black-holed exactly this way; the short-setup holdout always worked)
+    fwd = PortForwarder.start(conn, [port]);
+    if (!(await fwd.established())) {
+      return mkResults(
+        false,
+        `host→machine forward for port ${port} failed to establish (INFRASTRUCTURE, not the server — the tunnel could not bind or the gateway refused it; retrying the lap or the scenario usually clears it)`
+      );
     }
 
     // foreground server in the machine, detached as its own session leader;
@@ -409,6 +422,14 @@ export async function runScenarioInMachine(
     if (!(await ready(port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
       const logTail = await machineBash(conn, `tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, { timeoutMs: 15000 });
       const detail = logTail.stdout.trim().slice(-500);
+      // distinguish a dead tunnel from a dead server — the repair agent
+      // must not chase ghosts in the product for an infrastructure drop
+      if (fwd && !(await fwd.established(0))) {
+        return mkResults(
+          false,
+          `host→machine forward for port ${port} died before/during readiness (INFRASTRUCTURE, not the server — machine server.log tail: ${detail})`
+        );
+      }
       return mkResults(
         false,
         `server never became ready within ${opts.readinessSeconds}s (machine server.log tail: ${detail})`
@@ -446,6 +467,6 @@ export async function runScenarioInMachine(
       );
       if (spec.teardown) await runIn(spec.teardown);
     } catch {}
-    await fwd.stop().catch(() => {});
+    await fwd?.stop().catch(() => {});
   }
 }

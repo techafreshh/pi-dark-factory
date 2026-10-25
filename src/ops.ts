@@ -420,7 +420,9 @@ export async function opsScenarioTest(
       const tok = await ib.createSshToken(m.id, { name: "factory", ttlSeconds: 3600 });
       const conn = { host: tok.host, port: tok.port, user: tok.token };
       const envFile = buildMachineEnvFile(cfg, { gates: false, branch: target, base: cfg.default_branch });
-      const boot = await machineBash(conn, envFile + "\n" + bootstrapScriptFor(cfg, target), { timeoutMs: 10 * 60_000 });
+      // from:"branch" — the bench tests the BRANCH's tree; laps' default
+      // (branch-at-base) would leave a fresh machine on main's tree
+      const boot = await machineBash(conn, envFile + "\n" + bootstrapScriptFor(cfg, target, { from: "branch" }), { timeoutMs: 10 * 60_000 });
       if (boot.code !== 0 || !boot.stdout.includes("BOOTSTRAP_OK")) {
         throw new Error(`test machine bootstrap failed (exit ${boot.code}): ${boot.stderr.trim().slice(0, 300) || boot.stdout.trim().slice(0, 300)}`);
       }
