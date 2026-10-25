@@ -238,8 +238,23 @@ def cmd_scenario(a):
         code, body = _api("GET", f"/repos/{a.slug}/scenario?kind={a.kind}")
         print(json.dumps(body.get("scenario"), indent=2))
         return
+    if a.test:
+        body = {"kind": a.kind}
+        if a.branch:
+            body["branch"] = a.branch
+        code, resp = _api("POST", f"/repos/{a.slug}/scenario/test", body, timeout=TIMEOUT_SLOW)
+        r = resp.get("result") or {}
+        where = f"machine {resp.get('machine')}" if resp.get("machine") else "host worktree"
+        print(f"scenario {a.kind} TEST vs {resp.get('branch')} ({where})")
+        if r.get("error"):
+            print(f"  SCENARIO ERROR: {r['error']}")
+        for p in r.get("results", []):
+            mark = "ok " if p.get("pass") else "FAIL"
+            print(f"  [{mark}] {p.get('id')} — {str(p.get('detail', ''))[:140]}")
+        print("VERDICT:", "ALL GREEN" if r.get("pass") else "FAILED")
+        sys.exit(0 if r.get("pass") else 1)
     if not a.file:
-        die("provide --file F (write or --lint) or --dump")
+        die("provide --file F (write or --lint), --dump, or --test (execute the stored scenario without a lap)")
     content = open(a.file, encoding="utf-8").read()
     if a.lint:
         code, body = _api("PUT", f"/repos/{a.slug}/scenario", {"kind": a.kind, "content": content, "lint": True})
@@ -331,6 +346,8 @@ def main():
     sp.add_argument("--file", help="scenario JSON to write (or validate with --lint)")
     sp.add_argument("--lint", action="store_true", help="validate + lint WITHOUT writing — run this before every write")
     sp.add_argument("--dump", action="store_true", help="print the stored scenario instead of writing")
+    sp.add_argument("--test", action="store_true", help="execute the STORED scenario against a branch WITHOUT spending a lap (the verifier's own test bench)")
+    sp.add_argument("--branch", help="branch for --test (default: the repo's default branch — test the merged state)")
     sp = sub.add_parser("backlog"); sp.add_argument("slug"); sp.add_argument("--prd-file", required=True); sp.add_argument("--max", type=int, default=40); sp.add_argument("--create", action="store_true")
     sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json",
                         help="config patch JSON: models, env, merge, timeouts keys (omit to READ the effective config)")

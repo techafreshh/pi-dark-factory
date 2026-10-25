@@ -8,7 +8,7 @@
  * can never double-run a lap.
  */
 import { statSync } from "node:fs";
-import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsScenarioLint, opsScenarioSet, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
   newRenderState,
@@ -152,6 +152,16 @@ export function startFactoryd(opts: FactorydOpts) {
         }
         if (req.method === "POST" && path === "/repos") {
           return respond(await opsOnboard(opts.stateDir, String((await readJson(req)).repo ?? "")));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/scenario/test")) {
+          // the verifier's test bench — executes the STORED scenario against a
+          // branch without spending a lap (can run minutes: machine boot +
+          // setup + probes; the client uses its slow timeout)
+          const body = await readJson(req);
+          const kind = body.kind === "holdout" ? "holdout" : "runtime";
+          return respond(
+            await opsScenarioTest(opts.stateDir, slug, kind, typeof body.branch === "string" && body.branch ? body.branch : undefined)
+          );
         }
         if (req.method === "POST" && tickEnd === undefined && path.endsWith("/config")) {
           return respond(await opsSetConfig(opts.stateDir, slug, await readJson(req)));

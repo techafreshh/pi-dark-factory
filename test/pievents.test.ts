@@ -43,6 +43,23 @@ describe("parseEventStream (pi --mode json wire format)", () => {
     expect(parsed.usage).toEqual({ input_tokens: 5, output_tokens: 6 });
   });
 
+  test("pi-native usage shape {input, output, reasoning} is understood and summed across messages", () => {
+    // verbatim shapes from a real bi-ai-ui machine stream (2026-10-25) —
+    // extractUsage missed these field names for the factory's whole life,
+    // so every stage row ever recorded answered tok=None/None
+    const lines = [
+      '{"type":"message_start","message":{"role":"assistant","content":[],"provider":"river","usage":{"input":0,"output":0,"totalTokens":0}}}',
+      '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"one"}],"usage":{"input":8693,"output":2643,"reasoning":2554,"cacheRead":2048,"totalTokens":13384}}}',
+      '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"two"}],"usage":{"input":3633,"output":223,"reasoning":66,"cacheRead":10496,"totalTokens":14352}}}',
+    ];
+    const parsed = parseEventStream(lines);
+    expect(parsed.assistantText).toBe("two");
+    expect(parsed.usage).toEqual({
+      input_tokens: 8693 + 3633,
+      output_tokens: (2643 + 2554) + (223 + 66), // output + reasoning, per message, summed
+    });
+  });
+
   test("stray non-JSON lines are tolerated", () => {
     const parsed = parseEventStream([
       "noise line without braces",

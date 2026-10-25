@@ -364,6 +364,28 @@ blocked lap).
 - The harness runs `start` in the foreground and kills it authoritatively
   after probes — write `start` as a single command, never a backgrounded one.
 
+**`--test` — the verifier's own test bench (run it before and during laps):**
+
+```bash
+factory-remote scenario <slug> runtime --test                 # stored scenario vs current main
+factory-remote scenario <slug> runtime --test --branch factory/issue-7   # vs an open lap's branch
+```
+
+Executes the STORED scenario against a branch WITHOUT spending a lap: same
+runners the verify gate uses, per-probe pass/fail printed, exit 1 on failure.
+Host/compose modes test a temp worktree of the branch; instabox boots a
+throwaway `pdf-<slug>-scen-test` machine from the same snapshot, clones the
+branch, runs setup+start+probes, and destroys the machine (the janitor reaps
+it if the runner dies). Takes minutes (machine boot + setup) — that is still
+~10× cheaper than validating a scenario fix by burning a lap. The bi-ai-ui
+run (2026-10-25): three hours of blocked cycles, every single one a bug in
+the acceptance scenarios, each fix validated only by a full lap — `--lint`
+catches token/regex mistakes, `--test` catches semantic ones (probe asserts
+what the delivered product doesn't do). Workflow when a lap blocks on a
+scenario gate: `--dump` the scenario, fix the probe, `--lint`, `--test` vs
+main (or the lap's branch), then write — the write bumps the inputs-epoch
+and the blocked issue revives fresh on the next tick.
+
 ### Stage 4 — backlog gate
 
 Needs the PRD text locally (Stage 0 put it in the repo — `gh api` it down or
@@ -493,7 +515,10 @@ and `cleanup` both reap any `pdf-*` machine whose issue has no `in_progress`
 ledger row, and neither ever touches a live lap's machine. If a machine
 looks "running" long after its lap finished, suspect the platform's stale
 listing first (phantom running records were observed ~2h after successful
-deletes) — the janitor reaps it next tick regardless.
+deletes) — the janitor reaps it next tick regardless. One exception family:
+`pdf-<slug>-scen-test` machines (from `scenario --test`) belong to no lap —
+their runner protects them via a pid marker while a test is live, and the
+janitor reaps any whose runner is gone.
 
 ## factory-remote — full CLI reference
 
@@ -509,7 +534,7 @@ All verbs run from any directory (creds are read from env or
 | `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |
 | `onboard OWNER/NAME` | register a repo: config template, scenario templates, port pair | idempotent (`already` if done) |
 | `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the effective config** (write-only state forced probe-by-mutation — kvstore postmortem lesson 7). A successful write bumps the inputs-epoch (blocked issues revive fresh, like scenario writes) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
-| `scenario SLUG runtime\|holdout --file F [--lint] [--dump]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario** | holdout = adversarial layer; ALWAYS `--lint` before the write; see Stage 3 for the probe-token spec. A successful write bumps the inputs-epoch: every blocked issue of the repo gets a fresh revive budget on the next tick |
+| `scenario SLUG runtime\|holdout [--file F \| --lint \| --dump \| --test]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario; `--test` = EXECUTE the stored scenario against a branch (default main) without spending a lap — per-probe results, exit 1 on failure** (`--branch B` to target an open lap's branch) | holdout = adversarial layer; ALWAYS `--lint` then `--test` before relying on a scenario; a write bumps the inputs-epoch: every blocked issue of the repo gets a fresh revive budget on the next tick |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
 | `unblock SLUG ISSUE [--prune] [--force]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); REFUSES an in_progress row (a lap may be live — a crashed one reconciles next tick) unless `--force`, which you fire only after verifying the session tail is quiet and no machine is working; `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |

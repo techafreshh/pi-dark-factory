@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { opsGetConfig, opsLogs, opsScenarioLint, opsScenarioSet, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
+import { opsGetConfig, opsLogs, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
 import { Ledger } from "../src/ledger";
 import { receipt } from "../src/receipts";
+import { execSync } from "node:child_process";
 
 const state = mkdtempSync(join(tmpdir(), "pdfops-"));
 
@@ -233,11 +234,111 @@ describe("reapOrphanMachines (guarded janitor)", () => {
     delete process.env.TEST_IB_KEY;
   });
 
+  test("scenario-test machines: reaped when unmarked or dead-runner; survive their live runner", async () => {
+    const dir = seedInstabox();
+    const repoint = (srv: any) => {
+      const cfg = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      cfg.env.instabox.api_base = `http://127.0.0.1:${srv.port}`;
+      writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    };
+    process.env.TEST_IB_KEY = "k";
+    const ledger = { getIssue: () => null } as any;
+
+    const a = serve(["pdf-toy-scen-test"]);
+    repoint(a.srv);
+    expect(await reapOrphanMachines(ibState, ledger, () => {})).toBe(1); // no marker — stray
+
+    const b = serve(["pdf-toy-scen-test"]);
+    repoint(b.srv);
+    writeFileSync(join(dir, "scen-test.running"), JSON.stringify({ pid: process.pid, machine: "pdf-toy-scen-test" }));
+    expect(await reapOrphanMachines(ibState, ledger, () => {})).toBe(0); // live runner — protected
+
+    writeFileSync(join(dir, "scen-test.running"), JSON.stringify({ pid: 2 ** 22, machine: "pdf-toy-scen-test" }));
+    expect(await reapOrphanMachines(ibState, ledger, () => {})).toBe(1); // crashed runner — reap
+
+    a.srv.stop(true);
+    b.srv.stop(true);
+    delete process.env.TEST_IB_KEY;
+  });
+
   test("no instabox repos = no-op", async () => {
     const empty = mkdtempSync(join(tmpdir(), "pdfib2-"));
     const reaped = await reapOrphanMachines(empty, { getIssue: () => null } as any, () => {});
     expect(reaped).toBe(0);
   });
+});
+
+describe("opsScenarioTest (host mode — the verifier's own test bench)", () => {
+  const GIT_ID = "-c user.email=t@t.io -c user.name=Test";
+  const st = mkdtempSync(join(tmpdir(), "pdfscenops-"));
+  const origin = join(st, "origin.git");
+
+  test("executes the stored scenario against main without a lap; failing probes name themselves", async () => {
+    execSync(`git init --bare ${origin}`);
+    execSync(`git --git-dir=${origin} symbolic-ref HEAD refs/heads/main`);
+    const seed = join(st, "seed");
+    execSync(`git clone ${origin} ${seed}`);
+    execSync(`git -C ${seed} checkout -b main`);
+    writeFileSync(join(seed, "hello.txt"), "hello product\n");
+    execSync(`git -C ${seed} ${GIT_ID} add -A`);
+    execSync(`git -C ${seed} ${GIT_ID} commit -m init`);
+    execSync(`git -C ${seed} push origin main`);
+    execSync(`rm -rf ${seed}`);
+
+    const picker = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = picker.port;
+    picker.stop(true);
+
+    const dir = join(st, "repos", "demo");
+    mkdirSync(dir, { recursive: true });
+    const writeScenario = (expect: string) =>
+      writeFileSync(
+        join(dir, "runtime.json"),
+        JSON.stringify({
+          name: "runtime",
+          port,
+          start: "python3 -m http.server $PORT --bind 127.0.0.1 --directory $WORKTREE",
+          readiness_path: "/",
+          probes: [
+            {
+              id: "hello-served",
+              description: "hello.txt is served from the branch under test",
+              command: "curl -s http://127.0.0.1:$PORT/hello.txt",
+              expect,
+            },
+          ],
+        })
+      );
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        repo: "acme/demo",
+        slug: "demo",
+        default_branch: "main",
+        origin_url: origin,
+        attempts: 2,
+        models: { default: { provider: "x", model: "y" } },
+        timeouts: { stage_minutes: 5, checks_minutes: 1, readiness_seconds: 15, probe_ms: 4000 },
+        scenario: { ports: [], runtime: "runtime.json", holdout: "holdout.json" },
+        skip_labels: [],
+        env: { mode: "host" },
+      })
+    );
+
+    writeScenario("body_contains:hello");
+    const green = await opsScenarioTest(st, "demo", "runtime");
+    expect(green.branch).toBe("main");
+    expect(green.result.pass).toBe(true);
+    expect(green.result.results[0].pass).toBe(true);
+
+    // the operator's actual workflow: verifier bug suspected → point the
+    // probe at the wrong thing → --test shows WHICH probe fails, no lap spent
+    writeScenario("body_contains:nope");
+    const red = await opsScenarioTest(st, "demo", "runtime");
+    expect(red.result.pass).toBe(false);
+    expect(red.result.results[0].pass).toBe(false);
+    expect(red.result.results[0].detail).toBeTruthy();
+  }, 60000);
 });
 
 describe("beginTick (per-repo locks + honest refusals)", () => {

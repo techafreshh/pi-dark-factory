@@ -4,17 +4,18 @@
  * decide how to print it.
  */
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
+import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch } from "./gh";
-import { deleteRemoteBranch, removeWorktree } from "./gitws";
+import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
 import { InstaBox, machineNameFor, sanitizeMachinePart } from "./instabox";
-import { escapeSh, machineBash } from "./machine";
+import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
-import { portBusy } from "./scenario";
-import { loadScenario } from "./scenario";
+import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
+import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, parseSlicerOutput } from "./slicer";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
@@ -371,6 +372,112 @@ export function opsScenarioLint(stateDir: string, slug: string, kind: "runtime" 
   return { ok: true, slug, kind, warnings };
 }
 
+/**
+ * Run the STORED scenario against a branch WITHOUT spending a lap — the
+ * verifier's own test bench. Every verifier bug in the tic-tac-toe and
+ * bi-ai-ui runs (2026-10-24/25) could only be validated by burning a full
+ * lap, because nothing could execute a scenario outside the verify stage.
+ * This runs the exact same runners the verify gate uses: host/compose modes
+ * get a temp worktree of the branch; instabox gets a throwaway
+ * `pdf-<slug>-scen-test` machine booted from the same snapshot, bootstrap-
+ * cloned to the branch, and destroyed in the finally. Read-only for the
+ * ledger; a receipt lands either way.
+ */
+export async function opsScenarioTest(
+  stateDir: string,
+  slug: string,
+  kind: "runtime" | "holdout",
+  branch?: string
+): Promise<{ slug: string; kind: string; branch: string; result: ScenarioResult; machine?: string }> {
+  const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  const file = kind === "runtime" ? cfg.scenario.runtime : cfg.scenario.holdout;
+  const path = join(repoCfgDir(stateDir, slug), file);
+  if (!existsSync(path)) throw new Error(`no ${kind} scenario for ${slug} — onboard templates or a validated upload would have written one`);
+  const spec = loadScenario(path);
+  spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
+  const target = branch ?? cfg.default_branch;
+
+  if (cfg.env.mode === "instabox" && cfg.env.instabox) {
+    const ib = InstaBox.fromEnv(cfg.env.instabox);
+    const name = `pdf-${sanitizeMachinePart(slug)}-scen-test`;
+    const marker = join(repoCfgDir(stateDir, slug), "scen-test.running");
+    let snaps: Awaited<ReturnType<InstaBox["listSnapshots"]>> = [];
+    try {
+      snaps = await ib.listSnapshots();
+    } catch {}
+    const snap = snaps.find((s) => s.name === cfg.env.instabox!.snapshot);
+    const m = await ib.ensureRunning({
+      name,
+      template: snap ? undefined : cfg.env.instabox.template,
+      snapshotId: snap?.id,
+      metadata: { factory: "1", repo: cfg.repo, issue: "scen-test" },
+    });
+    writeFileSync(marker, JSON.stringify({ pid: process.pid, machine: name }) + "\n");
+    let result: ScenarioResult;
+    try {
+      const tok = await ib.createSshToken(m.id, { name: "factory", ttlSeconds: 3600 });
+      const conn = { host: tok.host, port: tok.port, user: tok.token };
+      const envFile = buildMachineEnvFile(cfg, { gates: false, branch: target, base: cfg.default_branch });
+      const boot = await machineBash(conn, envFile + "\n" + bootstrapScriptFor(cfg, target), { timeoutMs: 10 * 60_000 });
+      if (boot.code !== 0 || !boot.stdout.includes("BOOTSTRAP_OK")) {
+        throw new Error(`test machine bootstrap failed (exit ${boot.code}): ${boot.stderr.trim().slice(0, 300) || boot.stdout.trim().slice(0, 300)}`);
+      }
+      result = await runScenarioInMachine(
+        spec,
+        { ssh: async () => conn, repoDir: cfg.env.instabox!.repo_dir },
+        {
+          readinessSeconds: cfg.timeouts.readiness_seconds,
+          defaultProbeMs: cfg.timeouts.probe_ms,
+          key: `${slug}-scen-test`,
+          reservedPorts: cfg.scenario.ports,
+        }
+      );
+    } finally {
+      rmSync(marker, { force: true });
+      try {
+        await ib.deleteMachine(m.id);
+      } catch (e: any) {
+        receipt(stateDir, `scenario test machine ${name} delete failed (janitor will catch it): ${String(e.message).slice(0, 120)}`, slug);
+      }
+    }
+    receipt(stateDir, `scenario ${kind} TEST vs ${target} (machine ${name}, destroyed): ${result.pass ? "ALL GREEN" : "FAILED"}`, slug);
+    return { slug, kind, branch: target, result, machine: name };
+  }
+
+  // host / compose: temp worktree of the branch, same runners as the gate
+  const src = await ensureSource(stateDir, cfg);
+  const wt = mkdtempSync(join(tmpdir(), `pdfscen-${sanitizeMachinePart(slug)}-`));
+  const scratch = wt + ".scratch";
+  const add = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${target}`], { timeoutMs: 120000 });
+  if (add.code !== 0) {
+    await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 60000 });
+    throw new Error(`branch ${target} not testable: ${add.stderr.trim().slice(0, 200)}`);
+  }
+  try {
+    const envBuild =
+      cfg.env.mode === "compose"
+        ? buildStageCmd(cfg, wt, stateDir, `pdf-${slug}-scen-test`, {
+            extraEnv: { PORT: String(spec.port), WORKTREE: wt },
+            publishPorts: true,
+          })
+        : undefined;
+    const result = await runScenario(spec, scratch, {
+      readinessSeconds: cfg.timeouts.readiness_seconds,
+      defaultProbeMs: cfg.timeouts.probe_ms,
+      worktree: wt,
+      preClean: `pdf-${slug}-`,
+      wrap: envBuild
+        ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
+        : undefined,
+    });
+    receipt(stateDir, `scenario ${kind} TEST vs ${target} (host worktree): ${result.pass ? "ALL GREEN" : "FAILED"}`, slug);
+    return { slug, kind, branch: target, result };
+  } finally {
+    await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 120000 });
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 const SLICER_TIMEOUT_MS = 900_000;
 
 /**
@@ -720,10 +827,32 @@ export async function reapOrphanMachines(
   let reaped = 0;
   for (const m of machines) {
     const hit = /^pdf-(.+)-i(\d+)$/.exec(m.name ?? "");
-    if (!hit) continue;
-    const cfg = instaboxBySlug.get(hit[1]);
+    const testHit = /^pdf-(.+)-scen-test$/.exec(m.name ?? "");
+    if (!hit && !testHit) continue;
+    const slugOf = (hit ?? testHit)![1];
+    if (testHit) {
+      // a scenario-test machine belongs to no lap — it is protected ONLY by
+      // its runner's marker (pid + name); a dead pid or missing marker
+      // means the test crashed and the box is quota-eating stray
+      const markerPath = join(stateDir, "repos", slugOf, "scen-test.running");
+      try {
+        const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+        if (marker.machine === m.name && typeof marker.pid === "number") {
+          try { process.kill(marker.pid, 0); continue; } catch {} // runner still alive
+        }
+      } catch {}
+      try {
+        await ib.deleteMachine(m.id);
+        reaped++;
+        log(`janitor deleted stray scenario-test machine ${m.name}`);
+      } catch (e: any) {
+        log(`janitor could not delete ${m.name}: ${e.message?.slice(0, 120)}`);
+      }
+      continue;
+    }
+    const cfg = instaboxBySlug.get(slugOf);
     if (cfg) {
-      const row = ledger.getIssue(cfg.repo, Number(hit[2]));
+      const row = ledger.getIssue(cfg.repo, Number(hit![2]));
       if (row && row.state === "in_progress") continue; // a lap is live in it
       try {
         await ib.deleteMachine(m.id);

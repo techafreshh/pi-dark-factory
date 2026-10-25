@@ -9,10 +9,23 @@ export interface ParsedEvents {
 
 function extractUsage(u: any): Usage | null {
   if (!u || typeof u !== "object") return null;
-  const input = u.inputTokens ?? u.input_tokens ?? u.promptTokens ?? u.prompt_tokens;
-  const output = u.outputTokens ?? u.output_tokens ?? u.completionTokens ?? u.completion_tokens;
+  // pi's own wire shape is {input, output, reasoning, cacheRead, ...} — the
+  // OpenAI/Anthropic names below are for foreign/legacy streams. This missed
+  // the pi shape for the factory's whole life: every stage row ever recorded
+  // answered tok=None/None (found 2026-10-25 against real bi-ai-ui streams).
+  const input = u.inputTokens ?? u.input_tokens ?? u.promptTokens ?? u.prompt_tokens ?? u.input;
+  const output = u.outputTokens ?? u.output_tokens ?? u.completionTokens ?? u.completion_tokens ?? u.output;
+  const reasoning = u.reasoningTokens ?? u.reasoning ?? 0;
   if (input === undefined && output === undefined) return null;
-  return { input_tokens: Number(input ?? 0), output_tokens: Number(output ?? 0) };
+  return { input_tokens: Number(input ?? 0), output_tokens: Number(output ?? 0) + Number(reasoning ?? 0) };
+}
+
+/** usage arrives per-message (each message_end carries that message's
+ *  tokens) — a stage's real cost is the SUM, not the last message's. */
+function addUsage(into: Usage | null, u: Usage | null): Usage | null {
+  if (!u) return into;
+  if (!into) return { ...u };
+  return { input_tokens: into.input_tokens + u.input_tokens, output_tokens: into.output_tokens + u.output_tokens };
 }
 
 function textOfMessage(message: any): string {
@@ -45,7 +58,7 @@ export function parseEventStream(lines: string[]): ParsedEvents {
     switch (e.type) {
       case "message_end": {
         const u = extractUsage(e.usage ?? e.message?.usage);
-        if (u) usage = u;
+        if (u) usage = addUsage(usage, u);
         if (e.message?.role === "assistant") {
           if (e.message.stopReason === "error") {
             // a failed model stream is a provider error, not an empty verdict —
@@ -62,12 +75,12 @@ export function parseEventStream(lines: string[]): ParsedEvents {
       }
       case "turn_end": {
         const u = extractUsage(e.usage);
-        if (u) usage = u;
+        if (u) usage = addUsage(usage, u);
         break;
       }
       case "agent_end": {
         const u = extractUsage(e.usage);
-        if (u) usage = u;
+        if (u) usage = addUsage(usage, u);
         if (assistantText === null && Array.isArray(e.messages)) {
           const last = [...e.messages].reverse().find((m: any) => m?.role === "assistant");
           const t = last ? textOfMessage(last) : "";
