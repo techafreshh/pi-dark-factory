@@ -144,6 +144,18 @@ env fields, then:
 factory-remote config <slug> --json "$(cat .agents/skills/pi-factory/templates/config.skeleton.json | python3 -c 'import json,sys;d=json.load(sys.stdin);d.pop("_readme",None);print(json.dumps(d))')"
 ```
 
+**For an instabox project, prefer the COMPLETE worked example over the
+minimal skeleton**: `templates/config.example.instabox.full.json` is
+every allowlisted field of the exact config tic-tac-toe ran its whole
+17-issue backlog on (2026-10-24/25, machine-lane throughout) — models per
+stage, attempts, timeouts, merge, pi toolsets, `env` with the snapshot.
+Pushing it verbatim is known-good; adjust the decision points it marks in
+`_readme` (required_checks, thinking levels, stage_minutes). The minimal
+skeleton is for when you deliberately want a delta. (This exists because
+the magpie onboarding copied tic-tac-toe's config by hand to be sure
+nothing was missing — the skill now ships that certainty.) Prerequisite
+either way: `foreman bake <slug>` VPS-side BEFORE the first lap.
+
 - **models**: default tier for everything + per-stage overrides. Suggest the
   tier lesson from the runbooks: disciplined model for implement/review,
   cheaper for plan; fallback chains as `provider/model[:thinking]`.
@@ -411,7 +423,7 @@ running in a box is as watchable as a host-side one.
 | User says… | Do |
 |---|---|
 | "is the factory running" | `doctor` + `status` — report repos, chain depth, ledger states |
-| "why is #N blocked" | `status` (row + last_error) → `logs --tail 300` for the receipt trail → read the failing gate from `last_error`; propose a fix, then `unblock <slug> <n>` (confirm first). NOTE: blocked rows don't need an unblock to keep going — every tick AUTO-REVIVES blocked issues (fresh attempt budget, bounded: max 3 revive rounds/issue/day, and a stagnation breaker that refuses when the same failure signature repeats on consecutive blocks — that means the wheel is spinning and a human should look). `unblock` is for deliberate clearing (`--prune` closes the PR + branch + worktree) |
+| "why is #N blocked" | `status` (row + last_error) → `logs --repo <slug> --tail 300` for the receipt trail → read the failing gate from `last_error`; propose a fix, then `unblock <slug> <n>` (confirm first). NOTE: blocked rows don't need an unblock to keep going — every tick AUTO-REVIVES blocked issues (fresh attempt budget, bounded: max 3 revive rounds/issue/day, and a stagnation breaker that refuses when the same failure signature repeats on consecutive blocks — that means the wheel is spinning and a human should look). **Fixing the INPUTS un-blocks for free**: any `scenario` or `config` write bumps an inputs-epoch — every blocked issue of that repo gets a fresh revive budget + clean stagnation history on the next tick, because the world its blocker was measured against no longer exists (tic-tac-toe #11: scenario fixed after the cap was spent; the cap then refused a world that had already changed). `unblock` is for deliberate clearing (`--prune` closes the PR + branch + worktree); it now REFUSES an in_progress row unless `--force`, because dropping a live lap's row mid-flight orphans it — a genuinely crashed lap reconciles on the next tick by itself |
 | "run a lap now" | confirm (tokens), `tick <slug>` |
 | "add repo X to the factory" | run the wizard from Stage 0 |
 | "cleanup" | confirm, `cleanup` (prunes blocked worktree caches, kills stale pi) |
@@ -424,17 +436,40 @@ ledger is confirmed by the merged PR on GitHub (`gh pr view`); a failed lap's
 story is in `status`'s `last_error` plus `logs`. When a provider hit
 `provider_error`, note which models were tried before proposing unblock.
 
+### Reading shared surfaces (the factory is multi-tenant)
+
+- **`claimable chain` in status**: N = N issues claimable right now (GitHub
+  open, unlabeled, deps met, not ledger-claimed); `none (all
+  delivered/blocked)` = nothing claimable; `unknown (GitHub probe >5s)` =
+  the live-GitHub probe outran its 5s cap — retry, don't interpret.
+- **`chained after #N`** in `queued:` receipts: the same tick, after #N
+  merged, immediately re-ran intake and started the next claimable issue
+  (strictly one lap at a time per repo — that ordering keeps main
+  conflict-free; max 6 laps per repo per tick, the rest resume next tick).
+- **Log lines carry `[slug]` tags** — `logs --repo <slug>` shows exactly
+  that repo's laps with no neighbor flood. A per-repo tick never waits on a
+  neighbor's lock (per-repo pidfiles); the only contention left is the
+  15-min timer's own full tick, which skips any repo a manual tick is
+  already working.
+- **`in flight: N`** = ledger rows in in_progress. Machine-mode implement
+  stages emit no receipt lines until they finish — silence there is normal
+  (watch `session <slug> --follow`), NOT evidence of a hang. Before ever
+  pruning a "silent" lap, cross-check GitHub for a just-opened PR — receipts
+  lag the work.
+
 ## Failure signatures (2026-10-24 playbook — match the receipt, don't re-derive)
 
-Every signature below was paid for on mdrender/kvstore/todos-api. Read the
-`last_error` / receipt, find its row, act.
+Every signature below was paid for on mdrender/kvstore/todos-api/tic-tac-toe.
+Read the `last_error` / receipt, find its row, act.
 
 | Receipt says | What it means | What to do |
 |---|---|---|
 | `pi exited 127 … node: not found` from a compose service | libc mismatch: the product's service image is musl (alpine) while the mounted Node is glibc. The launcher self-adapts (image's node first), so seeing this means the VPS-side launcher `~/.pi/agent/bin/pi` was altered | report it; restore the libc-agnostic launcher (pi-factory-setup Phase 4f) |
 | bare `pi exited 127:` with nothing after the colon | spawn ENOENT — the binary in the argv never existed. Receipts name the actual path since e6b6970; pre-fix receipts were empty | read the named path; if the error is still empty, the daemon predates e6b6970 |
 | `machine … never reached running (state: suspended)` | platform auto-suspend of an idle box; the factory resumes it on the next attempt | nothing — self-healing. Flag only if it repeats every single lap |
-| `machine gate failed (git push of …)` | GitHub credentials didn't reach the box (fixed 2026-10-24: the lane resolves `GH_TOKEN`→`GITHUB_TOKEN` and the bootstrap sources the machine env before cloning) | should not recur; if it does, check `factoryd.env` carries the token |
+| `machine gate failed (git push of factory/issue-N failed): non-fast-forward` | FOSSIL BRANCH: the lap was chained after an unmerged sibling whose branch never merged — after the sibling squash-merged elsewhere, the remote `factory/issue-N` diverged and every fresh push was rejected (tic-tac-toe #11, 2026-10-24; three identical failures burned the whole attempt budget) | FIXED at the source: the gate force-pushes `factory/issue-*` (factory-owned branches — the machine clone is the worktree of record), so this signature should not recur. If you ever see it again, `unblock <slug> <n> --prune` kills the fossil branch |
+| `machine gate failed (git push …) … could not read from remote` (credentials, not non-FF) | GitHub credentials didn't reach the box (fixed 2026-10-24: the lane resolves `GH_TOKEN`→`GITHUB_TOKEN` and the bootstrap sources the machine env before cloning) | should not recur; if it does, check `factoryd.env` carries the token |
+| `review verdict unparseable after 5 re-asks — failing closed` (REJECT; the reviewer's raw output is embedded in findings, ~1500 chars) | the reviewer's generation dies mid-sentence — payload-correlated truncation on flash-tier models, probabilistic per lap (tic-tac-toe #11/#15/#16, 2026-10-25). It is NOT a product judgement: the verify stage's gates already passed | read the stage row in `status` — tok in/out is recorded even for failed stages now, telling river-death (tokens stop) from output-cap (tokens at a ceiling); inspect the PR + `session <slug> --issue N`. If the work is genuinely good, take the human-review path: verify on GitHub yourself, squash-merge the PR, `unblock <slug> <n> --prune` to tidy (ledger consequence: the row is dropped — GitHub becomes the only record of the merge). A plain re-lap often recovers on its own; only escalate if the same lap fails this way twice |
 | `[runtime] server never became ready within 120s` | scenario `start` command / `readiness_path` mismatch, or the implementer's server exits or binds wrong — the repair loop usually chews through real bugs | watch one repair round before touching the scenario or `timeouts.readiness_seconds` |
 | `seed-repaired` in `logs` | the mounted Node 22 vanished host-side AGAIN (twice on 2026-10-23, actor never attributed; the sweep re-copies it and receipts the event) | note the timestamp — these mark recurrence windows |
 | river `provider_error` bursts (upstream `terminated` etc.) | upstream flakiness; the 3-tier chain advances on its own | watch only; worry when fallbacks also fail |
@@ -469,15 +504,15 @@ All verbs run from any directory (creds are read from env or
 |---|---|---|
 | `health` | `GET /health` — connectivity + version | open endpoint, no key |
 | `doctor` | handshake + auth + list onboarded repos | run this when anything "doesn't work" |
-| `status [--repo SLUG] [--raw]` | ledger rows, laps, recent stages, chain depth, worktrees | `--raw` dumps the JSON payload |
-| `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | 200 lines default |
+| `status [--repo SLUG] [--raw]` | ledger rows, laps, recent stages, chain depth, worktrees | `--repo` scopes EVERYTHING to that repo (ledger rows included) — unknown slug answers empty; `--raw` dumps the JSON payload |
+| `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | lines carry `[slug]` tags; `--repo` filters on them — no multi-tenant flood; 200 lines default |
 | `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |
 | `onboard OWNER/NAME` | register a repo: config template, scenario templates, port pair | idempotent (`already` if done) |
-| `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the effective config** (write-only state forced probe-by-mutation — kvstore postmortem lesson 7) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
-| `scenario SLUG runtime\|holdout --file F [--lint] [--dump]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario** | holdout = adversarial layer; ALWAYS `--lint` before the write; see Stage 3 for the probe-token spec |
+| `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the effective config** (write-only state forced probe-by-mutation — kvstore postmortem lesson 7). A successful write bumps the inputs-epoch (blocked issues revive fresh, like scenario writes) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
+| `scenario SLUG runtime\|holdout --file F [--lint] [--dump]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario** | holdout = adversarial layer; ALWAYS `--lint` before the write; see Stage 3 for the probe-token spec. A successful write bumps the inputs-epoch: every blocked issue of the repo gets a fresh revive budget on the next tick |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
-| `unblock SLUG ISSUE [--prune]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
+| `unblock SLUG ISSUE [--prune] [--force]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); REFUSES an in_progress row (a lap may be live — a crashed one reconciles next tick) unless `--force`, which you fire only after verifying the session tail is quiet and no machine is working; `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
 | `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
 
 ## Hard rules

@@ -1,0 +1,55 @@
+{
+  "_readme": "COMPLETE known-good instabox config patch — this is (minus repo specifics) the exact config tic-tac-toe ran its full 17-issue backlog on (2026-10-24/25, every lap machine-lane). Unlike config.skeleton.instabox.json (a minimal delta), this carries EVERY allowlisted field so an operator never has to copy another project's config to be sure nothing is missing (magpie onboarding, 2026-10-25). The config verb deep-merges this over the onboard defaults; repo/slug/default_branch/scenario.ports were set at onboard and are not patchable. Prerequisite: the factory-base snapshot must be baked VPS-side (foreman bake <slug>) BEFORE the first lap. Decision points you may want to change: merge.required_checks (this example ships [] because tic-tac-toe had no CI; use [\"*\"] to autodetect every check the PR reports, or explicit names), per-stage thinking levels, and stage_minutes.",
+  "models": {
+    "default": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "max",
+      "fallback": ["deepseek/deepseek-flash:high"]
+    },
+    "plan": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "high",
+      "fallback": ["deepseek/deepseek-flash:high"]
+    },
+    "implement": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "max",
+      "fallback": ["deepseek/deepseek-flash:max"]
+    },
+    "review": {
+      "provider": "river",
+      "model": "zai-org/GLM-5.3-Flash",
+      "thinking": "high",
+      "fallback": ["deepseek/deepseek-flash:high"]
+    }
+  },
+  "attempts": 3,
+  "timeouts": {
+    "stage_minutes": 60,
+    "checks_minutes": 30,
+    "readiness_seconds": 120,
+    "probe_ms": 10000
+  },
+  "merge": {
+    "method": "squash",
+    "required_checks": [],
+    "delete_branch": true
+  },
+  "skip_labels": [],
+  "env": {
+    "mode": "instabox",
+    "pass_env": ["GITHUB_TOKEN", "ZAI_API_KEY", "DEEPSEEK_API_KEY"],
+    "instabox": {
+      "snapshot": "factory-base"
+    }
+  },
+  "pi": {
+    "binary": "pi",
+    "tools": ["read", "bash", "edit", "write", "grep", "find", "ls"],
+    "plan_tools": ["read", "bash", "grep", "find", "ls"],
+    "extra_args": []
+  }
+}

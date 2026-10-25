@@ -26,8 +26,8 @@ export interface PiCallOpts {
 
 export type PiOutcome =
   | { kind: "ok"; text: string; usage: Usage | null }
-  | { kind: "timeout"; error?: string }
-  | { kind: "provider_error"; error: string }
+  | { kind: "timeout"; error?: string; usage?: Usage | null }
+  | { kind: "provider_error"; error: string; usage?: Usage | null }
   | { kind: "spawn_error"; error: string };
 
 const STDOUT_CAP = 5_000_000;
@@ -169,21 +169,25 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
     // killed clients, timeouts, and crashes — and is idempotent
     await sh(o.runnerPrefix.cleanupArgv, { timeoutMs: 20000 }).catch(() => {});
   }
-  if (timedOut) return { kind: "timeout" };
-  if (quietKilled)
-    return { kind: "timeout", error: `no stream output for ${Math.round((o.quietMs ?? 0) / 60_000)}m` };
-
   const [lines, stderr] = await Promise.all([stdoutP, stderrP]);
   const parsed = parseEventStream(lines);
+  // usage rides every outcome, not just ok — the stages that most need
+  // remote diagnosis (a truncated reviewer, a dead stream) are exactly the
+  // non-ok ones, and tok=None there made river-death vs output-cap
+  // unfalsifiable from status (tic-tac-toe postmortem 2026-10-25, P0-5)
+  if (timedOut) return { kind: "timeout", usage: parsed.usage ?? null };
+  if (quietKilled)
+    return { kind: "timeout", usage: parsed.usage ?? null, error: `no stream output for ${Math.round((o.quietMs ?? 0) / 60_000)}m` };
+
   if (code !== 0) {
     const detail = spawnErr
       ? `spawn error — ${spawnErr}`
       : parsed.errorHint ?? stderr.trim().split("\n").slice(-5).join("\n");
-    return { kind: "provider_error", error: `pi exited ${code}: ${detail.slice(0, 500)}` };
+    return { kind: "provider_error", usage: parsed.usage ?? null, error: `pi exited ${code}: ${detail.slice(0, 500)}` };
   }
   if (parsed.assistantText === null) {
     const detail = (parsed.errorHint ?? stderr.trim().slice(0, 300)) || "no assistant message in event stream";
-    return { kind: "provider_error", error: `model produced no final text: ${detail}` };
+    return { kind: "provider_error", usage: parsed.usage ?? null, error: `model produced no final text: ${detail}` };
   }
   return { kind: "ok", text: parsed.assistantText, usage: parsed.usage };
 }

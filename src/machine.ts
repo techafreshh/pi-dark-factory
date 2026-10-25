@@ -240,11 +240,11 @@ function outcomeFromRun(res: ShRes, spec: ModelSpec): { outcome: PiOutcome; raw:
   const parsed = parseEventStream(jsonl);
   if (rc !== 0) {
     const detail = parsed.errorHint ?? res.stderr.trim().split("\n").slice(-4).join("; ");
-    return { outcome: { kind: "provider_error", error: `pi exited ${rc} in machine: ${(detail || "unknown").slice(0, 500)}` }, raw };
+    return { outcome: { kind: "provider_error", usage: parsed.usage ?? null, error: `pi exited ${rc} in machine: ${(detail || "unknown").slice(0, 500)}` }, raw };
   }
   if (parsed.assistantText === null) {
     const detail = (parsed.errorHint ?? res.stderr.trim()).slice(0, 300);
-    return { outcome: { kind: "provider_error", error: `machine model produced no final text: ${detail}` }, raw };
+    return { outcome: { kind: "provider_error", usage: parsed.usage ?? null, error: `machine model produced no final text: ${detail}` }, raw };
   }
   return { outcome: { kind: "ok", text: parsed.assistantText, usage: parsed.usage }, raw };
 }

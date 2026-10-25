@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { opsGetConfig, opsLogs, opsScenarioLint, opsScenarioSet, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
+import { Ledger } from "../src/ledger";
+import { receipt } from "../src/receipts";
 
 const state = mkdtempSync(join(tmpdir(), "pdfops-"));
 
@@ -58,6 +60,45 @@ describe("ops core (shared by foreman CLI and factoryd)", () => {
     const r = await opsUnblock(state, "demo", 42, false);
     expect(r.dropped).toBe(false);
   });
+
+  test("logs --repo filters on the [slug] tag; untagged history falls back (P0-2)", () => {
+    const st = mkdtempSync(join(tmpdir(), "pdfopslogs-"));
+    receipt(st, `lap #1 attempt 1/3`, "demo");
+    receipt(st, `lap #2 attempt 1/3`, "other");
+    receipt(st, `tick skipped (demo): another tick is live (pidfile)`); // pre-tagging era line
+    const lines = opsLogs(st, { slug: "demo" }).lines;
+    expect(lines.some((l) => l.includes("lap #1") && l.includes("[demo]"))).toBe(true);
+    expect(lines.every((l) => !l.includes("[other]"))).toBe(true); // no multi-tenant flood
+    expect(lines.some((l) => l.includes("tick skipped (demo)"))).toBe(true); // legacy substring fallback
+  });
+
+  test("unblock refuses an in_progress row — a live lap — unless --force (P0-6)", async () => {
+    seedConfig();
+    const ledger = new Ledger(join(state, "factory.db"));
+    ledger.claim("acme/demo", 7); // in_progress row = possibly a live lap
+    const refused = await opsUnblock(state, "demo", 7, false);
+    expect(refused.refused).toBe("in_progress");
+    expect(refused.dropped).toBe(false);
+    expect(refused.note).toContain("--force");
+    expect(ledger.getIssue("acme/demo", 7)!.state).toBe("in_progress"); // row intact
+    const forced = await opsUnblock(state, "demo", 7, false, true); // verified-dead override
+    expect(forced.dropped).toBe(true);
+    expect(ledger.getIssue("acme/demo", 7)).toBeNull();
+  });
+
+  test("status --repo scopes ledger rows to that repo; unknown slug is empty (P1-15a)", async () => {
+    seedConfig();
+    const ledger = new Ledger(join(state, "factory.db"));
+    ledger.claim("acme/demo", 9);
+    const all = await opsStatus(state);
+    expect(all.issues.length).toBeGreaterThan(0);
+    const scoped = await opsStatus(state, "demo");
+    expect(scoped.issues.length).toBeGreaterThan(0);
+    expect(scoped.issues.every((i) => i.repo === "acme/demo")).toBe(true);
+    expect(scoped.issues.some((i) => i.issue_number === 9)).toBe(true);
+    const unknown = await opsStatus(state, "no-such-repo");
+    expect(unknown.issues).toEqual([]);
+  }, 30000);
 });
 
 describe("opsGetConfig (the read verb)", () => {

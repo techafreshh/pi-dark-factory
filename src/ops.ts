@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { loadRepoConfig, resolveModels } from "./config";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, removeWorktree } from "./gitws";
-import { InstaBox, sanitizeMachinePart } from "./instabox";
+import { InstaBox, machineNameFor, sanitizeMachinePart } from "./instabox";
 import { escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
 import { portBusy } from "./scenario";
@@ -18,6 +18,7 @@ import { loadScenario } from "./scenario";
 import { buildSlicerPrompt, filterNew, parseSlicerOutput } from "./slicer";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
+import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
 import type { RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
@@ -79,7 +80,11 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
   return {
     version: "0.1.0",
     repos: repoList,
-    issues: ledger.listIssues(),
+    // --repo <slug> scopes ledger rows too — status --repo used to dump every
+    // repo's issues and the operator grep'd manually every time (tic-tac-toe
+    // postmortem 2026-10-25, P1-15a). Unknown slug → empty list, not all
+    // (listIssues("") would be falsy and mean "no filter" — hence the ternary).
+    issues: slug ? (repoForStages ? ledger.listIssues(repoForStages) : []) : ledger.listIssues(),
     laps: ledger.recentLaps(slug, 10),
     stages: ledger.recentStages(repoForStages, 15),
     worktrees,
@@ -90,7 +95,17 @@ export function opsLogs(stateDir: string, opts: { slug?: string; tail?: number }
   const path = join(stateDir, "laps.log");
   if (!existsSync(path)) return { lines: [], note: "no laps.log yet" };
   const all = readFileSync(path, "utf8").split("\n").filter(Boolean);
-  const lines = opts.slug ? all.filter((l) => l.includes(` on ${opts.slug}:`) || !l.includes(" on ") || l.includes(` ${opts.slug} `)) : all;
+  // Lines are `[iso] [slug] msg` — every tick.ts receipt stamps the repo
+  // slug, so `logs --repo <slug>` sees exactly that repo's laps with no
+  // multi-tenant flood. Pre-tagging history (before 2026-10-25) falls back
+  // to a loose substring match — the best an untagged line can do.
+  const lines = opts.slug
+    ? all.filter((l) => {
+        const tag = /^\[[^\]]+\] \[([^\]]+)\]/.exec(l);
+        if (tag) return tag[1] === opts.slug;
+        return l.includes(opts.slug!);
+      })
+    : all;
   return { lines: lines.slice(-(opts.tail ?? 100)) };
 }
 
@@ -184,7 +199,7 @@ export async function opsOnboard(
     join(repoCfgDir(stateDir, slug), "holdout.json"),
     readFileSync(join(tplDir, "holdout.json"), "utf8").replace(/"port":\s*\d+/, `"port": ${ports[1]}`)
   );
-  receipt(stateDir, `onboarded ${target} (slug: ${slug}, branch: ${branch}, ports: ${ports.join(" + ")})`);
+  receipt(stateDir, `onboarded ${target} (slug: ${slug}, branch: ${branch}, ports: ${ports.join(" + ")})`, slug);
   return {
     already: false,
     slug,
@@ -220,7 +235,7 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   const ib = InstaBox.fromEnv(ibx);
   const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
 
-  receipt(stateDir, `bake ${slug}: booting machine ${name} from template ${ibx.template}`);
+  receipt(stateDir, `bake ${slug}: booting machine ${name} from template ${ibx.template}`, slug);
   const existing = await ib.machineByName(name);
   if (existing) await ib.deleteMachine(name);
   const op = await ib.createMachine({ name, template: ibx.template, metadata: { factory: "1", bake: cfg.slug } });
@@ -251,7 +266,7 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
     throw new Error(`bake clone failed (exit ${cloned.code}): ${(cloned.stderr || cloned.stdout).trim().slice(0, 300)}`);
   }
   if (ibx.bake) {
-    receipt(stateDir, `bake ${slug}: running bake script (${ibx.bake.length} chars)`);
+    receipt(stateDir, `bake ${slug}: running bake script (${ibx.bake.length} chars)`, slug);
     const bakeScript = `set -eu\ncd ${escapeSh(ibx.repo_dir)}\nprintf %s ${Buffer.from(ibx.bake, "utf8").toString("base64")} | base64 -d | bash\n`;
     const res = await machineBash(conn, bakeScript, { timeoutMs: 120 * 60_000 });
     if (res.code !== 0) {
@@ -274,7 +289,7 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
     writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n");
     config_updated = true;
   }
-  receipt(stateDir, `bake ${slug}: snapshot ${snapName} ready (${Math.round((snap.rootSizeBytes ?? 0) / 2 ** 30)} GiB root)`);
+  receipt(stateDir, `bake ${slug}: snapshot ${snapName} ready (${Math.round((snap.rootSizeBytes ?? 0) / 2 ** 30)} GiB root)`, slug);
   return {
     machine: name,
     snapshot: snapName,
@@ -302,7 +317,9 @@ export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" |
   const path = join(dir, `${kind}.json`);
   rmSync(path, { force: true });
   mvSync(tmp, path);
-  receipt(stateDir, `scenario ${kind}.json updated for ${slug} (validated)`);
+  receipt(stateDir, `scenario ${kind}.json updated for ${slug} (validated)`, slug);
+  // the world the blocked issues' fuses were measured against just changed
+  bumpInputsEpoch(stateDir, slug);
   return { ok: true, path };
 }
 
@@ -494,6 +511,9 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   const merged = deepMerge(JSON.parse(readFileSync(path, "utf8")), patch);
   writeFileSync(path, JSON.stringify(merged, null, 2) + "\n");
   loadRepoConfig(path); // re-validate shape
+  // config writes (models, env, timeouts) change lap inputs — blocked
+  // issues get a fresh revive budget, same as scenario writes
+  bumpInputsEpoch(stateDir, slug);
   return { config_path: path, config: merged };
 }
 
@@ -550,17 +570,39 @@ export async function opsBacklog(
     numbers.push(num);
     created.push({ number: num, title: s.title });
   }
-  receipt(stateDir, `backlog: ${numbers.length} issues resolved for ${cfg.repo}`);
+  receipt(stateDir, `backlog: ${numbers.length} issues resolved for ${cfg.repo}`, slug);
   return { sliced: sliced.length, existing: sliced.length - fresh.length, preview, created };
 }
 
-export async function opsUnblock(stateDir: string, slug: string, issue: number, prune: boolean) {
+export async function opsUnblock(stateDir: string, slug: string, issue: number, prune: boolean, force = false) {
   const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
   const ledger = new Ledger(join(stateDir, "factory.db"));
   const row = ledger.getIssue(cfg.repo, issue);
   if (!row) return { dropped: false, note: `#${issue} has no ledger row` };
+  // guard: an in_progress row may be a LIVE lap — dropping it mid-flight
+  // orphaned a working lap once (tic-tac-toe #10, 2026-10-24: pruned while
+  // the implement stage was still running; the PR opened 36 seconds later;
+  // survival was luck, not design). The next tick's reconcile cleans up
+  // genuinely crashed laps by itself; --force is the verified-dead override.
+  if (row.state === "in_progress" && !force) {
+    let machine = "";
+    if (cfg.env.mode === "instabox" && cfg.env.instabox) {
+      try {
+        const m = await InstaBox.fromEnv(cfg.env.instabox).machineByName(machineNameFor(slug, issue));
+        if (m) machine = ` Its machine ${m.name} still exists — the janitor reaps it after the row drops.`;
+      } catch {}
+    }
+    return {
+      dropped: false,
+      issue,
+      refused: "in_progress",
+      note:
+        `#${issue} is in_progress — a lap may be LIVE. A genuinely crashed lap reconciles automatically on the next tick. ` +
+        `If you have verified it is dead (quiet session tail, no machine activity), re-run with --force.${machine}`,
+    };
+  }
   ledger.dropIssue(cfg.repo, issue);
-  receipt(stateDir, `unblocked ${slug} #${issue} (ledger row dropped)`);
+  receipt(stateDir, `unblocked ${slug} #${issue} (ledger row dropped)`, slug);
   const out: Record<string, unknown> = { dropped: true, issue };
   if (prune) {
     const gh = new Gh(cfg.repo);

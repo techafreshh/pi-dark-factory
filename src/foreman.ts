@@ -21,6 +21,7 @@ Commands:
                                          env.instabox.snapshot in the repo config
   unblock <slug> <issue>              drop the ledger row so intake re-claims the issue
                                          [--prune] also close PR + delete branch + worktree
+                                         [--force] override the in-progress guard (verify dead first)
   cleanup                             prune blocked worktrees' dep caches, kill stale pi,
                                        reap leftover pdf-* instabox machines, report disk
 
@@ -149,7 +150,7 @@ async function main() {
       const s = pos[0];
       const n = Number(pos[1]);
       if (!s || !Number.isFinite(n)) throw new Error("unblock needs <slug> <issue-number>");
-      const r = await opsUnblock(stateDir, s, n, flags.prune === true);
+      const r = await opsUnblock(stateDir, s, n, flags.prune === true, flags.force === true);
       if (!r.dropped) {
         console.log(r.note);
       } else {

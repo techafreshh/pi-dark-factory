@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoReviveBlocked } from "../src/tick";
+import { autoReviveBlocked, bumpInputsEpoch } from "../src/tick";
 import type { RepoConfig } from "../src/types";
 
 interface Row {
@@ -81,5 +81,26 @@ describe("autoReviveBlocked (bounded self-heal of exhausted laps)", () => {
     const revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
     expect(revives).toBe(3); // AUTO_REVIVE_DAILY_CAP
     expect(led.rows[0].state).toBe("blocked");
+  });
+
+  test("inputs-epoch: a scenario/config write resets the fuses — the world changed (P0-7)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfrev-"));
+    const led = fakeLedger([blocked("holdout probe demands 404 for POST /api/rooms")]);
+    for (let i = 0; i < 4; i++) {
+      led.rows[0] = blocked(`gate finds ${i}`);
+      autoReviveBlocked(cfg, dir, led as any);
+    }
+    // cap spent — tic-tac-toe #11 2026-10-25 sat here refusing identically
+    let revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
+    expect(revives).toBe(3);
+    expect(led.rows[0].state).toBe("blocked");
+    // the operator fixes the scenario → epoch bump → fresh budget + clean
+    // stagnation history: the past no longer predicts the changed world
+    bumpInputsEpoch(dir, "app");
+    led.rows[0] = blocked("holdout probe demands 404 for POST /api/rooms");
+    autoReviveBlocked(cfg, dir, led as any);
+    revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
+    expect(revives).toBe(4);
+    expect(led.rows[0].state).toBe("in_progress");
   });
 });

@@ -228,6 +228,34 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect((await import("../src/stages/intake")).pickClaimable(w.cfg, w.ledger, w.gh).then((p) => p.issue)).resolves.toBeNull();
   }, 60000);
 
+  test("failed stages record their usage tokens — the diagnosis blind spot (P0-5)", async () => {
+    const w = makeWorld({ attempts: 1 });
+    // a dead/truncated stream: provider_error, but usage of the turns that
+    // DID land — tok=None here once made river-death vs output-cap
+    // unfalsifiable from status (tic-tac-toe #11, 2026-10-25)
+    const deadStream: CallStageFn = async (stage) => {
+      if (stage === "plan") return okPi("PLAN: create hello.txt with content hello.");
+      return {
+        outcome: {
+          kind: "provider_error" as const,
+          error: "model produced no final text: stream cut mid-sentence",
+          usage: { input_tokens: 1200, output_tokens: 890 },
+        },
+        modelsTried: [{ spec: { provider: "x", model: "y" }, outcome: "provider_error" as const, error: "cut" }],
+      };
+    };
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: deadStream,
+    });
+    expect(outcome).toBe("blocked");
+    const impl = w.ledger.recentStages(w.cfg.repo, 10).find((s) => s.stage === "implement")!;
+    expect(impl.exit).toBe("provider_error");
+    expect(impl.input_tokens).toBe(1200);
+    expect(impl.output_tokens).toBe(890);
+  }, 60000);
+
   test("review re-asks: unparseable verdicts are retried before failing closed as REJECT", async () => {
     const w = makeWorld({ attempts: 1 });
     const outcome = await tickRepo(w.cfg, w.stateDir, {

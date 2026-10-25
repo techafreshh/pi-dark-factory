@@ -133,7 +133,9 @@ def cmd_status(a):
         print(json.dumps(body, indent=2))
         return
     for r in body.get("repos", []):
-        print(f"{r.get('slug')} ({r.get('repo')}) — claimable chain: {r.get('chain')}, in flight: {r.get('in_flight')}")
+        chain = r.get("chain")
+        chain_s = "unknown (GitHub probe >5s)" if chain == -1 else ("none (all delivered/blocked)" if chain == 0 else str(chain))
+        print(f"{r.get('slug')} ({r.get('repo')}) — claimable chain: {chain_s}, in flight: {r.get('in_flight')}")
     print("\n== ledger ==")
     for i in body.get("issues", []):
         print(f"#{i['issue_number']} {i['repo']} [{i['state']}] attempts={i['attempts']}"
@@ -277,7 +279,11 @@ def cmd_tick(a):
 
 
 def cmd_unblock(a):
-    code, body = _api("POST", f"/repos/{a.slug}/unblock", {"issue": a.issue, "prune": a.prune})
+    code, body = _api("POST", f"/repos/{a.slug}/unblock",
+                      {"issue": a.issue, "prune": a.prune, "force": a.force}, allow_status=(409,))
+    if body.get("refused"):
+        print(f"REFUSED ({body['refused']}): {body.get('note')}")
+        sys.exit(1)
     print(json.dumps(body, indent=2))
 
 
@@ -329,7 +335,8 @@ def main():
     sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json",
                         help="config patch JSON: models, env, merge, timeouts keys (omit to READ the effective config)")
     sp = sub.add_parser("tick"); sp.add_argument("slug")
-    sp = sub.add_parser("unblock"); sp.add_argument("slug"); sp.add_argument("issue", type=int); sp.add_argument("--prune", action="store_true")
+    sp = sub.add_parser("unblock"); sp.add_argument("slug"); sp.add_argument("issue", type=int); sp.add_argument("--prune", action="store_true"); sp.add_argument("--force", action="store_true",
+                        help="override the in-progress guard (only after verifying the lap is dead)")
     sub.add_parser("cleanup")
     a = p.parse_args()
     table = {

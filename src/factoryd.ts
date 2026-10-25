@@ -193,15 +193,21 @@ export function startFactoryd(opts: FactorydOpts) {
         if (req.method === "POST" && tickEnd === "unblock") {
           const body = await readJson(req);
           const issue = Number(body.issue);
-          if (!Number.isFinite(issue)) return fail(422, "body must be {issue: <number>, prune?}");
-          return respond(await opsUnblock(opts.stateDir, slug, issue, body.prune === true));
+          if (!Number.isFinite(issue)) return fail(422, "body must be {issue: <number>, prune?, force?}");
+          const r = await opsUnblock(opts.stateDir, slug, issue, body.prune === true, body.force === true);
+          return respond(r, r.refused ? 409 : 200);
         }
         if (req.method === "POST" && path === "/cleanup") {
           return respond({ log: await opsCleanup(opts.stateDir) });
         }
         return fail(404, `no route ${req.method} ${path}`);
       } catch (e: any) {
-        return fail(500, e.message ?? String(e));
+        const msg = e.message ?? String(e);
+        // an unknown-slug read/write is a 404, not a 500 — "config show"
+        // once answered "HTTP 500: repo show is not onboarded" and read as
+        // a server fault (tic-tac-toe postmortem 2026-10-25, P1-15c)
+        if (/not onboarded|no (runtime|holdout) scenario/i.test(msg)) return fail(404, msg);
+        return fail(500, msg);
       }
     },
   });

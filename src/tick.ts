@@ -10,7 +10,7 @@ import { openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
-import { receipt } from "./receipts";
+import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify } from "./stages/verify";
 import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
@@ -113,7 +113,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
         { timeoutMs: 30000 }
       ).catch(() => null);
       if (sweep?.stdout?.includes("seed-repaired")) {
-        receipt(stateDir, `seed-repaired: .pi/host-runtimes/node/bin/node was missing and re-copied — container spawns would have exited 127 (no /root/.pi mount change; a copy-erasing actor is at work — monitor laps.log for this line's timestamps)`);
+        repoReceipt(cfg.slug, stateDir, `seed-repaired: .pi/host-runtimes/node/bin/node was missing and re-copied — container spawns would have exited 127 (no /root/.pi mount change; a copy-erasing actor is at work — monitor laps.log for this line's timestamps)`);
       }
     }
     let res = await callPiWithFallback(
@@ -240,7 +240,7 @@ async function reconcile(cfg: RepoConfig, deps: TickDeps, stateDir: string) {
         try { await deps.gh.issueClose(row.issue_number); } catch {}
       }
       deps.ledger.setIssue(cfg.repo, row.issue_number, { state: "merged", last_error: null });
-      receipt(stateDir, `NOTE: reconciled #${row.issue_number} — a crashed lap's delivery had landed; ledger set merged`);
+      repoReceipt(cfg.slug, stateDir, `NOTE: reconciled #${row.issue_number} — a crashed lap's delivery had landed; ledger set merged`);
       continue;
     }
     if (row.attempts >= cfg.attempts) {
@@ -251,7 +251,7 @@ async function reconcile(cfg: RepoConfig, deps: TickDeps, stateDir: string) {
           blockedComment(cfg, row.issue_number, row.attempts, row.last_error ?? "unknown (crashed lap)", [])
         );
       } catch {}
-      receipt(stateDir, `NOTE: reconciled #${row.issue_number} — crashed lap had exhausted attempts; marked blocked and notified`);
+      repoReceipt(cfg.slug, stateDir, `NOTE: reconciled #${row.issue_number} — crashed lap had exhausted attempts; marked blocked and notified`);
     }
     // else: in_progress + attempts < cap stays reclaimable; intake will pick it up
   }
@@ -271,7 +271,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   } // else: reclaim of an interrupted lap — attempts carry over
   const lapId = deps.ledger.startLap(cfg.repo, n);
   const startAttempt = (priorRow?.attempts ?? 0) + 1;
-  receipt(stateDir, `lap #${n} "${issue.title}" (attempt base ${startAttempt}, PR: ${priorRow?.pr ?? "none"})`);
+  repoReceipt(cfg.slug, stateDir, `lap #${n} "${issue.title}" (attempt base ${startAttempt}, PR: ${priorRow?.pr ?? "none"})`);
 
   mkdirSync(issueDir(stateDir, cfg.slug, n), { recursive: true });
   mkdirSync(sessionDirOf(stateDir, cfg.slug, n), { recursive: true });
@@ -305,7 +305,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     deps.ledger.endStage(
       id,
       outcome.kind,
-      outcome.kind === "ok" ? outcome.usage : null,
+      // usage from ANY outcome shape that carries it — a truncated/dead
+      // stage recording tok=null is the diagnosis blind spot (P0-5)
+      ("usage" in outcome ? outcome.usage : null) ?? null,
       outcome.kind === "ok" ? null : "error" in outcome ? outcome.error : outcome.kind
     );
   };
@@ -364,7 +366,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       Date.now() - prevStart < RAPID_FAIL_MS &&
       CONNECTION_BLIP_RE.test(lastError)
     ) {
-      receipt(
+      repoReceipt(
+        cfg.slug,
         stateDir,
         `attempt ${attempt - 1} died fast to a connection-class error — cooling down ${BLIP_COOLDOWN_MS / 1000}s before attempt ${attempt} (blips shouldn't burn the attempt budget)`
       );
@@ -373,7 +376,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     prevStart = Date.now();
     deps.ledger.setIssue(cfg.repo, n, { attempts: attempt });
     const runTag = `${attempt}-${Date.now().toString(36)}`;
-    receipt(stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
+    repoReceipt(cfg.slug, stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
 
     // ---- PLAN (once per issue; retries on later attempts if it failed)
     if (plan === null) {
@@ -411,7 +414,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       if (res.outcome.kind !== "ok") {
         lastError = `plan stage failed: ${"error" in res.outcome ? res.outcome.error : res.outcome.kind}`;
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        receipt(stateDir, `attempt ${attempt} failed at plan: ${lastError}`);
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at plan: ${lastError}`);
         continue outer;
       }
       const parsed = parsePlan(res.outcome.text);
@@ -419,7 +422,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         deps.ledger.setIssue(cfg.repo, n, { state: "no_action", last_error: null });
         try { await deps.gh.issueComment(n, noActionComment(parsed.reason ?? "")); } catch {}
         deps.ledger.endLap(lapId, "no_action", parsed.reason);
-        receipt(stateDir, `lap #${n} → NO_ACTION: ${parsed.reason}`);
+        repoReceipt(cfg.slug, stateDir, `lap #${n} → NO_ACTION: ${parsed.reason}`);
         outcome = "no_action";
         break outer;
       }
@@ -434,7 +437,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           await deps.gh.issueAddLabels(n, [NEEDS_INFO_LABEL]);
         } catch {}
         deps.ledger.dropIssue(cfg.repo, n);
-        receipt(stateDir, `lap #${n} NEEDS_CONTEXT (parked under ${NEEDS_INFO_LABEL}): ${parsed.question}`);
+        repoReceipt(cfg.slug, stateDir, `lap #${n} NEEDS_CONTEXT (parked under ${NEEDS_INFO_LABEL}): ${parsed.question}`);
         outcome = "needs_context";
         break outer;
       }
@@ -450,7 +453,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     let worktree: string | null = null;
     let implRes: PiStageResult;
     if (cfg.env.mode === "instabox") {
-      machine ??= openLapMachine(cfg, n, (m) => receipt(stateDir, m));
+      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m));
       const machRes = await machine.callStage("implement", {
         models: implModels,
         prompt:
@@ -479,7 +482,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     if (implRes.outcome.kind !== "ok") {
       lastError = `implement stage failed: ${"error" in implRes.outcome ? implRes.outcome.error : implRes.outcome.kind}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at implement: ${lastError}`);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at implement: ${lastError}`);
       continue outer;
     }
 
@@ -498,7 +501,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         lastError = "machine pushed no commits ahead of base — nothing was implemented";
         findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + cfg.env.instabox.repo_dir + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
       }
       paths = await changedPathsFromRef(src, cfg.default_branch, branchName(n));
@@ -508,7 +511,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
         findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
       }
       const ahead = await commitsAhead(worktree!, cfg.default_branch);
@@ -516,7 +519,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         lastError = "no commits ahead of base — nothing was implemented";
         findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
       }
       paths = await changedPaths(worktree!, cfg.default_branch);
@@ -526,14 +529,14 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       lastError = `only lockfiles changed (${paths.join(", ")})`;
       findings = `The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
       continue outer;
     }
 
     if (pr === null) {
       pr = await deps.gh.prCreate(branchName(n), cfg.default_branch, `[#${n}] ${issue.title}`, prBody(cfg, issue, plan));
       deps.ledger.setIssue(cfg.repo, n, { branch: branchName(n), pr });
-      receipt(stateDir, `lap #${n} opened PR #${pr}`);
+      repoReceipt(cfg.slug, stateDir, `lap #${n} opened PR #${pr}`);
     }
 
     // ---- VERIFY (all deterministic)
@@ -548,7 +551,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         .join("\n\n");
       lastError = `verification failed:\n${summary}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at verify: ${summary.replace(/\n/g, " ; ")}`);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at verify: ${summary.replace(/\n/g, " ; ")}`);
       continue outer;
     }
 
@@ -587,14 +590,14 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       reask < REVIEW_REASKS
     ) {
       reask++;
-      receipt(stateDir, `lap #${n} review verdict unparseable — re-ask ${reask}/${REVIEW_REASKS}`);
+      repoReceipt(cfg.slug, stateDir, `lap #${n} review verdict unparseable — re-ask ${reask}/${REVIEW_REASKS}`);
       revRes = await callReview();
       recordStage("review", attempt, revModels, revRes);
     }
     if (revRes.outcome.kind !== "ok") {
       lastError = `review stage failed: ${"error" in revRes.outcome ? revRes.outcome.error : revRes.outcome.kind}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at review: ${lastError}`);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at review: ${lastError}`);
       continue outer;
     }
     const verdict = parseVerdict(revRes.outcome.text);
@@ -606,7 +609,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       findings = verdict.findings;
       lastError = `review rejected:\n${findings}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      receipt(stateDir, `attempt ${attempt} failed at review: REJECT — ${findings.replace(/\n/g, " ; ").slice(0, 300)}`);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at review: REJECT — ${findings.replace(/\n/g, " ; ").slice(0, 300)}`);
       continue outer;
     }
 
@@ -627,7 +630,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
     deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
-    receipt(stateDir, `lap #${n} MERGED via PR #${pr} (squash) — ledger closed`);
+    repoReceipt(cfg.slug, stateDir, `lap #${n} MERGED via PR #${pr} (squash) — ledger closed`);
     try { await deps.gh.issueComment(n, mergedComment(cfg, pr, n)); } catch {}
     outcome = "merged";
     break outer;
@@ -640,7 +643,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       await deps.gh.issueComment(n, blockedComment(cfg, n, cfg.attempts, lastError, []));
     } catch {}
     deps.ledger.endLap(lapId, "blocked", lastError);
-    receipt(stateDir, `lap #${n} BLOCKED after ${cfg.attempts} attempts: ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
+    repoReceipt(cfg.slug, stateDir, `lap #${n} BLOCKED after ${cfg.attempts} attempts: ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
     outcome = "blocked";
   }
   } finally {
@@ -662,7 +665,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   if (claimable.length === 0) {
     const lapId = deps.ledger.startLap(cfg.repo, null);
     deps.ledger.endLap(lapId, "idle", "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)");
-    receipt(stateDir, "idle: no claimable issue");
+    repoReceipt(cfg.slug, stateDir, "idle: no claimable issue");
     return "idle";
   }
   return runLap(cfg, stateDir, deps, claimable[0]);
@@ -685,7 +688,7 @@ const STAGNATION_SAME = 2;
 
 export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger): void {
   const file = join(stateDir, "repos", cfg.slug, "revives.json");
-  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]> } = {
+  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]>; epoch?: number } = {
     day: "", counts: {}, sigs: {},
   };
   try {
@@ -695,14 +698,15 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
     rs = j;
   } catch {}
   const day = new Date().toISOString().slice(0, 10);
-  if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {} };
+  if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {}, epoch: rs.epoch };
 
   for (const row of ledger.listIssues(cfg.repo)) {
     if (row.state !== "blocked") continue;
     const sig = (row.last_error ?? "unknown failure").replace(/\s+/g, " ").trim().slice(0, 140);
     const sigs = rs.sigs[String(row.issue_number)] ?? [];
     if (sigs.length >= STAGNATION_SAME && sigs.slice(-STAGNATION_SAME).every((s) => s === sig)) {
-      receipt(
+      repoReceipt(
+        cfg.slug,
         stateDir,
         `NOT auto-reviving #${row.issue_number} — same failure signature ${sigs.length + 1} blocked rounds in a row, the wheel is spinning: human review required (${sig.slice(0, 100)})`
       );
@@ -710,7 +714,8 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
     }
     const used = rs.counts[String(row.issue_number)] ?? 0;
     if (used >= AUTO_REVIVE_DAILY_CAP) {
-      receipt(
+      repoReceipt(
+        cfg.slug,
         stateDir,
         `NOT auto-reviving #${row.issue_number} — auto-revive daily cap (${AUTO_REVIVE_DAILY_CAP}) reached; human review required (last blocker: ${sig.slice(0, 100)})`
       );
@@ -719,7 +724,8 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
     rs.counts[String(row.issue_number)] = used + 1;
     rs.sigs[String(row.issue_number)] = [...sigs, sig].slice(-4);
     ledger.setIssue(cfg.repo, row.issue_number, { state: "in_progress", attempts: 0 });
-    receipt(
+    repoReceipt(
+      cfg.slug,
       stateDir,
       `AUTO-REVIVE #${row.issue_number} (round ${used + 1}/${AUTO_REVIVE_DAILY_CAP} today) — repair ladder continues with a fresh attempt budget; previous blocker: ${sig.slice(0, 110)}`
     );
@@ -728,6 +734,30 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify(rs, null, 2));
   } catch {}
+}
+
+/**
+ * Inputs-epoch — a scenario or config write changes the world a blocker was
+ * measured against, and the revive fuses (daily cap, stagnation) must not
+ * keep punishing an issue whose inputs already changed under it
+ * (tic-tac-toe #11, 2026-10-25: the scenario was fixed AFTER the cap was
+ * spent; three more identical refusals followed for a world that no longer
+ * existed). The bump resets the repo's revive bookkeeping — every blocked
+ * issue gets a fresh budget and a clean stagnation history on the next
+ * tick, because the past no longer predicts.
+ */
+export function bumpInputsEpoch(stateDir: string, slug: string): void {
+  const file = join(stateDir, "repos", slug, "revives.json");
+  let rs: { day?: string; counts?: Record<string, number>; sigs?: Record<string, string[]>; epoch?: number } = {};
+  try {
+    rs = JSON.parse(readFileSync(file, "utf8"));
+  } catch {}
+  const epoch = (rs.epoch ?? 0) + 1;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ ...rs, epoch, counts: {}, sigs: {} }, null, 2));
+  } catch {}
+  receipt(stateDir, `inputs changed (epoch ${epoch}) — revive budget + stagnation history reset; blocked issues revive fresh on the next tick`, slug);
 }
 
 /**
@@ -828,7 +858,7 @@ export function beginTick(opts: { stateDir: string; repoSlug?: string; concurren
     } catch (e: any) {
       // body errors (a bogus slug's ENOENT, a crashed prepare) must receipt,
       // not escape as unhandled rejections into the CLI or the daemon
-      receipt(opts.stateDir, `tick crashed${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${e.message?.slice(0, 300)}`);
+      repoReceipt(opts.repoSlug, opts.stateDir, `tick crashed${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${e.message?.slice(0, 300)}`);
     } finally {
       release();
     }
@@ -839,7 +869,7 @@ export function beginTick(opts: { stateDir: string; repoSlug?: string; concurren
 export async function runTick(opts: { stateDir: string; repoSlug?: string; concurrency?: number }) {
   const b = beginTick(opts);
   if (!b.started) {
-    receipt(opts.stateDir, `tick skipped${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${b.reason}`);
+    repoReceipt(opts.repoSlug, opts.stateDir, `tick skipped${opts.repoSlug ? ` (${opts.repoSlug})` : ""}: ${b.reason}`);
     return;
   }
   await b.run;
@@ -858,7 +888,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
       // beginTick — its single task never re-acquires.
       tasks.push(async () => {
         if (!scoped && !acquireRepoLock(opts.stateDir, cfg.slug)) {
-          receipt(opts.stateDir, `skipping ${cfg.slug}: another tick is working it (per-repo pidfile)`);
+          repoReceipt(cfg.slug, opts.stateDir, `skipping ${cfg.slug}: another tick is working it (per-repo pidfile)`);
           return;
         }
         try {
@@ -874,7 +904,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // MAX_LAPS bounds a pathological loop — the chain continues next tick.
           if (claimable.length === 0) return;
           const MAX_LAPS_PER_TICK_PER_REPO = 6;
-          receipt(opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
+          repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
           let laps = 0;
           let issue = claimable[0];
           let revivedInTick = false;
@@ -886,7 +916,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
             } catch (e: any) {
               // infra failure (git/gh/network) — receipt and move on; the
               // in_progress row is reconciled next tick, never lost
-              receipt(opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+              repoReceipt(cfg.slug, opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
             }
             // fresh dependsCache per intake: issues closed by the merge just
             // completed unblock their dependent here
@@ -900,24 +930,24 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
               // revive (the daily cap and stagnation breaker still bind), and
               // re-intake once. Bounded: at most one cooldown per repo/tick.
               revivedInTick = true;
-              receipt(opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
+              repoReceipt(cfg.slug, opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
               await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
               autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
               next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
             }
             issue = next[0];
             if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
-              receipt(opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
+              repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
             }
           }
           if (laps >= MAX_LAPS_PER_TICK_PER_REPO) {
             const remaining = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
             if (remaining.length > 0) {
-              receipt(opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
+              repoReceipt(cfg.slug, opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
             }
           }
         } catch (e: any) {
-          receipt(opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+          repoReceipt(cfg.slug, opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
         } finally {
           if (!scoped) releaseRepoLock(opts.stateDir, cfg.slug);
         }
