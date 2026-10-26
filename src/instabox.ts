@@ -179,11 +179,15 @@ export class InstaBox {
   }
 
   async saveSnapshot(machineId: string, name: string, opts: { description?: string; rootOnly?: boolean } = {}): Promise<InstaSnapshot> {
-    const snap = await this.call<InstaSnapshot>("POST", `/v1/machines/${encodeURIComponent(machineId)}/snapshots`, {
-      name,
-      description: opts.description,
-      rootOnly: opts.rootOnly,
-    });
+    // idempotent: the platform requires an Idempotency-Key on snapshot
+    // saves (400 without it — first exercised by the reproducer base
+    // enrichment, 2026-10-26)
+    const snap = await this.call<InstaSnapshot>(
+      "POST",
+      `/v1/machines/${encodeURIComponent(machineId)}/snapshots`,
+      { name, description: opts.description, rootOnly: opts.rootOnly },
+      { idempotent: true }
+    );
     return this.waitSnapshot(snap.id);
   }
 
