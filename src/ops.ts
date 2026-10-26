@@ -236,10 +236,30 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   const ib = InstaBox.fromEnv(ibx);
   const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
 
-  receipt(stateDir, `bake ${slug}: booting machine ${name} from template ${ibx.template}`, slug);
+  // boot from the EXISTING snapshot when one is set — a re-bake is an
+  // ENRICHMENT, not a replacement: the template arm built a bare machine
+  // and re-saving it as the config's snapshot would have silently DROPPED
+  // everything the golden base carries (pi, node, docker — reproducer's
+  // pip/venv bake, 2026-10-26, caught before it ran). Fresh repos with no
+  // snapshot still start from the template.
+  const snap = ibx.snapshot
+    ? (await ib.listSnapshots()).find((s) => s.name === ibx.snapshot)
+    : undefined;
+  if (ibx.snapshot && !snap) throw new Error(`instabox snapshot "${ibx.snapshot}" not found — bake it first: foreman bake ${slug}`);
+
+  receipt(
+    stateDir,
+    `bake ${slug}: booting machine ${name} from ${snap ? `snapshot ${snap.name}` : `template ${ibx.template}`}`,
+    slug
+  );
   const existing = await ib.machineByName(name);
   if (existing) await ib.deleteMachine(name);
-  const op = await ib.createMachine({ name, template: ibx.template, metadata: { factory: "1", bake: cfg.slug } });
+  const op = await ib.createMachine({
+    name,
+    template: snap ? undefined : ibx.template,
+    snapshotId: snap?.id,
+    metadata: { factory: "1", bake: cfg.slug },
+  });
   await ib.waitOperation(op.id);
   const machine = await ib.machineByName(name);
   if (!machine) throw new Error(`bake machine ${name} vanished after creation`);
