@@ -242,22 +242,22 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   // everything the golden base carries (pi, node, docker — reproducer's
   // pip/venv bake, 2026-10-26, caught before it ran). Fresh repos with no
   // snapshot still start from the template.
-  const snap = ibx.snapshot
+  const baseSnap = ibx.snapshot
     ? (await ib.listSnapshots()).find((s) => s.name === ibx.snapshot)
     : undefined;
-  if (ibx.snapshot && !snap) throw new Error(`instabox snapshot "${ibx.snapshot}" not found — bake it first: foreman bake ${slug}`);
+  if (ibx.snapshot && !baseSnap) throw new Error(`instabox snapshot "${ibx.snapshot}" not found — bake it first: foreman bake ${slug}`);
 
   receipt(
     stateDir,
-    `bake ${slug}: booting machine ${name} from ${snap ? `snapshot ${snap.name}` : `template ${ibx.template}`}`,
+    `bake ${slug}: booting machine ${name} from ${baseSnap ? `snapshot ${baseSnap.name}` : `template ${ibx.template}`}`,
     slug
   );
   const existing = await ib.machineByName(name);
   if (existing) await ib.deleteMachine(name);
   const op = await ib.createMachine({
     name,
-    template: snap ? undefined : ibx.template,
-    snapshotId: snap?.id,
+    template: baseSnap ? undefined : ibx.template,
+    snapshotId: baseSnap?.id,
     metadata: { factory: "1", bake: cfg.slug },
   });
   await ib.waitOperation(op.id);
