@@ -136,7 +136,7 @@ stored broken or rejected one field at a time, costing ~6 attempts:**
 **The canonical config skeletons ship in `templates/` in this skill's
 folder** — `config.skeleton.json` (river → clinepass → deepseek tiers,
 per-stage thinking, compose mode) and `config.skeleton.instabox.json`
-(same tiers, `env.mode: "instabox"` with the `factory-base` snapshot).
+(same tiers, `env.mode: "instabox"` with the `factory-base-r2` snapshot).
 Read the one matching your env.mode choice, fill the provider/model +
 env fields, then:
 
@@ -239,24 +239,25 @@ disagreement, re-echo the effective config once before proceeding.
   branch/base, gate list, boundaries incl. commit discipline). The agent
   never spends turns discovering its environment.
 
-#### The factory-base snapshot — what's in the box (instabox mode)
+#### The factory-base-r2 snapshot — what's in the box (instabox mode)
 
 **Diff the PRD's runtime needs against this list at Stage 2 and SPEAK UP
 before the first lap.** A missing toolchain never surfaces at onboarding —
 it surfaces mid-build as blocked laps burning the attempt budget (reproducer,
-2026-10-26: PRD needed Python pip+venv, factory-base had neither; caught only
+2026-10-26: PRD needed Python pip+venv, the original factory-base had neither; caught only
 by an explicit machine boot, one lap-cycle before laps started hitting it).
 
-Verified contents (a machine booted from the snapshot, 2026-10-26 — re-bakes
-change this; confirm with the user if it is load-bearing for your project):
+Verified contents (a machine booted from the snapshot — r2 last verified
+2026-10-26; re-bakes change this, confirm with the user if it is
+load-bearing for your project):
 
 | Present | Version / state |
 |---|---|
 | OS | Debian 13 (trixie) |
 | Node + npm | v22.23.3 / 10.9.9 (machines, not the VPS host) |
-| Python 3 | 3.13.5 — ⚠ **no pip, no venv** (Debian `python3-pip`/`python3-venv` not installed) |
+| Python 3 + pip + venv | 3.13.5 / pip 25.1.1 / venv works (added in r2, 2026-10-26 — the original base lacked pip and venv) |
 | git | 2.47.3 |
-| pi | `/usr/local/bin/pi` (installed at bake time) |
+| pi | `/usr/local/bin/pi` 1.4.0 (installed at bake time) |
 | docker | 29.8.2 (present in the snapshot) |
 | curl | yes (probes have a node fallback anyway) |
 | sudo | passwordless, inside the machine |
@@ -271,14 +272,17 @@ runs (never you — you have no shell on the VPS):
 
 1. **Enrich the shared base** (right for small, additive, standard deps):
    `config <slug> --json '{"env":{"instabox":{"bake":"sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y <pkgs>"}}}'`
-   then ask the user to run `foreman bake <slug>` VPS-side. ⚠ Because the
-   config already carries `snapshot: "factory-base"`, the bake RE-SAVES the
-   shared factory-base for EVERY repo — say so out loud when you propose it.
+   then ask the user to run `foreman bake <slug>` VPS-side. Snapshot names
+   are UNIQUE on the platform — the bake deletes the old same-named
+   snapshot and re-saves under the SAME name (`factory-base-r2` today), so
+   **pause the instabox repos first** (`factory-remote pause <slug>`): in
+   the delete→save window, a new machine boot for that name fails once.
+   Unpause after.
 2. **Fork a repo-specific base** (heavy/exotic deps): first
    `config <slug> --json '{"env":{"instabox":{"snapshot":"<slug>-base"}}}'`,
-   then the bake script + `foreman bake <slug>` — produces `<slug>-base` and
-   leaves the shared base untouched (snapshot quota is ~10, so forking is
-   affordable but not free).
+   then the bake script + `foreman bake <slug>` — produces `<slug>-base`
+   (a fresh name, no conflict) and leaves the shared base untouched
+   (snapshot quota is ~10, so forking is affordable but not free).
 
 ### Stage 3 — scenario gate (the acceptance contract)
 

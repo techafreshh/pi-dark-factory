@@ -11,7 +11,7 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
-import { InstaBox, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
+import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
@@ -300,9 +300,25 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   }
 
   const snapName = ibx.snapshot || `${sanitizeMachinePart(slug)}-base`;
-  const snap = await ib.saveSnapshot(machine.id, snapName, {
-    description: `pi-dark-factory golden environment for ${cfg.repo}`,
-  });
+  let snap;
+  try {
+    snap = await ib.saveSnapshot(machine.id, snapName, {
+      description: `pi-dark-factory golden environment for ${cfg.repo}`,
+    });
+  } catch (e) {
+    // snapshot names are UNIQUE on the platform — a same-name save 409s.
+    // An enrichment re-bake (the config already names the snapshot) hits
+    // exactly this: delete the old one and retry. Pause instabox repos
+    // around a shared-base re-bake — in the delete→save window, new
+    // machine boots for that snapshot name fail once.
+    if (!(e instanceof InstaBoxError && e.status === 409)) throw e;
+    const olds = (await ib.listSnapshots()).filter((s) => s.name === snapName);
+    for (const o of olds) await ib.deleteSnapshot(o.id);
+    receipt(stateDir, `bake ${slug}: snapshot "${snapName}" already existed — deleted old, re-saving (the config now keeps the same name)`, slug);
+    snap = await ib.saveSnapshot(machine.id, snapName, {
+      description: `pi-dark-factory golden environment for ${cfg.repo}`,
+    });
+  }
   await ib.deleteMachine(name);
 
   let config_updated = false;

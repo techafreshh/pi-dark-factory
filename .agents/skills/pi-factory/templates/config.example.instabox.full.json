@@ -1,5 +1,5 @@
 {
-  "_readme": "COMPLETE known-good instabox config patch — this is (minus repo specifics) the exact config tic-tac-toe ran its full 17-issue backlog on (2026-10-24/25, every lap machine-lane). Unlike config.skeleton.instabox.json (a minimal delta), this carries EVERY allowlisted field so an operator never has to copy another project's config to be sure nothing is missing (magpie onboarding, 2026-10-25). The config verb deep-merges this over the onboard defaults; repo/slug/default_branch/scenario.ports were set at onboard and are not patchable. Prerequisite: the factory-base snapshot must be baked VPS-side (foreman bake <slug>) BEFORE the first lap. Decision points you may want to change: merge.required_checks (this example ships [] because tic-tac-toe had no CI; use [\"*\"] to autodetect every check the PR reports, or explicit names), per-stage thinking levels, and stage_minutes.",
+  "_readme": "COMPLETE known-good instabox config patch — this is (minus repo specifics) the exact config tic-tac-toe ran its full 17-issue backlog on (2026-10-24/25, every lap machine-lane). Unlike config.skeleton.instabox.json (a minimal delta), this carries EVERY allowlisted field so an operator never has to copy another project's config to be sure nothing is missing (magpie onboarding, 2026-10-25). The config verb deep-merges this over the onboard defaults; repo/slug/default_branch/scenario.ports were set at onboard and are not patchable. Prerequisite: the factory-base-r2 snapshot must exist VPS-side (foreman bake <slug>) BEFORE the first lap. Decision points you may want to change: merge.required_checks (this example ships [] because tic-tac-toe had no CI; use [\"*\"] to autodetect every check the PR reports, or explicit names), per-stage thinking levels, and stage_minutes.",
   "models": {
     "default": {
       "provider": "river",
@@ -43,7 +43,7 @@
     "mode": "instabox",
     "pass_env": ["GITHUB_TOKEN", "ZAI_API_KEY", "DEEPSEEK_API_KEY"],
     "instabox": {
-      "snapshot": "factory-base"
+      "snapshot": "factory-base-r2"
     }
   },
   "pi": {
