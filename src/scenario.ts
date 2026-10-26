@@ -435,10 +435,21 @@ export async function runScenarioInMachine(
     }
     if (!/^[1-5]\d\d$/.test(code)) {
       const logTail = await machineBash(conn, `tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, { timeoutMs: 15000 });
+      // kernel-level evidence: WHO holds the port, and is the accept backlog
+      // full — a server that binds but never accepts fills its backlog and
+      // every connection attempt times out (bi-ai-ui #1, 2026-10-26: the
+      // supervisor held 0.0.0.0:8120 with backlog 6/5 for the entire window
+      // while its heartbeat claimed "alive")
+      const sockState = await machineBash(
+        conn,
+        `ss -tlnp 2>/dev/null | grep -E ":${port} " || netstat -tlnp 2>/dev/null | grep -E ":${port} " || echo "nothing listening on ${port}"`,
+        { timeoutMs: 15000 }
+      );
       const detail = logTail.stdout.trim().slice(-500);
+      const sockets = sockState.stdout.trim().slice(0, 400);
       return mkResults(
         false,
-        `server never became ready within ${opts.readinessSeconds}s — it never answered on its OWN loopback inside the machine (last code ${code}); no host mapping is involved, the server itself is down (machine server.log tail: ${detail})`
+        `server never became ready within ${opts.readinessSeconds}s — it never answered on its OWN loopback inside the machine (last code ${code}); no host mapping is involved, the server itself is down. In-box socket state: ${sockets || "unavailable"} (a listener with a FULL Recv-Q/backlog binds but never accepts). (machine server.log tail: ${detail})`
       );
     }
 
