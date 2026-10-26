@@ -25,6 +25,7 @@ import { killTree, sh } from "./sh";
 import { buildPiArgs, type PiOutcome } from "./pi";
 import { parseEventStream } from "./pievents";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
+import { dirname } from "node:path";
 import { InstaBox, machineNameFor, type InstaMachine, type InstaSshToken } from "./instabox";
 import type { ModelSpec, RepoConfig, StageModels } from "./types";
 import { branchName } from "./stages/intake";
@@ -120,7 +121,12 @@ const STAGE_DRIVER = [
   `RC=$?`,
   `MARK="PDFRC=$RC"`,
   `if [ "$PDF_GATES" = "1" ] && [ "$RC" -eq 0 ]; then`,
-  `  DIRTY=$(git status --porcelain | head -5)`,
+  // .pdf-sessions is FACTORY state — the sessions must never fail the
+  // cleanliness gate nor ride into a commit (an implementer following
+  // "git add -A && commit EVERYTHING" would ship them in the PR). The
+  // session dir itself now lives OUTSIDE the clone (/data/.pdf-sessions);
+  // the exclusion is belt-and-braces for residue in reused machines.
+  `  DIRTY=$(git status --porcelain -- ':!.pdf-sessions' | head -5)`,
   `  if [ -n "$DIRTY" ]; then`,
   `    echo "$DIRTY" >&2`,
   `    MARK="PDFGATE=uncommitted changes left behind"`,
@@ -506,7 +512,10 @@ export class LapMachine {
       systemPrompt: o.systemPrompt,
       tools: o.tools,
       extraArgs: o.extraArgs,
-      sessionDir: `${this.ibx().repo_dir}/.pdf-sessions/issue-${this.issue}`,
+      // OUTSIDE the clone (sibling of repo_dir): session files inside $REPO_DIR
+      // tripped the driver's own cleanliness gate and risked being committed
+      // into the PR by a literal "git add -A" implementer (bi-ai-ui 2026-10-26)
+      sessionDir: `${dirname(this.ibx().repo_dir)}/.pdf-sessions/issue-${this.issue}`,
       timeoutMs: o.timeoutMs,
     });
     return { ...res, stage };

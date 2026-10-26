@@ -430,24 +430,44 @@ export async function runScenarioInMachine(
           `host→machine forward for port ${port} died before/during readiness (INFRASTRUCTURE, not the server — machine server.log tail: ${detail})`
         );
       }
-      // loopback canary: the server answering INSIDE the machine while the
-      // host-side poll starved means the tunnel routes to a wrong or dead
-      // backend — mapping roulette, never an app bug (bi-ai-ui 2026-10-26)
+      // loopback canary over bash's /dev/tcp — zero external tool deps: a
+      // curl-based canary once produced no output (bare ssh bash session,
+      // missing binary) and its silence was read as "server down" while the
+      // instrumented supervisor proved the server up — three mislabeled
+      // rounds, bi-ai-ui 2026-10-26. A canary that cannot speak says
+      // UNDIAGNOSED, never "down".
       const canary = await machineBash(
         conn,
-        `curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${port}${spec.readiness_path ?? "/"} || true`,
+        [
+          `INBOX=""`,
+          `if exec 3<>/dev/tcp/127.0.0.1/${port} 2>/dev/null; then`,
+          `  printf 'GET ${spec.readiness_path || "/"} HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 2>/dev/null`,
+          `  INBOX=$(head -n1 <&3 2>/dev/null)`,
+          `  exec 3<&- 3>&- 2>/dev/null`,
+          `else`,
+          `  INBOX=LOOPBACK_NO_CONNECT`,
+          `fi`,
+          `echo "CANARY=$INBOX"`,
+        ].join("\n"),
         { timeoutMs: 15000 }
       );
-      const inBox = (canary.stdout || "").trim();
-      if (/^\d{3}$/.test(inBox) && inBox !== "000") {
+      const canaryMatch = /CANARY=(.*)/.exec((canary.stdout ?? "").split("\n").find((l) => l.startsWith("CANARY=")) ?? "");
+      const canaryLine = canaryMatch ? canaryMatch[1].trim() : "";
+      if (/^HTTP\/[\d.]+\s+\d{3}/.test(canaryLine)) {
         return mkResults(
           false,
-          `host→machine mapping black-holed (INFRASTRUCTURE, not the server): the host-side readiness poll never connected, but the in-box loopback answers ${inBox} — the tunnel is routing to a wrong or dead backend. Retry the lap; do NOT repair the product for this. (machine server.log tail: ${detail})`
+          `host→machine mapping black-holed (INFRASTRUCTURE, not the server): the host-side readiness poll never connected, but the in-box loopback answered "${canaryLine}" — the tunnel is routing to a wrong or dead backend. Retry the lap; do NOT repair the product for this. (machine server.log tail: ${detail})`
+        );
+      }
+      if (canaryLine === "LOOPBACK_NO_CONNECT") {
+        return mkResults(
+          false,
+          `server never became ready within ${opts.readinessSeconds}s — the in-box loopback cannot even CONNECT on 127.0.0.1:${port}; the server itself is genuinely not listening in the machine (machine server.log tail: ${detail})`
         );
       }
       return mkResults(
         false,
-        `server never became ready within ${opts.readinessSeconds}s — host poll AND in-box loopback both failed; the server itself is down (machine server.log tail: ${detail})`
+        `readiness failed and the loopback canary produced no verdict (raw: ${JSON.stringify((canary.stdout || "").slice(0, 120))}${canary.stderr ? ` stderr: ${canary.stderr.trim().slice(0, 120)}` : ""}) — treat as INFRASTRUCTURE, retry the lap, do NOT repair the product (machine server.log tail: ${detail})`
       );
     }
 
