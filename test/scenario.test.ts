@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { evalExpects, parseMaxMs, portBusy, runScenario, type ScenarioSpec } from "../src/scenario";
+import { evalExpects, parseMaxMs, portBusy, runScenario, runScenarioInMachine, type ScenarioSpec } from "../src/scenario";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

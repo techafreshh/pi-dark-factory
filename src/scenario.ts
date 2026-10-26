@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sh } from "./sh";
-import { escapeSh, machineBash, PortForwarder, type SshTarget } from "./machine";
+import { escapeSh, machineBash, type SshTarget } from "./machine";
 
 export interface Probe {
   id: string;
@@ -366,38 +366,46 @@ export async function runScenarioInMachine(
     error,
   });
 
-  // the forwarded host ports must be free, exactly like published container ports
+  // NO host-side port and NO ssh -L forward: through the InstaBox gateway,
+  // the exec channel reliably reaches the machine (setup, start, log tails
+  // all work) while -L forwarded channels black-holed or misrouted —
+  // bi-ai-ui 2026-10-25/26: readiness polls starved against a demonstrably
+  // healthy in-box server (reqs=0 for the whole window) and probes sometimes
+  // landed on a foreign catch-all. So setup, readiness, probes, and teardown
+  // ALL run in the box over the exec channel, against the machine's own
+  // 127.0.0.1:$PORT. The black-box contract is unchanged: the scenario's
+  // commands and expectations execute verbatim, and the product never sees
+  // them — only the transport moved.
   const port = resolveScenarioPort(spec, opts.reservedPorts);
-  if (await portBusy(port)) {
-    return mkResults(false, `port ${port} is busy (another server is listening)`);
-  }
   const conn = await target.ssh();
   const key = opts.key.replace(/[^a-z0-9-]/gi, "");
   const pidFile = `/tmp/pdf-scen-${key}.pid`;
   const dirFile = `/tmp/pdf-scen-${key}.dir`;
   const goto = `cd ${escapeSh(target.repoDir)} || exit 95\nexport PORT=${port}\nexport WORKTREE=${escapeSh(target.repoDir)}\n`;
-  const runIn = (cmd: string) => machineBash(conn, goto + cmd, { timeoutMs: 600000 });
+  const runIn = (cmd: string, timeoutMs = 600000) => machineBash(conn, goto + cmd, { timeoutMs });
 
-  let fwd: PortForwarder | null = null;
+  // readiness poll — the machine's own loopback, curl with a node fallback
+  // (the factory-base snapshot's bare ssh bash session has proved to lack
+  // tools the agent's interactive shell has). ALWAYS emits a code.
+  const probeReady = async (): Promise<string> => {
+    const r = await machineBash(
+      conn,
+      [
+        `command -v curl >/dev/null 2>&1 && { curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${port}${spec.readiness_path || "/"} 2>/dev/null; exit 0; }`,
+        `command -v node >/dev/null 2>&1 && { node -e "const u='http://127.0.0.1:${port}${spec.readiness_path || "/"}';require('http').get(u,r=>{console.log(r.statusCode);process.exit(0)}).on('error',()=>{console.log('000');process.exit(0)})" 2>/dev/null; exit 0; }`,
+        `echo 000`,
+      ].join("\n"),
+      { timeoutMs: 12000 }
+    );
+    return ((r.stdout || "").trim().split("\n").filter(Boolean).pop() ?? "000").trim();
+  };
+
   try {
     if (spec.setup) {
       const res = await runIn(spec.setup);
       if (res.code !== 0) {
         return mkResults(false, `setup failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300)}`);
       }
-    }
-
-    // the forward starts AFTER setup, not before: setup can take minutes
-    // (installs, builds) and an idle tunnel through the gateway dies
-    // mid-setup — readiness then polls a dead forward while the in-box
-    // server is perfectly healthy (bi-ai-ui #1, 2026-10-25: 5 of 6 attempts
-    // black-holed exactly this way; the short-setup holdout always worked)
-    fwd = PortForwarder.start(conn, [port]);
-    if (!(await fwd.established())) {
-      return mkResults(
-        false,
-        `host→machine forward for port ${port} failed to establish (INFRASTRUCTURE, not the server — the tunnel could not bind or the gateway refused it; retrying the lap or the scenario usually clears it)`
-      );
     }
 
     // foreground server in the machine, detached as its own session leader;
@@ -419,67 +427,29 @@ export async function runScenarioInMachine(
       return mkResults(false, `scenario start failed in machine: ${(started.stderr.trim() || started.stdout.trim()).slice(0, 300)}`);
     }
 
-    if (!(await ready(port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
+    const deadline = Date.now() + opts.readinessSeconds * 1000;
+    let code = await probeReady();
+    while (!/^[1-5]\d\d$/.test(code) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 3000));
+      code = await probeReady();
+    }
+    if (!/^[1-5]\d\d$/.test(code)) {
       const logTail = await machineBash(conn, `tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, { timeoutMs: 15000 });
       const detail = logTail.stdout.trim().slice(-500);
-      // distinguish a dead tunnel from a dead server — the repair agent
-      // must not chase ghosts in the product for an infrastructure drop
-      if (fwd && !(await fwd.established(0))) {
-        return mkResults(
-          false,
-          `host→machine forward for port ${port} died before/during readiness (INFRASTRUCTURE, not the server — machine server.log tail: ${detail})`
-        );
-      }
-      // loopback canary over bash's /dev/tcp — zero external tool deps: a
-      // curl-based canary once produced no output (bare ssh bash session,
-      // missing binary) and its silence was read as "server down" while the
-      // instrumented supervisor proved the server up — three mislabeled
-      // rounds, bi-ai-ui 2026-10-26. A canary that cannot speak says
-      // UNDIAGNOSED, never "down".
-      const canary = await machineBash(
-        conn,
-        [
-          `INBOX=""`,
-          `if exec 3<>/dev/tcp/127.0.0.1/${port} 2>/dev/null; then`,
-          `  printf 'GET ${spec.readiness_path || "/"} HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 2>/dev/null`,
-          `  INBOX=$(head -n1 <&3 2>/dev/null)`,
-          `  exec 3<&- 3>&- 2>/dev/null`,
-          `else`,
-          `  INBOX=LOOPBACK_NO_CONNECT`,
-          `fi`,
-          `echo "CANARY=$INBOX"`,
-        ].join("\n"),
-        { timeoutMs: 15000 }
-      );
-      const canaryMatch = /CANARY=(.*)/.exec((canary.stdout ?? "").split("\n").find((l) => l.startsWith("CANARY=")) ?? "");
-      const canaryLine = canaryMatch ? canaryMatch[1].trim() : "";
-      if (/^HTTP\/[\d.]+\s+\d{3}/.test(canaryLine)) {
-        return mkResults(
-          false,
-          `host→machine mapping black-holed (INFRASTRUCTURE, not the server): the host-side readiness poll never connected, but the in-box loopback answered "${canaryLine}" — the tunnel is routing to a wrong or dead backend. Retry the lap; do NOT repair the product for this. (machine server.log tail: ${detail})`
-        );
-      }
-      if (canaryLine === "LOOPBACK_NO_CONNECT") {
-        return mkResults(
-          false,
-          `server never became ready within ${opts.readinessSeconds}s — the in-box loopback cannot even CONNECT on 127.0.0.1:${port}; the server itself is genuinely not listening in the machine (machine server.log tail: ${detail})`
-        );
-      }
       return mkResults(
         false,
-        `readiness failed and the loopback canary produced no verdict (raw: ${JSON.stringify((canary.stdout || "").slice(0, 120))}${canary.stderr ? ` stderr: ${canary.stderr.trim().slice(0, 120)}` : ""}) — treat as INFRASTRUCTURE, retry the lap, do NOT repair the product (machine server.log tail: ${detail})`
+        `server never became ready within ${opts.readinessSeconds}s — it never answered on its OWN loopback inside the machine (last code ${code}); no host mapping is involved, the server itself is down (machine server.log tail: ${detail})`
       );
     }
 
+    // probes — the scenario's own commands and expectations, verbatim,
+    // executed in the box with $PORT exported; results shape identical to
+    // the host/compose lanes
     const results: ProbeResult[] = [];
     let pass = true;
     for (const probe of spec.probes) {
       const timeoutMs = probe.timeout_ms ?? parseMaxMs(probe.expect) ?? opts.defaultProbeMs;
-      const res = await sh(["bash", "-c", probe.command], {
-        env: { ...process.env, PORT: String(port) },
-        timeoutMs,
-        killGroup: true,
-      });
+      const res = await runIn(probe.command, Math.min(timeoutMs, 600000));
       const verdict = res.timedOut
         ? { pass: false, failed: `timed out after ${timeoutMs}ms` }
         : evalExpects(res.stdout, res.code, probe.expect);
@@ -488,8 +458,8 @@ export async function runScenarioInMachine(
     }
     return { name: spec.name, pass, results };
   } finally {
-    // remote kill first (needs the gateway reachable), then teardown, then drop
-    // the forwards — cancellation never skips it
+    // remote kill first (needs the gateway reachable), then teardown —
+    // cancellation never skips it
     try {
       await machineBash(
         conn,
@@ -502,6 +472,5 @@ export async function runScenarioInMachine(
       );
       if (spec.teardown) await runIn(spec.teardown);
     } catch {}
-    await fwd?.stop().catch(() => {});
   }
 }
