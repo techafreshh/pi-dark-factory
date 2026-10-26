@@ -192,7 +192,7 @@ export class InstaBox {
   }
 
   async deleteSnapshot(id: string): Promise<void> {
-    await this.call<void>("DELETE", `/v1/snapshots/${encodeURIComponent(id)}`).catch((e) => {
+    await this.call<void>("DELETE", `/v1/snapshots/${encodeURIComponent(id)}`, undefined, { idempotent: true }).catch((e) => {
       if (!(e instanceof InstaBoxError && e.status === 404)) throw e;
     });
   }
