@@ -239,6 +239,47 @@ disagreement, re-echo the effective config once before proceeding.
   branch/base, gate list, boundaries incl. commit discipline). The agent
   never spends turns discovering its environment.
 
+#### The factory-base snapshot — what's in the box (instabox mode)
+
+**Diff the PRD's runtime needs against this list at Stage 2 and SPEAK UP
+before the first lap.** A missing toolchain never surfaces at onboarding —
+it surfaces mid-build as blocked laps burning the attempt budget (reproducer,
+2026-10-26: PRD needed Python pip+venv, factory-base had neither; caught only
+by an explicit machine boot, one lap-cycle before laps started hitting it).
+
+Verified contents (a machine booted from the snapshot, 2026-10-26 — re-bakes
+change this; confirm with the user if it is load-bearing for your project):
+
+| Present | Version / state |
+|---|---|
+| OS | Debian 13 (trixie) |
+| Node + npm | v22.23.3 / 10.9.9 (machines, not the VPS host) |
+| Python 3 | 3.13.5 — ⚠ **no pip, no venv** (Debian `python3-pip`/`python3-venv` not installed) |
+| git | 2.47.3 |
+| pi | `/usr/local/bin/pi` (installed at bake time) |
+| docker | 29.8.2 (present in the snapshot) |
+| curl | yes (probes have a node fallback anyway) |
+| sudo | passwordless, inside the machine |
+| Machine shape | 4 vCPU · 8 GB RAM · ~11 GB free root · 20 GB free `/data` (repo at `/data/repo`) |
+
+**Version expectations count as gaps too** — a PRD that assumes node 24
+against the base's node 22 (e.g. `node:sqlite` semantics, `engines` fields)
+is a decision point: flag it and let the user pick.
+
+When something is missing, both remedies are VPS-side bakes the OPERATOR
+runs (never you — you have no shell on the VPS):
+
+1. **Enrich the shared base** (right for small, additive, standard deps):
+   `config <slug> --json '{"env":{"instabox":{"bake":"sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y <pkgs>"}}}'`
+   then ask the user to run `foreman bake <slug>` VPS-side. ⚠ Because the
+   config already carries `snapshot: "factory-base"`, the bake RE-SAVES the
+   shared factory-base for EVERY repo — say so out loud when you propose it.
+2. **Fork a repo-specific base** (heavy/exotic deps): first
+   `config <slug> --json '{"env":{"instabox":{"snapshot":"<slug>-base"}}}'`,
+   then the bake script + `foreman bake <slug>` — produces `<slug>-base` and
+   leaves the shared base untouched (snapshot quota is ~10, so forking is
+   affordable but not free).
+
 ### Stage 3 — scenario gate (the acceptance contract)
 
 The scenarios live OUTSIDE the product repo so the implementer can never tune
