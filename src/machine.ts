@@ -215,7 +215,17 @@ export function bootstrapScriptFor(cfg: RepoConfig, branch: string, opts: { from
     `if git show-ref --verify -q refs/heads/${b(branch)}; then`,
     `  git checkout -q ${b(branch)}`,
     `else`,
-    `  git checkout -q -B ${b(branch)} ${startRef}`,
+    // a REVIVED lap continues the previous lap's branch instead of
+    // re-implementing from the plan — the branch is the record, and re-doing
+    // paid-for work on every block→revive cycle burned a full re-implementation
+    // per round (bi-ai-ui #1, 2026-10-26). First-ever laps (no remote branch)
+    // still start at the base branch; the --test bench (`from: "branch"`)
+    // still hard-fails when its branch is missing — startRef covers both.
+    `  if git show-ref --verify -q refs/remotes/origin/${b(branch)}; then`,
+    `    git checkout -q -B ${b(branch)} origin/${b(branch)}`,
+    `  else`,
+    `    git checkout -q -B ${b(branch)} ${startRef}`,
+    `  fi`,
     `fi`,
     `echo "BOOTSTRAP_OK"`,
   ].join("\n");
