@@ -272,6 +272,10 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
     `set -eu`,
     envExports,
     `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
+    // same sudo prepare the lap bootstrap does (machine.ts): /data is a
+    // root-owned fresh volume per machine — git can't create the work tree
+    // until the parent dir is sudo-made and chowned to the ssh token user
+    `P=$(dirname ${escapeSh(ibx.repo_dir)}); sudo -n mkdir -p "$P" 2>/dev/null || true; sudo -n chown -R "$(id -u):$(id -g)" "$P" 2>/dev/null || true`,
     `if [ ! -d ${escapeSh(ibx.repo_dir)}/.git ]; then git clone ${escapeSh(cfg.origin_url ?? `https://github.com/${cfg.repo}.git`)} ${escapeSh(ibx.repo_dir)}; fi`,
     `cd ${escapeSh(ibx.repo_dir)}`,
     `git fetch origin --prune >/dev/null 2>&1 || true`,
