@@ -12,6 +12,16 @@ describe("evalExpects (probe language)", () => {
     expect(evalExpects("junk\n200", 0, "status:200").pass).toBe(true);
     expect(evalExpects("404", 0, "status:200").pass).toBe(false);
   });
+  test("status_in accepts a one-of code set — '200 or 404, never 5xx'", () => {
+    expect(evalExpects("200", 0, "status_in:200,404").pass).toBe(true);
+    expect(evalExpects("404", 0, "status_in:200,404").pass).toBe(true);
+    expect(evalExpects("500", 0, "status_in:200,404").pass).toBe(false);
+    // the failed verdict names the alternatives
+    const r = evalExpects("500", 0, "status_in:200,404");
+    expect(r.failed).toContain("want one of 200|404");
+    // junk stdout is still junk
+    expect(evalExpects("{body}", 0, "status_in:200,404").pass).toBe(false);
+  });
   test("json walks paths incl array indices; values lenient", () => {
     const out = JSON.stringify({ data: [{ name: "ok" }], live: true, count: 3 });
     expect(evalExpects(out, 0, "json:data[0].name=ok").pass).toBe(true);

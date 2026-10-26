@@ -279,9 +279,12 @@ doing exactly that. Read them, adapt to the PRD:
 
 Server-side validation fails fast (rejections name the problem) — a bad
 scenario can never burn a lap. Probe contract: `status:N` (curl -s -o /dev/null
--w '%{http_code}'), `json:path=value`, `body_contains:`, `body_matches:^reg$`,
+-w '%{http_code}'), `status_in:200,404` (one-of status set — "any of these,
+never 5xx"), `json:path=value`, `body_contains:`, `body_matches:^reg$`,
 `exit:N` (implicit), `max_ms:`; values must be space-free; unknown tokens fail
-closed.
+closed. Upload runs the same lint as `--lint`: it REJECTS `'$PORT'` in single
+quotes (never expands — the probe dies as 000) and bare `(`/`)` in URLs (shell
+syntax error — percent-encode as `%28`/`%29`).
 
 **Full schema** (don't rediscover it by probing the validator — kvstore's
 agent burned ~8 attempts and big tokens doing exactly that):
@@ -325,6 +328,18 @@ nothing; this IS the contract):
   (`curl -s -o /dev/null -w '%{http_code}'`). A plain `curl -s URL` puts the
   BODY on stdout and `status:200` fails as `got "{…}", want "200"` — this
   exact trap cost a blocked lap on kvstore.
+- `status_in:N,N,…` — the last non-empty stdout line must equal **one of** the
+  comma-separated codes ("200 or 404, never 5xx"). Same emit requirement as
+  `status:`. This is the token for optional-resource probes an exact `status:`
+  pin couldn't express (magpie's traversal probe had to be weakened before
+  this existed).
+- The probe command runs through a shell: **never single-quote `$PORT`** —
+  `'$PORT'` stays a literal string, the curl hits a bogus address, and every
+  attempt dies as 000/exit 6 while the app is up. Double quotes or no quotes
+  expand it. Parens in URLs must be percent-encoded (`%28`/`%29`) — a bare `(`
+  is a shell syntax error before the command even runs. Both are REJECTED at
+  upload and by `--lint` now (magpie, 2026-10-25: lint passed the file that
+  burned the laps).
 - `json:path=value` — ALL of stdout must be one valid JSON document; the path
   walks objects/arrays with dot segments and optional `[N]` indices
   (`data.items[0].id`); the value parses leniently (JSON literal or raw
@@ -347,8 +362,10 @@ factory-remote scenario <slug> runtime --file runtime.json --lint
 ```
 
 Deterministic failures (unknown tokens from space-split values, uncompilable
-regexes) are rejected; likely-trap warnings (a `status:` probe whose command
-never emits the code, hardcoded port numbers instead of `$PORT`) are printed.
+regexes, single-quoted `'$PORT'`, bare parens in URLs) are rejected — by
+`--lint` AND by the write itself (the upload path runs the same checks);
+likely-trap warnings (a `status:`/`status_in:` probe whose command never emits
+the code, hardcoded port numbers instead of `$PORT`) are printed.
 `--dump` prints the stored scenario back — the read side of a formerly
 write-only verb (todos-api postmortem: these two would have saved every
 blocked lap).
@@ -408,6 +425,18 @@ Show the slice (titles + depends), then `--create` on explicit confirmation
 (creates real GitHub issues, wired with `Depends on: #n`, deduped by title).
 The first sliced issue is the walking skeleton by contract — verify the
 preview starts with one.
+
+**The preview's dependency graph is validated** (magpie, 2026-10-25: previews
+showed `8 → 8` and `13 → 13` self-deps, caught only by hand): `--create`
+REFUSES self-references, forward references (deps must point at EARLIER
+issues), and out-of-range indices, naming each offending issue; the preview
+carries the same list as `graph_problems`. LLM slicing is non-deterministic —
+a preview is a draft, not a contract, so audit it: if `--create` refuses,
+re-slice (a re-roll usually produces a clean graph) or sharpen the PRD's
+build order. Steps that need the operator (secrets, deploys, external
+accounts) must NOT become issues — the lap cannot do them; keep them in the
+PRD as an operator checklist instead (magpie's seed-insert/deploy issues had
+to be re-cut by hand).
 
 **Slicer facts** (learned on kvstore's onboarding, 2026-10-23):
 - The slicer runs VPS-side and calls the **plan-stage model** with low
@@ -575,10 +604,11 @@ All verbs run from any directory (creds are read from env or
 | `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | lines carry `[slug]` tags; `--repo` filters on them — no multi-tenant flood; 200 lines default |
 | `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |
 | `onboard OWNER/NAME` | register a repo: config template, scenario templates, port pair | idempotent (`already` if done) |
-| `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the effective config** (write-only state forced probe-by-mutation — kvstore postmortem lesson 7). A successful write bumps the inputs-epoch (blocked issues revive fresh, like scenario writes) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
+| `config SLUG [--json '{…}']` | deep-merge a config patch; **omit `--json` to READ the complete effective config — nothing filtered, all env/pi/timeouts/merge keys** (a filtered readback once hid `env.instabox.*` and thinking, and diagnosing one typo meant cat-ing another repo's config on the VPS — magpie postmortem incidents 5/7). A successful write bumps the inputs-epoch (blocked issues revive fresh, like scenario writes) | allowed keys: `models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `pi`. Loud validation rejects dotted-string models, thinking suffixes inside `model`, malformed fallbacks. Two-writer caveat: last write wins per key — re-echo after a disagreement |
 | `scenario SLUG runtime\|holdout [--file F \| --lint \| --dump \| --test]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario; `--test` = EXECUTE the stored scenario against a branch (default main) without spending a lap — per-probe results, exit 1 on failure** (`--branch B` to target an open lap's branch) | holdout = adversarial layer; ALWAYS `--lint` then `--test` before relying on a scenario; a write bumps the inputs-epoch: every blocked issue of the repo gets a fresh revive budget on the next tick |
-| `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default**; `--create` spends repo writes; `--max` caps issues (40) |
+| `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default** (graph problems reported as `graph_problems`); `--create` REFUSES a self/forward/out-of-range dependency graph, naming each offender; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
+| `pause SLUG` / `unpause SLUG` | pull a repo off the tick wheel / put it back | a paused repo is skipped whole (no claims, no revives — receipts say `skipping <slug>: paused`); an in-flight lap finishes; use it when one repo's churn shouldn't eat the wheel while you work another (magpie starved behind tic-tac-toe's crash-loop with no lever) |
 | `unblock SLUG ISSUE [--prune] [--force]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); REFUSES an in_progress row (a lap may be live — a crashed one reconciles next tick) unless `--force`, which you fire only after verifying the session tail is quiet and no machine is working; `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
 | `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
 

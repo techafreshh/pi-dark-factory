@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startFactoryd } from "../src/factoryd";
@@ -60,5 +60,33 @@ describe("factoryd (remote-control API)", () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as any;
     expect(body.queued).toBe(true);
+  });
+
+  test("pause/unpause write and clear the wheel flag", async () => {
+    mkdirSync(join(dir, "repos", "demo"), { recursive: true });
+    writeFileSync(
+      join(dir, "repos", "demo", "config.json"),
+      JSON.stringify({ repo: "acme/demo", slug: "demo", models: { default: { provider: "x", model: "y" } }, scenario: { ports: [] }, env: { mode: "host" } })
+    );
+    const on = await fetch(base + "repos/demo/pause", {
+      method: "POST",
+      headers: { "x-api-key": "test-key" },
+    });
+    expect(on.status).toBe(200);
+    expect(((await on.json()) as any).paused).toBe(true);
+    expect(existsSync(join(dir, "repos", "demo", "paused"))).toBe(true);
+    const off = await fetch(base + "repos/demo/unpause", {
+      method: "POST",
+      headers: { "x-api-key": "test-key" },
+    });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as any).paused).toBe(false);
+    expect(existsSync(join(dir, "repos", "demo", "paused"))).toBe(false);
+    // pause on an unknown repo is a 404, not a 500
+    const ghost = await fetch(base + "repos/ghost/pause", {
+      method: "POST",
+      headers: { "x-api-key": "test-key" },
+    });
+    expect(ghost.status).toBe(404);
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { opsGetConfig, opsLogs, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
+import { opsGetConfig, opsLogs, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
 import { Ledger } from "../src/ledger";
 import { receipt } from "../src/receipts";
 import { execSync } from "node:child_process";
@@ -161,6 +161,65 @@ describe("opsScenarioLint (dry-run gate)", () => {
       expect(r.ok).toBe(true);
       expect(r.warnings).toEqual([]);
     }
+  });
+
+  test("rejects '$PORT' in single quotes — it never expands (magpie incident 10)", () => {
+    seedConfig();
+    expect(() => opsScenarioLint(state, "demo", "runtime", scenario([
+      { id: "p", description: "x", command: "curl -s -o /dev/null -w '%{http_code}' 'http://127.0.0.1:$PORT/health'", expect: "status:200" },
+    ]))).toThrow(/single quotes never expands/);
+  });
+
+  test("rejects bare parens in URLs — shell syntax error before curl runs", () => {
+    seedConfig();
+    expect(() => opsScenarioLint(state, "demo", "runtime", scenario([
+      { id: "p", description: "x", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/check?x=(1)", expect: "status:200" },
+    ]))).toThrow(/unencoded \( or \)/);
+  });
+
+  test("status_in is a known token and rides the same emit-the-code warning", () => {
+    seedConfig();
+    const good = opsScenarioLint(state, "demo", "runtime", scenario([
+      { id: "p", description: "x", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/maybe", expect: "status_in:200,404" },
+    ]));
+    expect(good.ok).toBe(true);
+    expect(good.warnings).toEqual([]);
+    const trap = opsScenarioLint(state, "demo", "runtime", scenario([
+      { id: "p", description: "x", command: "curl -s http://127.0.0.1:$PORT/maybe", expect: "status_in:200,404" },
+    ]));
+    expect(trap.warnings.some((w: string) => w.includes("must emit the code"))).toBe(true);
+  });
+
+  test("the UPLOAD path rejects the same hazards --lint rejects (no burn-a-lap gap)", () => {
+    seedConfig();
+    expect(() => opsScenarioSet(state, "demo", "holdout", scenario([
+      { id: "p", description: "x", command: "curl -s 'http://127.0.0.1:$PORT/x'", expect: "status:200" },
+    ]))).toThrow(/rejected holdout\.json: .*single quotes never expands/);
+    expect(existsSync(join(state, "repos", "demo", "holdout.json"))).toBe(false);
+    // and a clean one still lands
+    const r = opsScenarioSet(state, "demo", "holdout", scenario([
+      { id: "p", description: "x", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/x", expect: "status_in:200,404" },
+    ]));
+    expect(r.ok).toBe(true);
+    expect(existsSync(r.path)).toBe(true);
+  });
+});
+
+describe("opsPause (the wheel lever — magpie incident 21)", () => {
+  test("pause writes the flag and receipts; unpause clears it", () => {
+    seedConfig();
+    const r1 = opsPause(state, "demo", true);
+    expect(r1.paused).toBe(true);
+    expect(existsSync(join(state, "repos", "demo", "paused"))).toBe(true);
+    const r2 = opsPause(state, "demo", false);
+    expect(r2.paused).toBe(false);
+    expect(existsSync(join(state, "repos", "demo", "paused"))).toBe(false);
+    // unpause when not paused is a no-op, not an error
+    expect(() => opsPause(state, "demo", false)).not.toThrow();
+  });
+
+  test("pause on an unknown repo is an error", () => {
+    expect(() => opsPause(state, "ghost", true)).toThrow(/not onboarded/);
   });
 });
 

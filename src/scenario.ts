@@ -97,6 +97,16 @@ export function evalExpects(stdout: string, exitCode: number, expect: string): {
         why = `status: got "${last.slice(0, 40)}", want "${val}"`;
         break;
       }
+      case "status_in": {
+        // "200 or 404, never 5xx" — the traversal-style probe an exact
+        // status: pin couldn't express, so authors weakened their probes
+        // (magpie postmortem 2026-10-25, incident 11)
+        const last = stdout.trim().split("\n").filter(Boolean).pop() ?? "";
+        const want = val.split(",").map((s) => s.trim()).filter(Boolean);
+        ok = want.includes(last);
+        why = `status_in: got "${last.slice(0, 40)}", want one of ${want.join("|")}`;
+        break;
+      }
       case "json": {
         const eq = val.indexOf("=");
         if (eq < 0) return { pass: false, failed: `bad json token "${token}" (want json:path=value)` };

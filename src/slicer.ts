@@ -82,6 +82,26 @@ export function buildSlicerPrompt(prd: string, maxIssues: number): string {
   ].join("\n");
 }
 
+/** Graph check the slicer can't run for itself: DEPENDS entries are 1-based
+ * indices of EARLIER issues, so a self-reference, forward reference, or
+ * out-of-range index can never be satisfied. The create loop used to drop
+ * these silently — the dependency vanished and the chain claimed the issue
+ * before the thing it needed existed (magpie postmortem 2026-10-25,
+ * incidents 13/14: preview showed 8→8 and 13→13, caught only by hand). */
+export function graphProblems(sliced: SlicedIssue[]): string[] {
+  const out: string[] = [];
+  sliced.forEach((s, i) => {
+    const own = i + 1;
+    for (const d of s.dependsOn) {
+      if (d === own) out.push(`issue ${own} ("${s.title}") depends on itself`);
+      else if (d > sliced.length) out.push(`issue ${own} ("${s.title}") depends on out-of-range index ${d} (only ${sliced.length} issues)`);
+      else if (d > own) out.push(`issue ${own} ("${s.title}") forward-references issue ${d} — dependencies must come EARLIER`);
+      else if (d < 1) out.push(`issue ${own} ("${s.title}") depends on out-of-range index ${d}`);
+    }
+  });
+  return out;
+}
+
 /** Dedupe against existing issues by normalized title (re-runs never duplicate). */
 export function filterNew(sliced: SlicedIssue[], existingTitles: string[]): SlicedIssue[] {
   const seen = new Set(existingTitles.map(normalizeTitle));

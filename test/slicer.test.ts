@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildSlicerPrompt, filterNew, normalizeTitle, parseSlicerOutput } from "../src/slicer";
+import { buildSlicerPrompt, filterNew, graphProblems, normalizeTitle, parseSlicerOutput } from "../src/slicer";
 
 const RAW = [
   "Some preamble prose from the model that must be ignored.",
@@ -33,6 +33,38 @@ describe("parseSlicerOutput", () => {
   });
   test("empty output parses to zero issues", () => {
     expect(parseSlicerOutput("no issues here")).toEqual([]);
+  });
+});
+
+describe("graphProblems (create-time graph gate — magpie 8→8 / 13→13)", () => {
+  test("a clean backward-only graph has no problems", () => {
+    expect(graphProblems(parseSlicerOutput(RAW))).toEqual([]);
+  });
+  test("self-dependency is named", () => {
+    const sliced = parseSlicerOutput("TITLE: A\nBODY x\n---\nTITLE: B\nDEPENDS: 2\nbody");
+    const problems = graphProblems(sliced);
+    expect(problems.length).toBe(1);
+    expect(problems[0]).toContain("issue 2");
+    expect(problems[0]).toContain("depends on itself");
+  });
+  test("forward reference is named — deps must come EARLIER", () => {
+    const sliced = parseSlicerOutput("TITLE: A\nDEPENDS: 2\nbody\n---\nTITLE: B\nbody");
+    expect(graphProblems(sliced)[0]).toContain("forward-references issue 2");
+  });
+  test("out-of-range index is named", () => {
+    const sliced = parseSlicerOutput("TITLE: A\nDEPENDS: 9\nbody");
+    expect(graphProblems(sliced)[0]).toContain("out-of-range index 9");
+  });
+  test("multiple offenders are all reported, not just the first", () => {
+    const sliced = [
+      "TITLE: A", "DEPENDS: 4", "x", "---",
+      "TITLE: B", "DEPENDS: 2", "x", "---",
+      "TITLE: C", "x", "---",
+      "TITLE: D", "DEPENDS: 3, 0", "x",
+    ].join("\n");
+    const slicedIssues = parseSlicerOutput(sliced);
+    const problems = graphProblems(slicedIssues);
+    expect(problems.length).toBe(3); // A→4 forward, B→2 self, D→0 below range
   });
 });
 

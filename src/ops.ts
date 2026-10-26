@@ -16,7 +16,7 @@ import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
 import { loadScenario, type ScenarioResult } from "./scenario";
-import { buildSlicerPrompt, filterNew, parseSlicerOutput } from "./slicer";
+import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
@@ -310,7 +310,15 @@ export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" |
   const tmp = join(dir, `${kind}.json.candidate-${Date.now()}`);
   writeFileSync(tmp, content);
   try {
-    loadScenario(tmp);
+    const spec = loadScenario(tmp);
+    // upload-time probe lint — the same deterministic hazards the --lint
+    // dry run rejects (quoted $PORT, bare parens in URLs, unknown tokens)
+    // must never reach a lap: "a bad scenario can never burn a lap" only
+    // holds if the write path checks what the bench checks (magpie
+    // postmortem 2026-10-25, incident 10: lint passed the file that
+    // burned the laps)
+    const { errors } = lintProbes(spec);
+    if (errors.length > 0) throw new Error(errors.join("; "));
   } catch (e: any) {
     rmSync(tmp, { force: true });
     throw new Error(`rejected ${kind}.json: ${e.message}`);
@@ -322,6 +330,63 @@ export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" |
   // the world the blocked issues' fuses were measured against just changed
   bumpInputsEpoch(stateDir, slug);
   return { ok: true, path };
+}
+
+/** Probe-level lint shared by the upload path and the --lint dry run:
+ * deterministic authoring hazards reject (they can only burn laps);
+ * classic traps warn. "A bad scenario can never burn a lap" only holds
+ * when the write path runs the same checks as the bench. */
+function lintProbes(spec: ReturnType<typeof loadScenario>): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const KNOWN = /^(status|status_in|json|body_contains|body_matches|exit|max_ms):/;
+  for (const p of spec.probes ?? []) {
+    for (const t of (p.expect ?? "").trim().split(/\s+/).filter(Boolean)) {
+      if (!KNOWN.test(t))
+        errors.push(
+          `probe ${p.id}: unknown token "${t}" — expect values cannot contain spaces (tokens split on whitespace; use body_matches with \\s patterns)`
+        );
+      if (t.startsWith("body_matches:")) {
+        try {
+          new RegExp(t.slice("body_matches:".length));
+        } catch {
+          errors.push(`probe ${p.id}: body_matches regex does not compile — the matcher is a JavaScript RegExp (not ERE/BRE)`);
+        }
+      }
+    }
+    // single-quoted $PORT never expands: the probe curls a literal "$PORT"
+    // and every attempt dies as 000/exit 6 while the app is perfectly up
+    // (magpie postmortem 2026-10-25, incident 10 — lint passed the file).
+    // A regex can't tell an OPENING quote from a closing one, so walk the
+    // quote state the way the shell does.
+    const cmd = p.command ?? "";
+    let inSquote = false;
+    for (let i = 0; i < cmd.length; i++) {
+      if (cmd[i] === "'") inSquote = !inSquote;
+      else if (inSquote && cmd.startsWith("$PORT", i)) {
+        errors.push(
+          `probe ${p.id}: '$PORT' in single quotes never expands — the shell treats it as a literal string; use double quotes or no quotes around $PORT`
+        );
+        break;
+      }
+    }
+    // a bare URL with ( or ) is a shell syntax error before curl even runs
+    // — percent-encode them (%28/%29); parens inside single quotes are
+    // literal, so test the command with its single-quoted stretches blanked
+    // (same incident, same lint gap)
+    const unquoted = cmd.replace(/'[^']*'/g, (m) => " ".repeat(m.length));
+    if (/https?:\/\/[^'"\s]*[()]/.test(unquoted))
+      errors.push(
+        `probe ${p.id}: the URL carries an unencoded ( or ) — a bare paren is a shell syntax error; percent-encode them (%28/%29)`
+      );
+    if (/status(_in)?:/.test(p.expect ?? "") && /\bcurl\b/.test(p.command ?? "") && !/-w\s+(['"])(\\n)?%\{http_code\}\1/.test(p.command ?? ""))
+      warnings.push(
+        `probe ${p.id}: status/status_in compare the command's LAST stdout line — the command must emit the code itself (curl -s -o /dev/null -w '%{http_code}'; a plain curl -s puts the BODY there and the probe fails as got "{…}", want "200")`
+      );
+    if (/(127\.0\.0\.1|localhost):\d{4,5}/.test(p.command ?? ""))
+      warnings.push(`probe ${p.id}: command hardcodes a port — use $PORT (injected per run from the repo's reserved pair)`);
+  }
+  return { errors, warnings };
 }
 
 /**
@@ -347,28 +412,9 @@ export function opsScenarioLint(stateDir: string, slug: string, kind: "runtime" 
   } finally {
     rmSync(tmp, { force: true });
   }
-  const KNOWN = /^(status|json|body_contains|body_matches|exit|max_ms):/;
-  for (const p of spec.probes ?? []) {
-    for (const t of (p.expect ?? "").trim().split(/\s+/).filter(Boolean)) {
-      if (!KNOWN.test(t))
-        throw new Error(
-          `probe ${p.id}: unknown token "${t}" — expect values cannot contain spaces (tokens split on whitespace; use body_matches with \\s patterns)`
-        );
-      if (t.startsWith("body_matches:")) {
-        try {
-          new RegExp(t.slice("body_matches:".length));
-        } catch {
-          throw new Error(`probe ${p.id}: body_matches regex does not compile — the matcher is a JavaScript RegExp (not ERE/BRE)`);
-        }
-      }
-    }
-    if ((p.expect ?? "").includes("status:") && /\bcurl\b/.test(p.command ?? "") && !/-w\s+(['"])(\\n)?%\{http_code\}\1/.test(p.command ?? ""))
-      warnings.push(
-        `probe ${p.id}: status:N compares the command's LAST stdout line — the command must emit the code itself (curl -s -o /dev/null -w '%{http_code}'; a plain curl -s puts the BODY there and the probe fails as got "{…}", want "200")`
-      );
-    if (/(127\.0\.0\.1|localhost):\d{4,5}/.test(p.command ?? ""))
-      warnings.push(`probe ${p.id}: command hardcodes a port — use $PORT (injected per run from the repo's reserved pair)`);
-  }
+  const { errors, warnings: w } = lintProbes(spec);
+  if (errors.length > 0) throw new Error(errors.join("; "));
+  warnings.push(...w);
   return { ok: true, slug, kind, warnings };
 }
 
@@ -659,9 +705,19 @@ export async function opsBacklog(
   const existing = await gh.issueList("all", 500);
   const fresh = filterNew(sliced, existing.map((i) => i.title));
   const preview = fresh.map((s) => ({ title: s.title, depends: s.dependsOn }));
+  // deps are indices into the slicer's own output — validate that graph
+  // before anything is created: a self/forward/out-of-range dep used to
+  // drop silently in the create loop below, losing the dependency and
+  // letting the chain claim an issue before its prerequisite existed
+  const graph = graphProblems(sliced);
   if (opts.dryRun) {
-    return { sliced: sliced.length, existing: sliced.length - fresh.length, preview, created: null };
+    return { sliced: sliced.length, existing: sliced.length - fresh.length, preview, created: null, graph_problems: graph };
   }
+  if (graph.length > 0)
+    throw new Error(
+      `backlog graph invalid — refusing to create issues (re-slice, or sharpen the PRD's build order): ` +
+        graph.join("; ")
+    );
   const numbers: number[] = [];
   const created: { number: number; title: string }[] = [];
   for (const s of sliced) {
@@ -683,6 +739,25 @@ export async function opsBacklog(
   }
   receipt(stateDir, `backlog: ${numbers.length} issues resolved for ${cfg.repo}`, slug);
   return { sliced: sliced.length, existing: sliced.length - fresh.length, preview, created };
+}
+
+/** Pause/resume a repo's lane on the tick wheel. A paused repo is skipped
+ * whole — no claims, no revives — until unpause: the remote lever the wheel
+ * lacked while a crash-looping repo ate every tick and its neighbors
+ * starved (magpie postmortem 2026-10-25, incident 21). An in-flight lap
+ * finishes; pause only stops NEW work. */
+export function opsPause(stateDir: string, slug: string, paused: boolean) {
+  const dir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(dir, "config.json"))) throw new Error("repo " + slug + " is not onboarded");
+  const flag = join(dir, "paused");
+  if (paused) writeFileSync(flag, new Date().toISOString() + "\n", { mode: 0o644 });
+  else rmSync(flag, { force: true });
+  receipt(
+    stateDir,
+    paused ? `paused: ${slug} skips ticks until unpause (an in-flight lap, if any, finishes)` : `unpaused: ${slug} resumes on the next tick`,
+    slug
+  );
+  return { slug, paused };
 }
 
 export async function opsUnblock(stateDir: string, slug: string, issue: number, prune: boolean, force = false) {

@@ -13,10 +13,13 @@ Verbs (mirror the foreman CLI):
                                           [--issue N]; --follow streams live
                                           and auto-reconnects on drops
   onboard OWNER/NAME                      config + scenario templates + port pair
-  config SLUG --json '{...}'              deep-merge a config patch (models, env, merge, timeouts)
+  config SLUG [--json '{...}']            read the FULL effective config; with --json, deep-merge a patch
+                                          (models, env, merge, timeouts)
   scenario SLUG runtime|holdout --file F  write + server-side validate a scenario
+  scenario SLUG runtime|holdout --test     execute the STORED scenario without a lap
   backlog SLUG --prd-file F [--max N]     slice a PRD; previews unless --create
   tick SLUG                               fire a lap now (pidfile arbitrates with the timer)
+  pause SLUG / unpause SLUG               pull a repo off the tick wheel / put it back
   unblock SLUG ISSUE [--prune]            drop the ledger row (optionally close PR/branch/worktree)
   cleanup                                 prune caches, kill stale pi workers
   doctor                                  connectivity + auth + version check
@@ -293,6 +296,16 @@ def cmd_tick(a):
     print(f"lap dispatched for {body['slug']} — follow with: factory-remote status --repo {a.slug} (or logs)")
 
 
+def cmd_pause(a):
+    code, body = _api("POST", f"/repos/{a.slug}/pause", {}, timeout=TIMEOUT_FAST)
+    print(f"{a.slug} PAUSED — ticks skip it (an in-flight lap finishes); factory-remote unpause {a.slug} to resume")
+
+
+def cmd_unpause(a):
+    code, body = _api("POST", f"/repos/{a.slug}/unpause", {}, timeout=TIMEOUT_FAST)
+    print(f"{a.slug} UNPAUSED — the next tick picks it up; fire one now: factory-remote tick {a.slug}")
+
+
 def cmd_unblock(a):
     code, body = _api("POST", f"/repos/{a.slug}/unblock",
                       {"issue": a.issue, "prune": a.prune, "force": a.force}, allow_status=(409,))
@@ -302,27 +315,20 @@ def cmd_unblock(a):
     print(json.dumps(body, indent=2))
 
 
-def _print_config(cfg):
-    env = cfg.get("env") or {}
-    merge = cfg.get("merge") or {}
-    print("  env.mode=" + str(env.get("mode")) + " image=" + str(env.get("image")) + " service=" + str(env.get("service")))
-    print("  required_checks=" + json.dumps(merge.get("required_checks")))
-    for k, v in (cfg.get("models") or {}).items():
-        if isinstance(v, dict) and v.get("provider"):
-            print("  models." + k + " = " + str(v.get("provider")) + "/" + str(v.get("model")) + " fallback=" + json.dumps(v.get("fallback")))
-
-
 def cmd_config(a):
     if not a.json:
         code, body = _api("GET", "/repos/" + a.slug + "/config")
-        print(f"effective config for {a.slug}:")
-        _print_config(body.get("config") or {})
+        # the COMPLETE effective config — a filtered summary here once hid
+        # env.instabox.*, thinking and pass_env, and diagnosing one config
+        # typo meant cat-ing another repo's config on the VPS (magpie
+        # postmortem 2026-10-25, incidents 5/7)
+        print(f"effective config for {a.slug} — complete, nothing filtered:")
+        print(json.dumps(body.get("config") or {}, indent=2))
         return
     patch = json.loads(a.json)
     code, body = _api("POST", "/repos/" + a.slug + "/config", patch, timeout=TIMEOUT_FAST)
-    cfg = body.get("config") or {}
     print("config updated: " + str(body.get("config_path")))
-    _print_config(cfg)
+    print(json.dumps(body.get("config") or {}, indent=2))
 
 
 def cmd_cleanup(_a):
@@ -352,6 +358,8 @@ def main():
     sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json",
                         help="config patch JSON: models, env, merge, timeouts keys (omit to READ the effective config)")
     sp = sub.add_parser("tick"); sp.add_argument("slug")
+    sp = sub.add_parser("pause"); sp.add_argument("slug")
+    sp = sub.add_parser("unpause"); sp.add_argument("slug")
     sp = sub.add_parser("unblock"); sp.add_argument("slug"); sp.add_argument("issue", type=int); sp.add_argument("--prune", action="store_true"); sp.add_argument("--force", action="store_true",
                         help="override the in-progress guard (only after verifying the lap is dead)")
     sub.add_parser("cleanup")
@@ -360,6 +368,7 @@ def main():
         "health": cmd_health, "doctor": cmd_doctor, "status": cmd_status, "logs": cmd_logs,
         "session": cmd_session, "config": cmd_config, "onboard": cmd_onboard, "scenario": cmd_scenario,
         "backlog": cmd_backlog, "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
+        "pause": cmd_pause, "unpause": cmd_unpause,
     }
     table[a.cmd](a)
 

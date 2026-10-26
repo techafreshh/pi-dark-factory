@@ -8,7 +8,7 @@
  * can never double-run a lap.
  */
 import { statSync } from "node:fs";
-import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
   newRenderState,
@@ -199,6 +199,12 @@ export function startFactoryd(opts: FactorydOpts) {
           }
           void b.run.catch(() => {});
           return respond({ queued: true, slug, note: "lap dispatched — watch GET /status (per-repo pidfile arbitrates with the systemd timer)" });
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/pause")) {
+          return respond(opsPause(opts.stateDir, slug, true));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/unpause")) {
+          return respond(opsPause(opts.stateDir, slug, false));
         }
         if (req.method === "POST" && tickEnd === "unblock") {
           const body = await readJson(req);

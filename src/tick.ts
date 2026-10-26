@@ -904,6 +904,14 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
       // 2026-10-24). A scoped tick already holds its one repo's lock from
       // beginTick — its single task never re-acquires.
       tasks.push(async () => {
+        // paused lane: the operator pulled this repo off the wheel (a
+        // crash-looping repo used to eat every tick while its neighbors
+        // waited — magpie postmortem 2026-10-25, incident 21). An
+        // in-flight lap finishes; pause only stops NEW work.
+        if (existsSync(join(opts.stateDir, "repos", cfg.slug, "paused"))) {
+          repoReceipt(cfg.slug, opts.stateDir, `skipping ${cfg.slug}: paused (unpause to resume)`);
+          return;
+        }
         if (!scoped && !acquireRepoLock(opts.stateDir, cfg.slug)) {
           repoReceipt(cfg.slug, opts.stateDir, `skipping ${cfg.slug}: another tick is working it (per-repo pidfile)`);
           return;
