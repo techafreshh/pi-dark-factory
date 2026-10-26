@@ -268,21 +268,29 @@ against the base's node 22 (e.g. `node:sqlite` semantics, `engines` fields)
 is a decision point: flag it and let the user pick.
 
 When something is missing, both remedies are VPS-side bakes the OPERATOR
-runs (never you — you have no shell on the VPS):
+runs (never you — you have no shell on the VPS). Snapshot quota on the app
+plan is **5 concurrent** — room for a shared base plus versioned
+enrichments, so an existing image never needs to be overridden.
 
 1. **Enrich the shared base** (right for small, additive, standard deps):
    `config <slug> --json '{"env":{"instabox":{"bake":"sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y <pkgs>"}}}'`
-   then ask the user to run `foreman bake <slug>` VPS-side. Snapshot names
-   are UNIQUE on the platform — the bake deletes the old same-named
-   snapshot and re-saves under the SAME name (`factory-base-r2` today), so
-   **pause the instabox repos first** (`factory-remote pause <slug>`): in
-   the delete→save window, a new machine boot for that name fails once.
-   Unpause after.
+   then ask the user to run `foreman bake <slug>` VPS-side. `foreman bake`
+   re-saves under the SAME name (deleting the old same-named snapshot
+   first) — for a shared-base re-bake, **pause the instabox repos first**
+   (`factory-remote pause <slug>`): new machine boots fail in the
+   delete→re-save window. The windowless alternative, preferred while the
+   wheel is busy: save under a NEW versioned name (`factory-base-r3`, …)
+   and repoint configs — and KEEP the old name alive as an alias until
+   tick turnover, because **a long-running tick holds configs in memory
+   for hours and keeps resolving the OLD snapshot name** (kintsugi,
+   2026-10-26: laps burned attempt budgets for 20 minutes resolving a
+   deleted name; a same-named alias healed the live tick instantly). Ticks
+   reload configs between laps, but the lap already in flight holds what
+   it loaded.
 2. **Fork a repo-specific base** (heavy/exotic deps): first
    `config <slug> --json '{"env":{"instabox":{"snapshot":"<slug>-base"}}}'`,
    then the bake script + `foreman bake <slug>` — produces `<slug>-base`
-   (a fresh name, no conflict) and leaves the shared base untouched
-   (snapshot quota is ~10, so forking is affordable but not free).
+   (a fresh name, no conflict) and leaves the shared base untouched.
 
 ### Stage 3 — scenario gate (the acceptance contract)
 
@@ -653,7 +661,7 @@ All verbs run from any directory (creds are read from env or
 | `scenario SLUG runtime\|holdout [--file F \| --lint \| --dump \| --test]` | write + server-side validate a scenario JSON; **`--lint` = dry-run validation + probe linting, nothing written; `--dump` = print the stored scenario; `--test` = EXECUTE the stored scenario against a branch (default main) without spending a lap — per-probe results, exit 1 on failure** (`--branch B` to target an open lap's branch) | holdout = adversarial layer; ALWAYS `--lint` then `--test` before relying on a scenario; a write bumps the inputs-epoch: every blocked issue of the repo gets a fresh revive budget on the next tick |
 | `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD into issues | **preview by default** (graph problems reported as `graph_problems`); `--create` REFUSES a self/forward/out-of-range dependency graph, naming each offender; `--create` spends repo writes; `--max` caps issues (40) |
 | `tick SLUG` | fire a lap now | usually unnecessary — the timer ticks every 15 min and chains laps; manual ticks are safe (pidfile no-ops while one is live) |
-| `pause SLUG` / `unpause SLUG` | pull a repo off the tick wheel / put it back | a paused repo is skipped whole (no claims, no revives — receipts say `skipping <slug>: paused`); an in-flight lap finishes; use it when one repo's churn shouldn't eat the wheel while you work another (magpie starved behind tic-tac-toe's crash-loop with no lever) |
+| `pause SLUG` / `unpause SLUG` | pull a repo off the tick wheel / put it back | a paused repo is skipped whole on ticks (no claims, no revives — receipts say `skipping <slug>: paused`), and an already-chaining task stops before its NEXT lap (`paused mid-chain` receipt) — the lap in flight always finishes; use it when one repo's churn shouldn't eat the wheel while you work another (magpie starved behind tic-tac-toe's crash-loop with no lever) |
 | `unblock SLUG ISSUE [--prune] [--force]` | drop a ledger row so intake can reclaim the issue | usually unnecessary: ticks auto-revive blocked issues (see ops table); REFUSES an in_progress row (a lap may be live — a crashed one reconciles next tick) unless `--force`, which you fire only after verifying the session tail is quiet and no machine is working; `--prune` also closes the PR + deletes the remote branch + removes the worktree (destructive — confirm) |
 | `cleanup` | prune blocked worktree caches, kill stale pi workers | safe; requires key |
 

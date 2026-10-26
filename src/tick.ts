@@ -935,6 +935,23 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           let revivedInTick = false;
           const REVIVE_COOLDOWN_MS = 10 * 60_000;
           while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
+            // mid-chain pause: the in-flight lap finished; nothing NEW after
+            // this point (kintsugi 2026-10-26: a pause receipt landed and the
+            // already-running task still chained two more laps into the wall)
+            if (existsSync(join(opts.stateDir, "repos", cfg.slug, "paused"))) {
+              repoReceipt(cfg.slug, opts.stateDir, `paused mid-chain — stopping before #${issue.number} (unpause to resume; the timer picks the chain up)`);
+              break;
+            }
+            // mid-tick config reload: a chained tick holds configs in memory
+            // for HOURS — a config write (snapshot swap, model change) must
+            // reach the NEXT lap, not the next tick. Mutate in place so every
+            // closure holding cfg (callStage, machine creation) sees it.
+            // (kintsugi 2026-10-26: the factory-base→r2 repoint was invisible
+            // to the running tick; its laps kept resolving the deleted
+            // snapshot name and burned attempt budgets for 20 minutes)
+            try {
+              Object.assign(cfg, loadRepoConfig(join(opts.stateDir, "repos", cfg.slug, "config.json")));
+            } catch {}
             laps++;
             try {
               await runLap(cfg, opts.stateDir, deps, issue);
