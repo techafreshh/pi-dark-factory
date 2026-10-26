@@ -207,19 +207,19 @@ describe("reapOrphanMachines (guarded janitor)", () => {
     return { srv, deleted };
   };
 
-  test("an in_progress machine survives; merged/blocked/no-row/unknown are reaped", async () => {
+  test("an in_progress machine survives; merged/blocked/no-row/unknown are reaped — at ANY generation suffix", async () => {
     const dir = seedInstabox();
     // point the config's api_base at the fake plane
     const cfg = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
-    const { srv, deleted } = serve(["pdf-toy-i1", "pdf-toy-i2", "pdf-toy-i3", "pdf-gone-i9"]);
+    const { srv, deleted } = serve(["pdf-toy-i1", "pdf-toy-i2-g41", "pdf-toy-i3-g42", "pdf-gone-i9"]);
     cfg.env.instabox.api_base = `http://127.0.0.1:${srv.port}`;
     writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
     process.env.TEST_IB_KEY = "k";
 
     const rows: Record<string, { state: string }> = {
-      "acme/toy#1": { state: "in_progress" }, // live lap — must survive
-      "acme/toy#2": { state: "merged" }, // booked out — reap
-      "acme/toy#3": { state: "blocked" }, // terminal — reap
+      "acme/toy#1": { state: "in_progress" }, // live lap (old-style name) — must survive
+      "acme/toy#2": { state: "merged" }, // booked out, generation-suffixed — reap
+      "acme/toy#3": { state: "blocked" }, // terminal, generation-suffixed — reap
       // i9: unknown slug — reap
     };
     const ledger = { getIssue: (repo: string, n: number) => rows[`${repo}#${n}`] ?? null };

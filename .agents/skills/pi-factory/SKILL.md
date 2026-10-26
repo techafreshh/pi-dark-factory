@@ -505,21 +505,36 @@ attempt cycles against a still-broken mount that way.
 
 ### InstaBox machine lifecycle (and why machines linger)
 
-One machine per issue (`pdf-<slug>-i<issue>`): created lazily at the first
-implement attempt, kept across ALL of that lap's repair rounds AND later
-revive rounds (its `/data/repo` clone IS the worktree — destroying it
-mid-lap destroys the work), and deleted the moment the lap books out
-(merged OR terminally blocked). Idle boxes auto-suspend platform-side —
-they still count against the account's machine quota — and the factory
-resumes them on the next attempt. Strays cannot pile up: every tick's tail
-and `cleanup` both reap any `pdf-*` machine whose issue has no `in_progress`
-ledger row, and neither ever touches a live lap's machine. If a machine
-looks "running" long after its lap finished, suspect the platform's stale
-listing first (phantom running records were observed ~2h after successful
-deletes) — the janitor reaps it next tick regardless. One exception family:
+One machine per issue's LAP — named `pdf-<slug>-i<issue>-g<lapId>`, unique
+per lap generation: repair rounds within a lap share one machine AND one
+name (its `/data/repo` clone IS the worktree — destroying it mid-lap
+destroys the work), but every new lap — including auto-revive rounds — gets
+a FRESH name. This is load-bearing: platform deletes are eventually
+consistent (phantom records were observed ~2h after successful deletes),
+and recreating a machine under a reused name raced the zombie — token
+routing then intermittently landed on the dead predecessor, serving the
+previous attempt's catch-all SPA or black-holing the readiness poll
+(bi-ai-ui 2026-10-26: mapping roulette, "foreign" content was always the
+issue's own zombie instance, never another repo — ports are reserved
+per-repo and never overlap). A unique name cannot collide with a
+not-yet-dead predecessor, so a revived lap can never inherit a zombie's
+routes or its stale servers. Machines are deleted the moment the lap books
+out, and the delete is CONFIRMED — a delete that stays invisible
+platform-side receipts "delete not yet visible (platform lag)" and the
+janitor reaps the leftover. Idle boxes auto-suspend platform-side — they
+still count against quota — and the factory resumes them on the next
+attempt. Strays cannot pile up: every tick's tail and `cleanup` both reap
+any `pdf-*` machine (any generation) whose issue has no in_progress ledger
+row, and neither ever touches a live lap's machine. If a machine looks
+"running" long after its lap finished, suspect the platform's stale listing
+first — the janitor reaps it next tick regardless. One exception family:
 `pdf-<slug>-scen-test` machines (from `scenario --test`) belong to no lap —
 their runner protects them via a pid marker while a test is live, and the
-janitor reaps any whose runner is gone.
+janitor reaps any whose runner is gone. When machine-mode verify fails
+readiness, the runner classifies honestly: a dead tunnel or a tunnel whose
+in-box loopback answers while the host poll starved reports itself as
+`INFRASTRUCTURE` (retry the lap, don't repair the product); only
+host-poll-AND-loopback both failing is an app failure.
 
 ## factory-remote — full CLI reference
 

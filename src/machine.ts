@@ -418,9 +418,10 @@ export class LapMachine {
     private ib: InstaBox,
     private cfg: RepoConfig,
     public issue: number,
-    private log: (msg: string) => void = () => {}
+    private log: (msg: string) => void = () => {},
+    gen?: number
   ) {
-    this.name = machineNameFor(cfg.slug, issue);
+    this.name = machineNameFor(cfg.slug, issue, gen);
   }
 
   private ibx() {
@@ -522,6 +523,16 @@ export class LapMachine {
       // receipts until a janitor killed them by id)
       const m = this.machine ?? (await this.ib.machineByName(this.name));
       if (m) await this.ib.deleteMachine(m.id);
+      // delete is eventually-consistent platform-side (phantom records were
+      // observed ~2h after successful deletes) — surface the lag instead of
+      // a false "deleted", so a same-name recreate race is at least visible
+      try {
+        const still = await this.ib.machineByName(this.name);
+        if (still) {
+          this.log(`machine ${this.name} delete not yet visible (platform lag) — janitor will reap the leftover`);
+          return;
+        }
+      } catch {}
       this.log(`machine ${this.name} deleted`);
     } catch (e: any) {
       this.log(`machine ${this.name} delete failed (janitor will catch it): ${String(e.message).slice(0, 150)}`);
@@ -529,7 +540,7 @@ export class LapMachine {
   }
 }
 
-export function openLapMachine(cfg: RepoConfig, issue: number, log?: (msg: string) => void): LapMachine {
+export function openLapMachine(cfg: RepoConfig, issue: number, log?: (msg: string) => void, gen?: number): LapMachine {
   const ib = InstaBox.fromEnv(cfg.env.instabox);
-  return new LapMachine(ib, cfg, issue, log);
+  return new LapMachine(ib, cfg, issue, log, gen);
 }

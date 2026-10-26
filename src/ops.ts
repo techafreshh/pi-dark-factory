@@ -11,7 +11,7 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
-import { InstaBox, machineNameFor, sanitizeMachinePart } from "./instabox";
+import { InstaBox, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
@@ -699,8 +699,12 @@ export async function opsUnblock(stateDir: string, slug: string, issue: number, 
     let machine = "";
     if (cfg.env.mode === "instabox" && cfg.env.instabox) {
       try {
-        const m = await InstaBox.fromEnv(cfg.env.instabox).machineByName(machineNameFor(slug, issue));
-        if (m) machine = ` Its machine ${m.name} still exists — the janitor reaps it after the row drops.`;
+        // any generation of this issue's machine counts (-g<lapId> suffixes)
+        const prefix = `pdf-${sanitizeMachinePart(slug)}-i${issue}`;
+        const hit = (await InstaBox.fromEnv(cfg.env.instabox).listMachines()).find(
+          (m) => (m.name ?? "") === prefix || new RegExp(`^${prefix}-g\\d+$`).test(m.name ?? "")
+        );
+        if (hit) machine = ` Its machine ${hit.name} still exists — the janitor reaps it after the row drops.`;
       } catch {}
     }
     return {
@@ -830,7 +834,7 @@ export async function reapOrphanMachines(
   }
   let reaped = 0;
   for (const m of machines) {
-    const hit = /^pdf-(.+)-i(\d+)$/.exec(m.name ?? "");
+    const hit = MACHINE_NAME_RE.exec(m.name ?? "");
     const testHit = /^pdf-(.+)-scen-test$/.exec(m.name ?? "");
     if (!hit && !testHit) continue;
     const slugOf = (hit ?? testHit)![1];

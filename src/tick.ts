@@ -333,8 +333,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       where:
         cfg.env.mode === "instabox"
           ? stage === "plan"
-            ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
-            : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
+            ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
+            : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n, lapId)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
           : cfg.env.mode === "compose"
             ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
             : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
@@ -402,7 +402,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           mode: cfg.env.mode,
           where:
             cfg.env.mode === "instabox"
-              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n)}) is created afterward for implement/review`
+              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
               : cfg.env.mode === "compose"
                 ? `on the factory VPS as plain processes (no container)`
                 : `on the factory VPS as plain processes (no container)`,
@@ -453,7 +453,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     let worktree: string | null = null;
     let implRes: PiStageResult;
     if (cfg.env.mode === "instabox") {
-      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m));
+      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId);
       const machRes = await machine.callStage("implement", {
         models: implModels,
         prompt:

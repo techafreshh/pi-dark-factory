@@ -430,9 +430,24 @@ export async function runScenarioInMachine(
           `host→machine forward for port ${port} died before/during readiness (INFRASTRUCTURE, not the server — machine server.log tail: ${detail})`
         );
       }
+      // loopback canary: the server answering INSIDE the machine while the
+      // host-side poll starved means the tunnel routes to a wrong or dead
+      // backend — mapping roulette, never an app bug (bi-ai-ui 2026-10-26)
+      const canary = await machineBash(
+        conn,
+        `curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${port}${spec.readiness_path ?? "/"} || true`,
+        { timeoutMs: 15000 }
+      );
+      const inBox = (canary.stdout || "").trim();
+      if (/^\d{3}$/.test(inBox) && inBox !== "000") {
+        return mkResults(
+          false,
+          `host→machine mapping black-holed (INFRASTRUCTURE, not the server): the host-side readiness poll never connected, but the in-box loopback answers ${inBox} — the tunnel is routing to a wrong or dead backend. Retry the lap; do NOT repair the product for this. (machine server.log tail: ${detail})`
+        );
+      }
       return mkResults(
         false,
-        `server never became ready within ${opts.readinessSeconds}s (machine server.log tail: ${detail})`
+        `server never became ready within ${opts.readinessSeconds}s — host poll AND in-box loopback both failed; the server itself is down (machine server.log tail: ${detail})`
       );
     }
 

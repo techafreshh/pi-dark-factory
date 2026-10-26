@@ -336,14 +336,19 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
   test("machine-mode lap: implement+review run in a fake instabox machine, gates judge the pushed branch", async () => {
     const w = makeWorld();
 
-    // fake control plane (the instabox API): create → operation → ssh token → delete
+    // fake control plane (the instabox API): create → operation → ssh token → delete.
+    // Name-agnostic — the real plane keys machines by whatever name the
+    // factory sends, and lap machines now carry a -g<lapId> generation suffix.
     const machines: Record<string, any> = {};
     const deleted: string[] = [];
     const server = Bun.serve({
       port: 0,
       fetch: (req) => {
         const p = new URL(req.url).pathname;
-        if (req.method === "GET" && p === "/v1/machines/pdf-toy-i1") {
+        if (req.method === "GET" && p.startsWith("/v1/operations/")) {
+          return Response.json({ id: "op1", state: "succeeded", machine: Object.values(machines)[0] });
+        }
+        if (req.method === "GET" && p.startsWith("/v1/machines/")) {
           return machines[p] ? Response.json(machines[p]) : new Response("none", { status: 404 });
         }
         if (req.method === "POST" && p === "/v1/machines") {
@@ -351,9 +356,6 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
             machines[`/v1/machines/${body.name}`] = { id: "m_1", name: body.name, state: "running" };
             return Response.json({ id: "op1", state: "pending" }, { status: 202 });
           });
-        }
-        if (req.method === "GET" && p.startsWith("/v1/operations/")) {
-          return Response.json({ id: "op1", state: "succeeded", machine: machines["/v1/machines/pdf-toy-i1"] });
         }
         if (req.method === "POST" && p.endsWith("/ssh-tokens")) {
           return Response.json({ id: "cn1", host: "127.0.0.1", port: 2222, token: "ibssh_fake", expiresAt: new Date(Date.now() + 3_600_000).toISOString() });

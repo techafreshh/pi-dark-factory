@@ -63,9 +63,22 @@ export class InstaBoxError extends Error {
   }
 }
 
-export function machineNameFor(slug: string, issue: number): string {
-  return `pdf-${sanitizeMachinePart(slug)}-i${issue}`;
+/** Machine name for an issue's CURRENT lap. `gen` (the ledger lap id) makes
+ *  the name unique per lap generation: a revived issue used to recreate the
+ *  machine under the SAME name while the platform's delete was still
+ *  settling (phantom records are documented), and token routing then
+ *  intermittently landed on the zombie — serving the previous attempt's
+ *  catch-all SPA or black-holing (bi-ai-ui 2026-10-26: mapping roulette).
+ *  Repair rounds WITHIN a lap keep one machine+name; every new lap gets a
+ *  fresh name and can never collide with a not-yet-dead predecessor. */
+export function machineNameFor(slug: string, issue: number, gen?: number): string {
+  const base = `pdf-${sanitizeMachinePart(slug)}-i${issue}`;
+  return gen === undefined ? base : `${base}-g${gen}`;
 }
+
+/** Name-family matcher: pdf-<slug>-i<issue>[-g<gen>] — janitors and guards
+ *  must recognize every generation of a repo's lap machines. */
+export const MACHINE_NAME_RE = /^pdf-(.+)-i(\d+)(?:-g(\d+))?$/;
 
 /** Machine/snapshot-safe name part: [a-z0-9-], reasonably short. */
 export function sanitizeMachinePart(s: string): string {

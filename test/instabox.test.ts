@@ -131,6 +131,10 @@ describe("naming", () => {
     expect(machineNameFor("Toy Product", 3)).toBe("pdf-toy-product-i3");
     expect(machineNameFor("", 1)).toBe("pdf-repo-i1");
   });
+  test("machineNameFor generation suffix — every lap gets a unique name (bi-ai-ui mapping roulette, 2026-10-26)", () => {
+    expect(machineNameFor("bi-ai-ui", 1, 317)).toBe("pdf-bi-ai-ui-i1-g317");
+    expect(machineNameFor("bi-ai-ui", 1, 318)).not.toBe(machineNameFor("bi-ai-ui", 1, 317));
+  });
   test("sanitizeMachinePart caps and cleans", () => {
     expect(sanitizeMachinePart("Weird_Slug!!")).toBe("weird-slug");
   });
