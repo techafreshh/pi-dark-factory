@@ -363,6 +363,15 @@ blocked lap).
   one at a time. Without `$PORT`, a nod to `127.0.0.1:$PORT` fails closed.
 - The harness runs `start` in the foreground and kills it authoritatively
   after probes — write `start` as a single command, never a backgrounded one.
+- **`start` should be a STANDARD server when at all possible** (`node
+  server.js`, `uvicorn …`, `python3 -m http.server $PORT`, a compose service).
+  A bespoke hand-written supervisor is the known source of **ghost servers**:
+  it can bind the socket, truthfully heartbeat "alive", and never accept a
+  connection (bi-ai-ui #1, 2026-10-26 — a missing `serve_forever()` cost a
+  full day disguised as tunnel infra). If the PRD genuinely needs a custom
+  orchestrator as `start`, **always `--test` it before the first lap** — a
+  ghost server is otherwise indistinguishable from a dead one until the
+  kernel evidence shows up in a failed verdict.
 
 **`--test` — the verifier's own test bench (run it before and during laps):**
 
@@ -458,6 +467,22 @@ ledger is confirmed by the merged PR on GitHub (`gh pr view`); a failed lap's
 story is in `status`'s `last_error` plus `logs`. When a provider hit
 `provider_error`, note which models were tried before proposing unblock.
 
+### When the factory gives up, it fails loudly (the stuck summary)
+
+The moment auto-revive stops on an issue — same failure signature on
+consecutive rounds (the wheel is spinning) or the daily cap — the factory
+posts a **FAILURE SUMMARY comment on the GitHub issue itself** (once per
+issue per day): the distinct failure signatures, the latest verdict **with
+its full evidence** (probe outputs, in-box socket state), forensics pointers
+(`status --repo`, `session --issue`, `logs --repo`, `scenario --test`), and
+classification hints that separate INFRASTRUCTURE markers from
+verifier-owned (`setup`/`readiness`/scenario gates — the implementer cannot
+see or fix those) from genuine app failures. A stall discovered from
+silence is how a 12-hour debugging saga starts; this comment is the factory
+handing you the case file the moment it stops. When you see one: read the
+verdict, follow the hint that matches, fix, and let the epoch bump
+(scenario/config write) or `unblock` resume it.
+
 ### Reading shared surfaces (the factory is multi-tenant)
 
 - **`claimable chain` in status**: N = N issues claimable right now (GitHub
@@ -491,7 +516,8 @@ Read the `last_error` / receipt, find its row, act.
 | `machine … never reached running (state: suspended)` | platform auto-suspend of an idle box; the factory resumes it on the next attempt | nothing — self-healing. Flag only if it repeats every single lap |
 | `machine gate failed (git push of factory/issue-N failed): non-fast-forward` | FOSSIL BRANCH: the lap was chained after an unmerged sibling whose branch never merged — after the sibling squash-merged elsewhere, the remote `factory/issue-N` diverged and every fresh push was rejected (tic-tac-toe #11, 2026-10-24; three identical failures burned the whole attempt budget) | FIXED at the source: the gate force-pushes `factory/issue-*` (factory-owned branches — the machine clone is the worktree of record), so this signature should not recur. If you ever see it again, `unblock <slug> <n> --prune` kills the fossil branch |
 | `machine gate failed (git push …) … could not read from remote` (credentials, not non-FF) | GitHub credentials didn't reach the box (fixed 2026-10-24: the lane resolves `GH_TOKEN`→`GITHUB_TOKEN` and the bootstrap sources the machine env before cloning) | should not recur; if it does, check `factoryd.env` carries the token |
-| `host→machine forward for port N failed to establish` or `died before/during readiness (INFRASTRUCTURE…)` | the ssh -L tunnel through the gateway never bound or dropped mid-run — mapping infra, NEVER the product. (bi-ai-ui #1, 2026-10-25: 5 of 6 attempts black-holed "server never became ready" while the in-box server was demonstrably healthy; the forward idled through the long setup and died. The forward now starts AFTER setup with keepalives, and a dead tunnel reports itself instead of blaming the server.) | nothing repo-side — a retry clears it (auto-revive handles this); if it repeats every single attempt, check VPS-side for a port squatter: `ss -tlnp \| grep <port>` |
+| `channel 0: open failed: connect failed: machine unreachable` (exit 255) during a machine stage or scenario setup | a transient ssh/gateway hiccup — one blip self-heals on the repair ladder's next attempt. Note: machine-mode scenarios no longer use ssh -L forwards AT ALL (readiness and probes run in the box over the exec channel — the bi-ai-ui saga removed that entire failure family) | nothing on a single occurrence; if it repeats every attempt, the machine or snapshot is sick — check the plane via status/cleanup |
+| readiness fails with `In-box socket state: LISTEN <Recv-Q> <backlog> …` and a **full Recv-Q** (Recv-Q ≈ backlog limit) | **GHOST SERVER — the start command binds the socket but never accepts a connection.** Classic source: a hand-written supervisor in the scenario's `start` that forgets `serve_forever()` — its heartbeat can truthfully log "alive" while no request is ever accepted (bi-ai-ui #1, 2026-10-26: `LISTEN 6 5` — backlog 5, six pending — for hours; the product behind it was healthy the whole time). The verdict text carries the kernel evidence verbatim | the `start` command is SCENARIO-OWNED — the implementer cannot fix it. Fix the script (add the serve/accept loop), `--lint`, `--test` (zero tokens), write — the epoch bump revives the issue next tick. When authoring any bespoke `start`, ALWAYS `--test` before the first lap |
 | `review verdict unparseable after 5 re-asks — failing closed` (REJECT; the reviewer's raw output is embedded in findings, ~1500 chars) | the reviewer's generation dies mid-sentence — payload-correlated truncation on flash-tier models, probabilistic per lap (tic-tac-toe #11/#15/#16, 2026-10-25). It is NOT a product judgement: the verify stage's gates already passed | read the stage row in `status` — tok in/out is recorded even for failed stages now, telling river-death (tokens stop) from output-cap (tokens at a ceiling); inspect the PR + `session <slug> --issue N`. If the work is genuinely good, take the human-review path: verify on GitHub yourself, squash-merge the PR, `unblock <slug> <n> --prune` to tidy (ledger consequence: the row is dropped — GitHub becomes the only record of the merge). A plain re-lap often recovers on its own; only escalate if the same lap fails this way twice |
 | `[runtime] server never became ready within 120s` | scenario `start` command / `readiness_path` mismatch, or the implementer's server exits or binds wrong — the repair loop usually chews through real bugs | watch one repair round before touching the scenario or `timeouts.readiness_seconds` |
 | `seed-repaired` in `logs` | the mounted Node 22 vanished host-side AGAIN (twice on 2026-10-23, actor never attributed; the sweep re-copies it and receipts the event) | note the timestamp — these mark recurrence windows |

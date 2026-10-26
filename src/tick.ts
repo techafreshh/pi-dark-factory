@@ -8,7 +8,7 @@ import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir 
 import { machineNameFor } from "./instabox";
 import { openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
-import { blockedComment, mergedComment, needsContextComment, noActionComment } from "./notify";
+import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify } from "./stages/verify";
@@ -659,7 +659,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   // revive BEFORE reconcile: past ticks' blocked rows get their fresh budget
   // first; a crash-blocked row from THIS tick's reconcile stays blocked until
   // the next explicit tick (conservative — a crash deserves a human look)
-  autoReviveBlocked(cfg, stateDir, deps.ledger);
+  await autoReviveBlocked(cfg, stateDir, deps.ledger, deps.gh);
   await prepareRepo(cfg, stateDir, deps);
   const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
   if (claimable.length === 0) {
@@ -686,9 +686,9 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
 const AUTO_REVIVE_DAILY_CAP = 3;
 const STAGNATION_SAME = 2;
 
-export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger): void {
+export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger, gh?: GhApi): Promise<void> {
   const file = join(stateDir, "repos", cfg.slug, "revives.json");
-  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]>; epoch?: number } = {
+  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]>; epoch?: number; summarized?: Record<string, string> } = {
     day: "", counts: {}, sigs: {},
   };
   try {
@@ -700,6 +700,21 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
   const day = new Date().toISOString().slice(0, 10);
   if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {}, epoch: rs.epoch };
 
+  // LOUD failure summary — once per issue per day, posted where a human
+  // lives (the GitHub issue): distinct signatures, the latest verdict uncut,
+  // forensics pointers, and infra/verifier/app classification hints. A
+  // stall discovered through silence is how a 12-hour debugging saga starts
+  // (bi-ai-ui 2026-10-25/26).
+  const postSummary = async (issue: number, reason: "stagnation" | "daily-cap", sigs: string[], lastError: string | null, rounds: number) => {
+    if (!gh) return;
+    if (rs.summarized?.[String(issue)] === day) return;
+    rs.summarized ??= {};
+    rs.summarized[String(issue)] = day;
+    try {
+      await gh.issueComment(issue, stuckSummaryComment(cfg, issue, reason, sigs, lastError ?? "", rounds));
+    } catch {}
+  };
+
   for (const row of ledger.listIssues(cfg.repo)) {
     if (row.state !== "blocked") continue;
     const sig = (row.last_error ?? "unknown failure").replace(/\s+/g, " ").trim().slice(0, 140);
@@ -710,6 +725,7 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
         stateDir,
         `NOT auto-reviving #${row.issue_number} — same failure signature ${sigs.length + 1} blocked rounds in a row, the wheel is spinning: human review required (${sig.slice(0, 100)})`
       );
+      await postSummary(row.issue_number, "stagnation", sigs, row.last_error, rs.counts[String(row.issue_number)] ?? 0);
       continue;
     }
     const used = rs.counts[String(row.issue_number)] ?? 0;
@@ -719,6 +735,7 @@ export function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Led
         stateDir,
         `NOT auto-reviving #${row.issue_number} — auto-revive daily cap (${AUTO_REVIVE_DAILY_CAP}) reached; human review required (last blocker: ${sig.slice(0, 100)})`
       );
+      await postSummary(row.issue_number, "daily-cap", sigs, row.last_error, used);
       continue;
     }
     rs.counts[String(row.issue_number)] = used + 1;
@@ -894,7 +911,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
         try {
           const deps: TickDeps = { ledger, gh: new Gh(cfg.repo), callStage: makeCallStage(cfg, opts.stateDir) };
           // revive before prepareRepo/reconcile — see tickRepo's ordering note
-          autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
+          await autoReviveBlocked(cfg, opts.stateDir, deps.ledger, deps.gh);
           await prepareRepo(cfg, opts.stateDir, deps);
           const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
           // Chained laps: a merge (or block/idle) re-intakes immediately, so one
@@ -932,7 +949,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
               revivedInTick = true;
               repoReceipt(cfg.slug, opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
               await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
-              autoReviveBlocked(cfg, opts.stateDir, deps.ledger);
+              await autoReviveBlocked(cfg, opts.stateDir, deps.ledger, deps.gh);
               next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
             }
             issue = next[0];
