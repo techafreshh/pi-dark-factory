@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { opsGetConfig, opsLogs, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
+import { opsGetConfig, opsLogs, opsModels, opsPause, opsScenarioLint, opsScenarioSet, opsSetConfig, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
 import { Ledger } from "../src/ledger";
 import { receipt } from "../src/receipts";
 import { execSync } from "node:child_process";
@@ -100,6 +100,90 @@ describe("ops core (shared by foreman CLI and factoryd)", () => {
     const unknown = await opsStatus(state, "no-such-repo");
     expect(unknown.issues).toEqual([]);
   }, 30000);
+});
+
+describe("opsModels + roster validation (live model discovery — no hardcoded rosters)", () => {
+  const realHome = process.env.HOME;
+  const fakeHome = mkdtempSync(join(tmpdir(), "pdfroster-"));
+  const seedRoster = () => {
+    mkdirSync(join(fakeHome, ".pi", "agent"), { recursive: true });
+    writeFileSync(
+      join(fakeHome, ".pi", "agent", "models.json"),
+      JSON.stringify({
+        providers: {
+          river: {
+            apiKey: "SECRETRIVERKEY", api: "openai-completions", baseUrl: "https://api.river.ai/v1",
+            models: [{ id: "glm-flash", reasoning: true, contextWindow: 131072, maxTokens: 65536 }],
+          },
+          meta: {
+            apiKey: "SECRETMETAKEY", api: "openai-responses", baseUrl: "https://api.meta.ai/v1",
+            models: [{ id: "muse-1", reasoning: true, contextWindow: 1048576, maxTokens: 131072,
+              thinkingLevelMap: { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: null } }],
+          },
+        },
+      })
+    );
+  };
+  const withRoster = async <T>(fn: () => Promise<T> | T): Promise<T> => {
+    seedRoster();
+    process.env.HOME = fakeHome;
+    try {
+      // await the callback THROUGH: a synchronous finally would restore HOME
+      // before an async body's second write runs
+      return await fn();
+    } finally {
+      process.env.HOME = realHome;
+    }
+  };
+
+  test("opsModels derives the roster from the live models.json and never leaks keys", () =>
+    withRoster(() => {
+      const r = opsModels();
+      const s = JSON.stringify(r);
+      expect(s).not.toContain("SECRETRIVERKEY");
+      expect(s).not.toContain("SECRETMETAKEY");
+      expect(s).not.toContain("apiKey");
+      const meta = r.providers.find((p) => p.name === "meta")!;
+      expect(meta.api).toBe("openai-responses");
+      expect(meta.models[0].thinking.supported).toEqual(["minimal", "low", "medium", "high", "xhigh"]);
+      expect(meta.models[0].thinking.unsupported).toEqual(["off", "max"]);
+      const river = r.providers.find((p) => p.name === "river")!;
+      expect(river.models[0].thinking).toBeUndefined(); // no map = provider default levels
+    }));
+
+  test("a config write REJECTS a thinking level the model maps to null (meta+max would run with no reasoning)", () =>
+    withRoster(async () => {
+      seedConfig();
+      await expect(
+        opsSetConfig(state, "demo", { models: { implement: { provider: "meta", model: "muse-1", thinking: "max" } } })
+      ).rejects.toThrow(/not a supported level[\s\S]*NO reasoning[\s\S]*minimal,low,medium,high,xhigh/);
+    }));
+
+  test("a config write REJECTS an unknown provider, naming the live roster", () =>
+    withRoster(async () => {
+      seedConfig();
+      await expect(
+        opsSetConfig(state, "demo", { models: { default: { provider: "anthropic", model: "claude" } } })
+      ).rejects.toThrow(/provider "anthropic" is not in the factory's models\.json[\s\S]*river, meta/);
+    }));
+
+  test("a config write WARNS on an unlisted model id under a known provider but accepts it", () =>
+    withRoster(async () => {
+      seedConfig();
+      const r = await opsSetConfig(state, "demo", { models: { default: { provider: "river", model: "glm-ultra" } } });
+      expect(r.warnings.some((w: string) => w.includes("not listed under provider"))).toBe(true);
+      expect(r.config.models.default.model).toBe("glm-ultra");
+    }));
+
+  test("fallback strings get the same checks — meta/muse-1:max rejects, meta/muse-1:xhigh is clean", () =>
+    withRoster(async () => {
+      seedConfig();
+      await expect(
+        opsSetConfig(state, "demo", { models: { review: { provider: "meta", model: "muse-1", thinking: "high", fallback: ["meta/muse-1:max"] } } })
+      ).rejects.toThrow(/review\.fallback[\s\S]*not a supported level/);
+      const good = await opsSetConfig(state, "demo", { models: { review: { provider: "meta", model: "muse-1", thinking: "high", fallback: ["meta/muse-1:xhigh", "river/glm-flash:high"] } } });
+      expect(good.warnings).toEqual([]);
+    }));
 });
 
 describe("opsGetConfig (the read verb)", () => {

@@ -133,12 +133,32 @@ stored broken or rejected one field at a time, costing ~6 attempts:**
   every `models.*` renders as an object with a `provider`.
 - A `{}` patch **silently writes and echoes defaults**; don't use it to probe.
 
+**Discover the model lineup FIRST — never assume one.** The factory's
+provider catalog is its `~/.pi/agent/models.json` (the same file every lap
+routes through — it cannot drift from reality), and the roster is one
+command:
+
+```bash
+factory-remote models
+```
+
+That prints every live provider, each model id, reasoning, context window,
+and — the trap column — **which thinking levels each model actually
+supports** (`NOT: …` lists levels the model's map sends to null; a config
+at such a level rejects at write time with the supported list, because the
+lap would otherwise run with no reasoning). Pick the lineup with the user
+from THAT output, not from memory or from this skill's examples. The
+**config write validates against the same roster**: unknown providers
+reject, unsupported thinking levels reject, model ids the factory has never
+run warn.
+
 **The canonical config skeletons ship in `templates/` in this skill's
-folder** — `config.skeleton.json` (river → clinepass → deepseek tiers,
-per-stage thinking, compose mode) and `config.skeleton.instabox.json`
-(same tiers, `env.mode: "instabox"` with the `factory-base-r2` snapshot).
-Read the one matching your env.mode choice, fill the provider/model +
-env fields, then:
+folder** — `config.skeleton.json` and `config.skeleton.instabox.json`
+(`env.mode: "instabox"` with the `factory-base-r2` snapshot). They are
+SHAPE references (field nesting, per-stage thinking, fallback strings) with
+one example lineup — swap the provider/model entries for whatever
+`factory-remote models` showed and the user approved. Fill the
+provider/model + env fields, then:
 
 ```bash
 factory-remote config <slug> --json "$(cat .agents/skills/pi-factory/templates/config.skeleton.json | python3 -c 'import json,sys;d=json.load(sys.stdin);d.pop("_readme",None);print(json.dumps(d))')"
@@ -653,6 +673,7 @@ All verbs run from any directory (creds are read from env or
 |---|---|---|
 | `health` | `GET /health` — connectivity + version | open endpoint, no key |
 | `doctor` | handshake + auth + list onboarded repos | run this when anything "doesn't work" |
+| `models` | **the LIVE provider roster** — every provider, model id, reasoning, context window, supported/unsupported thinking levels (keys never leave the VPS) | model discovery: run this at Stage 2 and pick the lineup with the user; config writes validate against this same roster (unknown providers and unsupported thinking levels reject, never-run model ids warn) |
 | `status [--repo SLUG] [--raw]` | ledger rows, laps, recent stages, chain depth, worktrees | `--repo` scopes EVERYTHING to that repo (ledger rows included) — unknown slug answers empty; `--raw` dumps the JSON payload |
 | `logs [--repo SLUG] [--tail N]` | last N lines of `laps.log` (the receipt spine: every lap/attempt/gate event with timestamps) | lines carry `[slug]` tags; `--repo` filters on them — no multi-tenant flood; 200 lines default |
 | `session SLUG [--follow] [--think] [--issue N]` | human-readable view of the agent's pi session | `--follow` streams live (`▶ tool: cmd`, `⎸ result`, `⋯ thinking (N chars)`, `✔ FINAL`); `--think` adds reasoning text; one-shot without `--follow` plays the whole session back |

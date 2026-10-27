@@ -5,9 +5,9 @@
  */
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRepoConfig, resolveModels } from "./config";
+import { loadRepoConfig, parseModelString, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
@@ -662,6 +662,107 @@ function deepMerge(base: any, patch: any): any {
   return out;
 }
 
+/** models.json location: the factory user's ~/.pi/agent/models.json — the
+ * same file machine.ts ships into every lap. HOME-resolved (not the cached
+ * os.homedir(), which bun pins at process start) so the roster path follows
+ * the environment everywhere. */
+function modelsJsonPath(): string {
+  return join(process.env.HOME ?? homedir(), ".pi", "agent", "models.json");
+}
+
+/** The factory's live provider catalog — the same models.json the machine
+ * lane ships into every lap, so it cannot drift
+ * from what pi actually routes through. Model discovery for remote agents:
+ * never hardcode a roster in the skill, read it here. Keys never leave the
+ * VPS: apiKey fields are stripped before this shape exists. */
+export function opsModels() {
+  const path = modelsJsonPath();
+  if (!existsSync(path))
+    return { providers: [], note: "no ~/.pi/agent/models.json — no providers provisioned on this factory" };
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  const providers = Object.entries(raw.providers ?? {}).map(([name, p]: [string, any]) => ({
+    name,
+    api: p.api,
+    baseUrl: p.baseUrl,
+    models: (p.models ?? []).map((m: any) => {
+      const map = m.thinkingLevelMap as Record<string, unknown> | undefined;
+      return {
+        id: m.id,
+        reasoning: m.reasoning === true,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        ...(map
+          ? {
+              thinking: {
+                supported: Object.entries(map).filter(([, v]) => v !== null).map(([k]) => k),
+                unsupported: Object.entries(map).filter(([, v]) => v === null).map(([k]) => k),
+              },
+            }
+          : {}),
+      };
+    }),
+  }));
+  return { providers };
+}
+
+/** Roster validation for a models patch: definitive failures reject (an
+ * unknown provider can never route — pi resolves providers through
+ * models.json; a thinking level the model's map sends to null silently
+ * runs with no reasoning), advisory gaps warn (a model id not listed under
+ * a known provider may still be valid if the upstream accepts it). */
+function modelRosterChecks(patch: any): { warnings: string[]; rosterMissing: boolean } {
+  const warnings: string[] = [];
+  const path = modelsJsonPath();
+  if (!existsSync(path)) return { warnings, rosterMissing: true };
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  const providers: Record<string, any> = raw.providers ?? {};
+
+  const check = (provider: string | undefined, model: string | undefined, thinking: string | undefined, where: string) => {
+    if (!provider || !model) return;
+    const p = providers[provider];
+    if (!p)
+      throw new Error(
+        `models.${where}: provider "${provider}" is not in the factory's models.json (live roster: ${Object.keys(providers).join(", ")}) — pi routes providers through that file, so this can only fail at lap time`
+      );
+    const entry = (p.models ?? []).find((m: any) => m.id === model);
+    if (!entry) {
+      warnings.push(
+        `models.${where}: model "${model}" is not listed under provider "${provider}" in the factory's roster — it may still work if the upstream accepts it, but nothing on this factory has run it (verify with one smoke lap)`
+      );
+      return;
+    }
+    if (thinking && entry.thinkingLevelMap) {
+      const mapped = (entry.thinkingLevelMap as Record<string, unknown>)[thinking];
+      if (mapped === null || mapped === undefined)
+        throw new Error(
+          `models.${where}: thinking "${thinking}" is not a supported level for ${provider}/${model}` +
+            (mapped === null
+              ? ` (the model's map sends it to null — laps would run with NO reasoning; supported: ${Object.entries(entry.thinkingLevelMap)
+                .filter(([, v]) => v !== null)
+                .map(([k]) => k)
+                .join(",")})`
+              : "")
+        );
+    }
+  };
+
+  for (const [stage, entry] of Object.entries<any>(patch.models ?? {})) {
+    if (entry && typeof entry === "object" && !Array.isArray(entry))
+      check(entry.provider, entry.model, entry.thinking, stage);
+    for (const f of entry?.fallback ?? []) {
+      let spec: ReturnType<typeof parseModelString>;
+      try {
+        spec = parseModelString(f);
+      } catch {
+        continue; // malformed fallback strings already reject in the shape checks
+      }
+      // NOT inside the try: a roster rejection here must propagate
+      check(spec.provider, spec.model, spec.thinking, `${stage}.fallback`);
+    }
+  }
+  return { warnings, rosterMissing: false };
+}
+
 /** Remote wizard support: deep-merge a patch into an onboarded repo's
  *  config.json. Keys outside the allowlist are refused — the patch may set
  *  models/env/merge knobs but never touches repo identity, scenario ports,
@@ -703,6 +804,11 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
       }
     }
   }
+  // roster-validate models against the factory's LIVE models.json (the same
+  // file the machine lane ships): unknown providers and unsupported thinking
+  // levels reject (both can only fail at lap time); unlisted model ids warn
+  const { warnings: rosterWarnings, rosterMissing } =
+    patch.models && typeof patch.models === "object" ? modelRosterChecks(patch) : { warnings: [], rosterMissing: false };
   const path = join(repoCfgDir(stateDir, slug), "config.json");
   if (!existsSync(path)) throw new Error("repo " + slug + " is not onboarded");
   const merged = deepMerge(JSON.parse(readFileSync(path, "utf8")), patch);
@@ -711,7 +817,14 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   // config writes (models, env, timeouts) change lap inputs — blocked
   // issues get a fresh revive budget, same as scenario writes
   bumpInputsEpoch(stateDir, slug);
-  return { config_path: path, config: merged };
+  return {
+    config_path: path,
+    config: merged,
+    warnings: [
+      ...rosterWarnings,
+      ...(rosterMissing ? ["models roster unavailable (~/.pi/agent/models.json not found) — roster checks skipped"] : []),
+    ],
+  };
 }
 
 /** Read verb the config gate always needed: the EFFECTIVE config, not an

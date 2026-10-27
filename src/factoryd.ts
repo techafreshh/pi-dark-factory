@@ -8,7 +8,7 @@
  * can never double-run a lap.
  */
 import { statSync } from "node:fs";
-import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsOnboard, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
   newRenderState,
@@ -149,6 +149,12 @@ export function startFactoryd(opts: FactorydOpts) {
         if (req.method === "GET" && tickEnd === undefined && path.endsWith("/scenario")) {
           const kind = url.searchParams.get("kind") === "holdout" ? "holdout" : "runtime";
           return respond(opsGetScenario(opts.stateDir, slug, kind));
+        }
+        if (req.method === "GET" && path === "/models") {
+          // the LIVE provider roster (factory's ~/.pi/agent/models.json,
+          // keys stripped) — model discovery for remote agents; the config
+          // write path validates against this same file
+          return respond(opsModels());
         }
         if (req.method === "POST" && path === "/repos") {
           return respond(await opsOnboard(opts.stateDir, String((await readJson(req)).repo ?? "")));

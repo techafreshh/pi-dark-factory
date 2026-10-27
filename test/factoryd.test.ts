@@ -62,6 +62,14 @@ describe("factoryd (remote-control API)", () => {
     expect(body.queued).toBe(true);
   });
 
+  test("models serves the live provider roster without keys", async () => {
+    const r = await fetch(base + "models", { headers: { "x-api-key": "test-key" } });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as any;
+    expect(Array.isArray(body.providers)).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("apiKey"); // keys never leave the VPS
+  });
+
   test("pause/unpause write and clear the wheel flag", async () => {
     mkdirSync(join(dir, "repos", "demo"), { recursive: true });
     writeFileSync(

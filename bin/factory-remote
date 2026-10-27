@@ -7,6 +7,8 @@ Env:
 
 Verbs (mirror the foreman CLI):
   health                                  open endpoint — connectivity check
+  models                                  the LIVE provider roster (models.json, keys stripped)
+                                          — model discovery; config writes validate against it
   status [--repo SLUG] [--raw]            ledger, laps, stages, chain depth
   logs  [--repo SLUG] [--tail N]          laps.log tail (the audit spine)
   session SLUG [--follow] [--think]       human-readable pi session view
@@ -296,6 +298,26 @@ def cmd_tick(a):
     print(f"lap dispatched for {body['slug']} — follow with: factory-remote status --repo {a.slug} (or logs)")
 
 
+def cmd_models(_a):
+    code, body = _api("GET", "/models", timeout=TIMEOUT_FAST)
+    providers = body.get("providers") or []
+    if not providers:
+        print(body.get("note") or "no providers configured")
+        return
+    for p in providers:
+        print(f"{p['name']} — {p.get('api')} · {p.get('baseUrl')}")
+        for m in p.get("models") or []:
+            think = m.get("thinking")
+            if think:
+                t = f" · thinking: {','.join(think['supported'])}"
+                if think.get("unsupported"):
+                    t += f" (NOT: {','.join(think['unsupported'])})"
+            else:
+                t = " · thinking: provider default"
+            print(f"  {m['id']} — reasoning={'yes' if m.get('reasoning') else 'no'} · ctx={m.get('contextWindow')}{t}")
+    print("\n(config writes validate against this roster: unknown providers and unsupported thinking levels reject)")
+
+
 def cmd_pause(a):
     code, body = _api("POST", f"/repos/{a.slug}/pause", {}, timeout=TIMEOUT_FAST)
     print(f"{a.slug} PAUSED — ticks skip it (an in-flight lap finishes); factory-remote unpause {a.slug} to resume")
@@ -342,6 +364,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health")
     sub.add_parser("doctor")
+    sub.add_parser("models")
     sp = sub.add_parser("status"); sp.add_argument("--repo"); sp.add_argument("--raw", action="store_true")
     sp = sub.add_parser("logs"); sp.add_argument("--repo"); sp.add_argument("--tail", type=int, default=200)
     sp = sub.add_parser("session"); sp.add_argument("slug"); sp.add_argument("--follow", "-f", action="store_true")
@@ -367,6 +390,7 @@ def main():
     table = {
         "health": cmd_health, "doctor": cmd_doctor, "status": cmd_status, "logs": cmd_logs,
         "session": cmd_session, "config": cmd_config, "onboard": cmd_onboard, "scenario": cmd_scenario,
+        "models": cmd_models,
         "backlog": cmd_backlog, "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
         "pause": cmd_pause, "unpause": cmd_unpause,
     }
