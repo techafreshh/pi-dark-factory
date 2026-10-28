@@ -31,7 +31,8 @@ provisioned for the factory user (provider auth, custom `models.json` entries,
 packages/extensions) with every `provider/model:thinking` string smoke-tested;
 if InstaBox machine mode was chosen, `INSTABOX_API_KEY` is in the service env
 and `/v1/me` + `/v1/usage` prove the account (machines/snapshots/storage
-quota); optionally a first smoke lap ran its gates;
+quota); if the TinyFish key was chosen, the 5g web-grounding smoke returned
+`COUNT=<n>`; optionally a first smoke lap ran its gates;
 the user's laptop can `doctor` in over HTTPS.
 
 ## Operating rules
@@ -102,6 +103,12 @@ plain "just set it up"):
    API. Per-repo golden snapshots are built later at first-project time
    (`foreman bake <slug>` — Phase 7). Docker is NOT needed for instabox-only
    repos.
+9. **TinyFish web grounding** (default: on) — lap agents get `web_search` +
+   `web_fetch` tools (read-only, from the repo's bundled
+   `pi-extensions/pdf-tinyfish.ts` extension). Needs a `TINYFISH_API_KEY`
+   (agent.tinyfish.ai/api-keys) in `factoryd.env` (Phase 5a) and a live
+   `web_search` smoke call (Phase 4 smoke step). If the user skips the key,
+   the factory still works — stages just run without web grounding.
 9. **Smoke lap after install?** (recommended; spends a few cents of tokens on
    a toy repo) — vs. going straight to a real project via the `pi-factory`
    wizard.
@@ -272,7 +279,9 @@ both removes the whole mismatch class; it cost todos-api a full day,
 2026-10-23→24) — and `INSTABOX_API_KEY=…` if Phase 0 machine mode was chosen
 (secrets never echo into the transcript — pass them straight into the
 heredoc from the place the user handed them over).
-`chown factory: /home/factory/factoryd.env`, `chmod 600`.
+`chown factory: /home/factory/factoryd.env`, `chmod 600`. If Phase 0
+web-grounding was chosen, **also write `TINYFISH_API_KEY=…`** here (same
+no-echo rule).
 
 **5b. Units** — write `/etc/systemd/system/pi-factory.service`:
 
@@ -388,6 +397,23 @@ sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
 10 snapshots, 200 GiB) — that machine quota is the instabox-mode counterpart
 of `--concurrency`, worth telling the user verbatim. A 401/failed curl here
 fails the phase: fix the key before any machine-mode repo is onboarded.
+
+**5g. Web-grounding smoke** (only if the Phase 0 TinyFish key was set). One
+live `web_search` through the bundled extension proves key + extension +
+tool routing together:
+
+```sh
+sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
+  cd /home/factory/pi-dark-factory && \
+  pi --mode json --no-session --tools read,web_search,web_fetch \
+     --extension pi-extensions/pdf-tinyfish.ts \
+     -p "Call web_search with query \"tinyfish api\" and reply COUNT=<n> only."' \
+  | grep -o 'COUNT=[0-9]*'
+```
+
+`COUNT=<n>` with n ≥ 1 passes the phase; a missing tools section or
+`isError` on the tool result fails it — check the key first, then that
+`pi-extensions/pdf-tinyfish.ts` is readable as the factory user.
 
 ## Phase 6 — Caddy block (if remote control + domain)
 

@@ -187,6 +187,7 @@ export async function opsOnboard(
       tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
       plan_tools: ["read", "bash", "grep", "find", "ls"],
       extra_args: [] as string[],
+      web: { search: true, fetch: true },
     },
   };
   mkdirSync(repoCfgDir(stateDir, slug), { recursive: true });

@@ -28,6 +28,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
 import { InstaBox, machineNameFor, type InstaMachine, type InstaSshToken } from "./instabox";
 import type { ModelSpec, RepoConfig, StageModels } from "./types";
+import { extensionFiles, webToggle } from "./webtools";
 import { branchName } from "./stages/intake";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -99,7 +100,8 @@ const STAGE_BOOTSTRAP_REMOTE =
  * branches with racing commits) would otherwise reject every fresh
  * machine's non-fast-forward push and wedge the issue's whole repair ladder.
  */
-const STAGE_DRIVER = [
+/** exported for tests: the static in-box stage script (env arrives via PDFENV) */
+export const STAGE_DRIVER = [
   `set -u`,
   `read -r L_ENV || exit 90`,
   `read -r L_ARGS || exit 90`,
@@ -115,6 +117,10 @@ const STAGE_DRIVER = [
   `AD="$HOME/.pi/agent"; mkdir -p "$AD"`,
   `[ -n "\${PDF_PI_AUTH_B64:-}" ] && printf %s "$PDF_PI_AUTH_B64" | base64 -d > "$AD/auth.json" || true`,
   `[ -n "\${PDF_PI_MODELS_B64:-}" ] && printf %s "$PDF_PI_MODELS_B64" | base64 -d > "$AD/models.json" || true`,
+  // web-grounding extension: materialized into pi's auto-discovery dir so
+  // the stage's pi gets web_search/web_fetch (the --tools allowlist decides
+  // whether the stage actually sees them)
+  `if [ -n "\${PDF_PI_EXT_MAIN_B64:-}" ] && [ -n "\${PDF_PI_EXT_LIB_B64:-}" ]; then mkdir -p "$AD/extensions"; printf %s "$PDF_PI_EXT_MAIN_B64" | base64 -d > "$AD/extensions/pdf-tinyfish.ts"; printf %s "$PDF_PI_EXT_LIB_B64" | base64 -d > "$AD/extensions/pdf-tinyfish-client.ts"; fi`,
   `cd "$REPO_DIR" || { echo "PDFRC=94" >&2; echo "cd $REPO_DIR failed" >&2; exit 94; }`,
   `mapfile -d '' PI_ARGS < "$D/args.bin"`,
   `"$PI_BIN" "\${PI_ARGS[@]}" < "$D/prompt.md" > "$D/pi.jsonl" 2> "$D/pi.err"`,
@@ -177,6 +183,16 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
       const p = join(homedir(), ".pi", "agent", file);
       if (existsSync(p)) lines.push(`export ${name}=${escapeSh(readFileSync(p).toString("base64"))}`);
     } catch {}
+  }
+  // web-grounding tools ride the same channel: the pi extension pair is
+  // embedded base64 (when the repo wants web tools and the checkout carries
+  // them) and materialized into $AD/extensions/ — no snapshot re-bake, the
+  // box always gets the current extension on its next stage
+  const wt = webToggle(cfg);
+  if (wt.search || wt.fetch) {
+    for (const { name, b64 } of extensionFiles()) {
+      lines.push(`export ${name === "pdf-tinyfish.ts" ? "PDF_PI_EXT_MAIN_B64" : "PDF_PI_EXT_LIB_B64"}=${escapeSh(b64)}`);
+    }
   }
   return lines.join("\n") + "\n";
 }

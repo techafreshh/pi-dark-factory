@@ -1,11 +1,22 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { evalExpects, parseMaxMs, portBusy, runScenario, runScenarioInMachine, type ScenarioSpec } from "../src/scenario";
+import { killTree } from "../src/sh";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const scratchRoot = mkdtempSync(join(tmpdir(), "pdfscn-"));
 afterAll(() => rmSync(scratchRoot, { recursive: true, force: true }));
+
+/** wait for a spawned hog process to actually hold its port */
+async function hogListen(port: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await portBusy(port)) return;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  throw new Error(`hog never bound port ${port}`);
+}
 
 describe("evalExpects (probe language)", () => {
   test("status compares the last stdout line", () => {
@@ -130,22 +141,79 @@ describe("runScenario (real harness, python3 http server)", () => {
     expect(await portBusy(port)).toBe(false);
   }, 30000);
 
-  test("busy port fails the scenario without running probes", async () => {
-    const hog = Bun.serve({ port: 0, fetch: () => new Response("x") });
+  // Both hog tests spawn their listener OUTSIDE the test process: the
+  // harness's stray-port reclaim (fuser -k) kills socket owners by pid, so an
+  // in-process Bun.serve hog would make the reclaim SIGKILL the test runner
+  // itself (the old in-process hog test died exactly that way, exit 137).
+
+  test("a reclaimable stray on the port is killed and the scenario still runs", async () => {
+    const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = probeServer.port;
+    probeServer.stop(true);
+    const hog = Bun.spawn(["python3", "-m", "http.server", String(port), "--bind", "127.0.0.1"], {
+      cwd: scratchRoot,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await hogListen(port);
+    const spec: ScenarioSpec = {
+      name: "reclaim-test",
+      port,
+      start: "python3 -m http.server $PORT --bind 127.0.0.1",
+      readiness_path: "/",
+      probes: [
+        {
+          id: "root-200",
+          description: "root answers 200",
+          command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/",
+          expect: "status:200",
+        },
+      ],
+    };
+    try {
+      const result = await runScenario(spec, join(scratchRoot, "reclaim"), {
+        readinessSeconds: 15,
+        defaultProbeMs: 5000,
+      });
+      // the reclaim fuser -k'd the stray, so the scenario's own server took the port
+      expect(result.pass).toBe(true);
+      expect(result.results[0].pass).toBe(true);
+      expect(hog.exitCode !== null || hog.signalCode !== null).toBe(true);
+    } finally {
+      try { hog.kill(9); } catch {}
+    }
+  }, 30000);
+
+  test("an unreclaimable listener fails the scenario without running probes", async () => {
+    const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = probeServer.port;
+    probeServer.stop(true);
+    // a supervisor that respawns the server after every kill: the closest
+    // thing to a foreign process the reclaim cannot put down
+    const hog = Bun.spawn(
+      ["setsid", "bash", "-c", `while true; do python3 -m http.server ${port} --bind 127.0.0.1 2>/dev/null; sleep 0.1; done`],
+      { cwd: scratchRoot, stdout: "ignore", stderr: "ignore" }
+    );
+    await hogListen(port);
     const spec: ScenarioSpec = {
       name: "busy-test",
-      port: hog.port,
+      port,
       start: "python3 -m http.server $PORT --bind 127.0.0.1",
       probes: [{ id: "p", description: "x", command: "echo 200", expect: "status:200" }],
     };
-    const result = await runScenario(spec, join(scratchRoot, "busy"), {
-      readinessSeconds: 5,
-      defaultProbeMs: 2000,
-    });
-    expect(result.pass).toBe(false);
-    expect(result.error).toContain("busy");
-    hog.stop(true);
-  });
+    try {
+      const result = await runScenario(spec, join(scratchRoot, "busy"), {
+        readinessSeconds: 5,
+        defaultProbeMs: 2000,
+      });
+      expect(result.pass).toBe(false);
+      expect(result.error).toContain("busy");
+      // probes never ran
+      expect(result.results[0].detail).toBe("not run");
+    } finally {
+      killTree(hog.pid!); // setsid: the whole respawn group dies with it
+    }
+  }, 30000);
 
   test("container wrap: setup/start/teardown run through the prefix, cleanup runs", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });

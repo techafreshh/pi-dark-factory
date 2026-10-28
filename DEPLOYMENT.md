@@ -77,6 +77,18 @@ machine stages run over InstaBox's ssh gateway, and scenario probes reach them t
 forwarded 127.0.0.1 ports. Build each repo's golden snapshot once with `foreman bake <slug>`.
 No Docker is required for instabox-mode repos.
 
+Web grounding (on by default for every repo) needs `TINYFISH_API_KEY` in the service unit's
+environment (`factoryd.env`) — get a key at agent.tinyfish.ai/api-keys. The bundled
+`pi-extensions/pdf-tinyfish.ts` extension provides `web_search` + `web_fetch`; without the
+key the tools are silently omitted and prompts fall back to the non-grounding text. Verify
+the extension loads for the factory user:
+
+```sh
+sudo -u factory -H env TINYFISH_API_KEY=<key> pi --mode json --no-session \
+  --tools read,web_search,web_fetch --extension /home/factory/pi-dark-factory/pi-extensions/pdf-tinyfish.ts \
+  -p 'Call web_search with query "pi dark factory" and reply COUNT=<n> only.'
+```
+
 If the project-trust prompt appears in headless runs, set default trust in
 `~/.pi/agent/settings.json` (or pass `--approve` via the repo config's `pi.extra_args`) so no
 unattended run can ever block on a question nothing can answer.

@@ -89,6 +89,17 @@ export interface RepoConfig {
     tools: string[];
     plan_tools: string[];
     extra_args: string[];
+    /**
+     * Web-grounding tools for the lap agents (TinyFish-backed web_search /
+     * web_fetch pi extension, read-only network calls). Defaults both on;
+     * a repo opts out with {"pi": {"web": {"search": false, "fetch": false}}}.
+     * The tools only activate when the extension is actually deliverable —
+     * a missing extension file degrades to the repo's plain tool list.
+     */
+    web?: {
+      search?: boolean;
+      fetch?: boolean;
+    };
   };
 }
 

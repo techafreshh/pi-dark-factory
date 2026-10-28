@@ -123,6 +123,17 @@ def cmd_doctor(_a):
     if code != 200:
         die(f"/health answered {code} — factoryd is not healthy")
     print(f"factoryd: {body.get('service')} v{body.get('version')} — reachable")
+    wt = body.get("web_tools") or {}
+    if wt:
+        if wt.get("extension_on_host") and wt.get("key_set"):
+            print("web tools: OK — pi extension installed, TINYFISH_API_KEY set")
+        else:
+            missing = []
+            if not wt.get("extension_on_host"):
+                missing.append("pi extension not synced to ~/.pi/agent/extensions (a lap will install it on first stage)")
+            if not wt.get("key_set"):
+                missing.append("TINYFISH_API_KEY unset in factoryd.env — web_search/web_fetch will error until it is")
+            print("web tools: " + "; ".join(missing))
     code, body = _api("GET", "/status")
     if code != 200:
         die(f"/status answered {code} — check FACTORY_API_KEY")

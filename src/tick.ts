@@ -17,6 +17,7 @@ import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import { buildRuntimeContext } from "./runtime-context";
+import { ensureHostExtension, extensionPresent, stageTools, webToggle } from "./webtools";
 import { reapOrphanMachines } from "./ops";
 import { acquireRepoLock, acquireTickLock, releaseRepoLock, releaseTickLock } from "./lock";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
@@ -314,6 +315,13 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   let outcome: string | null = null;
 
+  // web grounding availability for this lap's prompts: instabox machines get
+  // the extension through the stage env channel (checkout presence decides);
+  // host/compose stages load it from the synced ~/.pi/agent/extensions copy
+  const webEnabled =
+    (webToggle(cfg).search || webToggle(cfg).fetch) &&
+    (cfg.env.mode === "instabox" ? extensionPresent() : ensureHostExtension());
+
   // "where am I" brief builder — the per-stage runtime context every agent
   // gets (prompt preamble; host/compose modes also write it to disk beside
   // the work). The instabox branch keys the "where" on the stage: the plan
@@ -345,6 +353,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           : cfg.env.mode === "compose"
             ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
             : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
+      webTools: webEnabled,
     });
 
   try {
@@ -386,7 +395,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         prompt: buildPlanPrompt(cfg, issue),
         systemPrompt: PLANNER_SYSTEM,
         cwd: join(stateDir, "repos", cfg.slug, "source"),
-        tools: cfg.pi.plan_tools,
+        tools: stageTools(cfg, "plan", ensureHostExtension()),
         sessionDir: sessDir,
         name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
         runtimeContext: buildRuntimeContext(cfg, {
@@ -408,6 +417,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
                 : `on the factory VPS as plain processes (no container)`,
           cwd: join(stateDir, "repos", cfg.slug, "source"),
           toolchain: "factory user environment on the VPS: node, bun, git, gh all on PATH",
+          webTools: webEnabled,
         }),
       });
       recordStage("plan", attempt, models, res);
@@ -459,7 +469,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         prompt:
           contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
         systemPrompt: IMPLEMENTER_SYSTEM,
-        tools: cfg.pi.tools,
+        tools: stageTools(cfg, "implement", extensionPresent()),
         extraArgs: cfg.pi.extra_args,
         timeoutMs: stageMinutes(cfg, "implement") * 60_000,
       });
@@ -473,7 +483,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         runtimeContext: contextFor("implement", attempt, worktree),
         systemPrompt: IMPLEMENTER_SYSTEM,
         cwd: worktree,
-        tools: cfg.pi.tools,
+        tools: stageTools(cfg, "implement", ensureHostExtension()),
         sessionDir: sessDir,
         name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
       });
@@ -559,24 +569,27 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const revModels = resolveModels(cfg, "review");
     const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
     const reviewContext = contextFor("review", attempt, machine ? cfg.env.instabox.repo_dir : worktree!);
-    const callReview = () =>
-      machine
-        ? machine.callStage("review", {
-            models: revModels,
-            prompt: reviewContext + "\n\n---\n\n" + revPrompt,
-            systemPrompt: REVIEWER_SYSTEM,
-            timeoutMs: stageMinutes(cfg, "review") * 60_000,
-          })
-        : deps.callStage("review", {
-            models: revModels,
-            prompt: revPrompt,
-            systemPrompt: REVIEWER_SYSTEM,
-            cwd: worktree!,
-            tools: cfg.pi.plan_tools,
-            sessionDir: sessDir,
-            name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
-            runtimeContext: reviewContext,
-          });
+  const callReview = () =>
+    machine
+      ? machine.callStage("review", {
+          models: revModels,
+          prompt: reviewContext + "\n\n---\n\n" + revPrompt,
+          systemPrompt: REVIEWER_SYSTEM,
+          // explicit list (was implicit before: the machine reviewer ran on
+          // pi's own defaults) — keeps review read-only AND web-grounded
+          tools: stageTools(cfg, "review", extensionPresent()),
+          timeoutMs: stageMinutes(cfg, "review") * 60_000,
+        })
+      : deps.callStage("review", {
+          models: revModels,
+          prompt: revPrompt,
+          systemPrompt: REVIEWER_SYSTEM,
+          cwd: worktree!,
+          tools: stageTools(cfg, "review", ensureHostExtension()),
+          sessionDir: sessDir,
+          name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
+          runtimeContext: reviewContext,
+        });
     let revRes = await callReview();
     recordStage("review", attempt, revModels, revRes);
     {

@@ -3,9 +3,10 @@ import { execSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LapMachine, bootstrapScriptFor, buildMachineEnvFile, callMachineStage, machineBash, PortForwarder, type SshTarget } from "../src/machine";
+import { LapMachine, STAGE_DRIVER, bootstrapScriptFor, buildMachineEnvFile, callMachineStage, machineBash, PortForwarder, type SshTarget } from "../src/machine";
 import { InstaBox } from "../src/instabox";
 import { callPi } from "../src/pi";
+import { extensionPresent } from "../src/webtools";
 import type { RepoConfig, StageModels } from "../src/types";
 
 const GIT_ID = "-c user.email=t@t.io -c user.name=Test";
@@ -321,6 +322,37 @@ describe("buildMachineEnvFile (token resolution)", () => {
     const script = bootstrapScriptFor(miniCfg, "factory/issue-1", { from: "branch" });
     expect(script).toContain("git checkout -q -B 'factory/issue-1' origin/'factory/issue-1'");
     expect(script).not.toContain(`"origin/${miniCfg.default_branch}"`);
+  });
+
+  test("web tools ride the env channel as base64 vars when the checkout carries the extension", () => {
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    if (!extensionPresent()) return; // checkout stripped of pi-extensions → no vars, stages unchanged
+    expect(f).toMatch(/export PDF_PI_EXT_MAIN_B64='[A-Za-z0-9+/=]+'/);
+    expect(f).toMatch(/export PDF_PI_EXT_LIB_B64='[A-Za-z0-9+/=]+'/);
+    // the payload decodes to the extension source (the driver materializes it)
+    const m = f.match(/export PDF_PI_EXT_MAIN_B64='([^']+)'/)!;
+    const src = Buffer.from(m[1], "base64").toString("utf8");
+    expect(src).toContain("web_search");
+  });
+
+  test("web tools OFF for a repo → no extension vars ride the env channel", () => {
+    const offCfg = {
+      ...miniCfg,
+      pi: { ...miniCfg.pi, web: { search: false, fetch: false } },
+    } as unknown as RepoConfig;
+    const f = buildMachineEnvFile(offCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).not.toContain("PDF_PI_EXT_MAIN_B64");
+    expect(f).not.toContain("PDF_PI_EXT_LIB_B64");
+  });
+
+  test("the stage driver materializes the extension into the box's pi user dir", () => {
+    expect(STAGE_DRIVER).toContain("PDF_PI_EXT_MAIN_B64");
+    expect(STAGE_DRIVER).toContain("$AD/extensions");
+    // materialization happens BEFORE pi starts (same block as auth/models)
+    const adIdx = STAGE_DRIVER.indexOf('AD="$HOME/.pi/agent"');
+    const extIdx = STAGE_DRIVER.indexOf("PDF_PI_EXT_MAIN_B64");
+    expect(adIdx).toBeGreaterThan(-1);
+    expect(extIdx).toBeGreaterThan(adIdx);
   });
 });
 

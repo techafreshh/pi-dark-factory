@@ -11,7 +11,16 @@ const DEFAULTS = {
     compose_file: "docker-compose.yml",
     service: "worker",
     image: "ubuntu:24.04",
-    pass_env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"],
+    pass_env: [
+      "OPENROUTER_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "ZAI_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "GITHUB_TOKEN",
+      // TinyFish web grounding (the pdf-tinyfish pi extension reads this in
+      // every mode: host env, compose -e flags, instabox stage env.sh)
+      "TINYFISH_API_KEY",
+    ],
     instabox: {
       api_base: "https://api.instabox.sh",
       api_key_env: "INSTABOX_API_KEY",
@@ -26,6 +35,9 @@ const DEFAULTS = {
     tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     plan_tools: ["read", "bash", "grep", "find", "ls"],
     extra_args: [] as string[],
+    // web-grounding tools ON for every stage by default (web_search/web_fetch,
+    // read-only); a repo opts out via config patch {"pi":{"web":{...}}}
+    web: { search: true, fetch: true },
   },
 };
 
@@ -108,13 +120,27 @@ export function loadRepoConfig(path: string): RepoConfig {
       holdout: raw.scenario?.holdout,
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
-    pi: { ...DEFAULTS.pi, ...raw.pi },
+    pi: {
+      ...DEFAULTS.pi,
+      ...raw.pi,
+      // nested merge so a repo patching {"pi":{"web":{"search":false}}} keeps
+      // the other flag at its default instead of silently re-enabling it
+      web: { ...DEFAULTS.pi.web, ...(raw.pi?.web ?? {}) },
+    },
     env: {
       ...DEFAULTS.env,
       ...raw.env,
       instabox: { ...DEFAULTS.env.instabox, ...(raw.env?.instabox ?? {}) },
     },
   };
+  // web flags must be booleans — a string "false" from a bad remote patch
+  // would otherwise truthy through and flip the toggle the operator meant
+  // to close (same fail-fast rule as the roster checks: reject at write time)
+  const web = cfg.pi.web!;
+  for (const k of ["search", "fetch"] as const) {
+    if (web[k] !== undefined && typeof web[k] !== "boolean")
+      throw new Error(`config pi.web.${k} must be true or false (got ${JSON.stringify(web[k])})`);
+  }
   if (!cfg.models.default) cfg.models.default = {};
   // fail fast on a missing base model rather than at lap time
   resolveModels(cfg, "implement");

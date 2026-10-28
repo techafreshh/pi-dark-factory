@@ -7,7 +7,9 @@
  * arbitrates against the systemd timer's tick, so a manual or remote tick
  * can never double-run a lap.
  */
-import { statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
@@ -46,7 +48,17 @@ export function startFactoryd(opts: FactorydOpts) {
       const fail = (status: number, error: string) => respond({ error }, status);
 
       if (req.method === "GET" && path === "/health") {
-        return respond({ ok: true, service: "pi-dark-factory", version: VERSION });
+        // web-grounding readiness rides the health answer so factory-remote
+        // doctor can flag a missing TINYFISH_API_KEY without a shell on the box
+        return respond({
+          ok: true,
+          service: "pi-dark-factory",
+          version: VERSION,
+          web_tools: {
+            extension_on_host: existsSync(join(homedir(), ".pi", "agent", "extensions", "pdf-tinyfish.ts")),
+            key_set: !!process.env.TINYFISH_API_KEY,
+          },
+        });
       }
 
       const key = req.headers.get("x-api-key");
