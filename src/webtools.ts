@@ -2,11 +2,15 @@
  * Web tools plumbing — connects the TinyFish pi extension (pi-extensions/)
  * to stage spawns in every execution mode.
  *
- * Source of truth is the checkout copy of the extension pair:
+ * Source of truth is the checkout copy of the extension, ONE file
+ * (pi-extensions/pdf-tinyfish.ts — deliberately single-file: pi auto-loads
+ * every extensions/*.ts as an extension entry, so a pure-helper second file
+ * would crash every stage at extension-load; caught in production on
+ * factory-smoke-1 #6, 2026-10-28):
  *   - host mode: ensureHostExtension() syncs it into ~/.pi/agent/extensions
  *     (pi auto-discovers user extensions there) — compose mode rides the same
  *     install because the stage container bind-mounts ~/.pi at /root/.pi
- *   - instabox mode: machine.ts embeds the pair base64 into the stage env
+ *   - instabox mode: machine.ts embeds the file base64 into the stage env
  *     channel; the stage driver materializes it under the box's $HOME
  *
  * stageTools() gates the tool names into the --tools allowlist on BOTH the
@@ -23,14 +27,14 @@ import type { RepoConfig, StageName } from "./types";
 /** names pi's extension registers — must match pi-extensions/pdf-tinyfish.ts */
 export const WEB_TOOL_NAMES = ["web_search", "web_fetch"] as const;
 
-const EXT_FILES = ["pdf-tinyfish.ts", "pdf-tinyfish-client.ts"] as const;
+const EXT_FILES = ["pdf-tinyfish.ts"] as const;
 
 /** the checkout copy — <repo>/pi-extensions/ (src/webtools.ts → ../) */
 export function extensionSourceDir(): string {
   return join(import.meta.dir, "..", "pi-extensions");
 }
 
-/** true when the checkout actually carries the extension pair */
+/** true when the checkout actually carries the extension */
 export function extensionPresent(srcDir: string = extensionSourceDir()): boolean {
   return EXT_FILES.every((f) => existsSync(join(srcDir, f)));
 }
@@ -46,7 +50,7 @@ export function hostExtensionsDir(destDir?: string): string {
   return destDir ?? join(homedir(), ".pi", "agent", "extensions");
 }
 
-/** content fingerprint of the installed pair; null when any file is missing */
+/** content fingerprint of the installed file; null when it is missing */
 function installedHash(destDir: string): string | null {
   if (!EXT_FILES.every((f) => existsSync(join(destDir, f)))) return null;
   const h = createHash("sha256");
@@ -56,7 +60,7 @@ function installedHash(destDir: string): string | null {
 
 /**
  * Sync the checkout copy of the extension into the pi user dir. Idempotent
- * and self-healing: the installed pair is verified by content hash on EVERY
+ * and self-healing: the installed file is verified by content hash on EVERY
  * call (two small reads — cheap, and this host has seen file-erasing actors),
  * so a stale or deleted install is re-copied on the next stage. Best-effort:
  * any failure leaves pi exactly as it was, web tools simply stay off.
@@ -127,7 +131,7 @@ export function webPromptNote(cfg: RepoConfig): string {
   );
 }
 
-/** re-export for tests: the pair that rides the machine env channel */
+/** re-export for tests: the file that rides the machine env channel */
 export function extensionFiles(srcDir: string = extensionSourceDir()): { name: string; b64: string }[] {
   if (!extensionPresent(srcDir)) return [];
   return EXT_FILES.map((f) => ({ name: f, b64: readFileSync(join(srcDir, f)).toString("base64") }));

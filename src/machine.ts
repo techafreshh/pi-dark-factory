@@ -119,8 +119,9 @@ export const STAGE_DRIVER = [
   `[ -n "\${PDF_PI_MODELS_B64:-}" ] && printf %s "$PDF_PI_MODELS_B64" | base64 -d > "$AD/models.json" || true`,
   // web-grounding extension: materialized into pi's auto-discovery dir so
   // the stage's pi gets web_search/web_fetch (the --tools allowlist decides
-  // whether the stage actually sees them)
-  `if [ -n "\${PDF_PI_EXT_MAIN_B64:-}" ] && [ -n "\${PDF_PI_EXT_LIB_B64:-}" ]; then mkdir -p "$AD/extensions"; printf %s "$PDF_PI_EXT_MAIN_B64" | base64 -d > "$AD/extensions/pdf-tinyfish.ts"; printf %s "$PDF_PI_EXT_LIB_B64" | base64 -d > "$AD/extensions/pdf-tinyfish-client.ts"; fi`,
+  // whether the stage actually sees them). ONE file — pi auto-loads every
+  // extensions/*.ts, so the client must not live in its own file there.
+  `if [ -n "\${PDF_PI_EXT_MAIN_B64:-}" ]; then mkdir -p "$AD/extensions"; printf %s "$PDF_PI_EXT_MAIN_B64" | base64 -d > "$AD/extensions/pdf-tinyfish.ts"; fi`,
   `cd "$REPO_DIR" || { echo "PDFRC=94" >&2; echo "cd $REPO_DIR failed" >&2; exit 94; }`,
   `mapfile -d '' PI_ARGS < "$D/args.bin"`,
   `"$PI_BIN" "\${PI_ARGS[@]}" < "$D/prompt.md" > "$D/pi.jsonl" 2> "$D/pi.err"`,
@@ -184,14 +185,14 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
       if (existsSync(p)) lines.push(`export ${name}=${escapeSh(readFileSync(p).toString("base64"))}`);
     } catch {}
   }
-  // web-grounding tools ride the same channel: the pi extension pair is
-  // embedded base64 (when the repo wants web tools and the checkout carries
-  // them) and materialized into $AD/extensions/ — no snapshot re-bake, the
-  // box always gets the current extension on its next stage
+  // web-grounding tools ride the same channel: the pi extension is embedded
+  // base64 (when the repo wants web tools and the checkout carries it) and
+  // materialized into $AD/extensions/ — no snapshot re-bake, the box always
+  // gets the current extension on its next stage
   const wt = webToggle(cfg);
   if (wt.search || wt.fetch) {
     for (const { name, b64 } of extensionFiles()) {
-      lines.push(`export ${name === "pdf-tinyfish.ts" ? "PDF_PI_EXT_MAIN_B64" : "PDF_PI_EXT_LIB_B64"}=${escapeSh(b64)}`);
+      lines.push(`export PDF_PI_EXT_MAIN_B64=${escapeSh(b64)}`);
     }
   }
   return lines.join("\n") + "\n";

@@ -8,7 +8,7 @@ import {
   tinyfishFetch,
   tinyfishSearch,
   type FetchLike,
-} from "../pi-extensions/pdf-tinyfish-client";
+} from "../pi-extensions/pdf-tinyfish";
 
 /** stub fetch returning a canned response */
 function stubFetch(status: number, body: string, capture?: { url?: string; init?: RequestInit }): FetchLike {

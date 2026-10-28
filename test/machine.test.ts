@@ -328,7 +328,6 @@ describe("buildMachineEnvFile (token resolution)", () => {
     const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
     if (!extensionPresent()) return; // checkout stripped of pi-extensions → no vars, stages unchanged
     expect(f).toMatch(/export PDF_PI_EXT_MAIN_B64='[A-Za-z0-9+/=]+'/);
-    expect(f).toMatch(/export PDF_PI_EXT_LIB_B64='[A-Za-z0-9+/=]+'/);
     // the payload decodes to the extension source (the driver materializes it)
     const m = f.match(/export PDF_PI_EXT_MAIN_B64='([^']+)'/)!;
     const src = Buffer.from(m[1], "base64").toString("utf8");
@@ -342,7 +341,6 @@ describe("buildMachineEnvFile (token resolution)", () => {
     } as unknown as RepoConfig;
     const f = buildMachineEnvFile(offCfg, { gates: true, branch: "factory/issue-1", base: "main" });
     expect(f).not.toContain("PDF_PI_EXT_MAIN_B64");
-    expect(f).not.toContain("PDF_PI_EXT_LIB_B64");
   });
 
   test("the stage driver materializes the extension into the box's pi user dir", () => {
