@@ -258,7 +258,7 @@ def cmd_prove_gates(a):
 
 def cmd_discoveries(a):
     code, resp = _api("POST", f"/repos/{a.slug}/discoveries", {"file": a.file}, timeout=TIMEOUT_SLOW)
-    if not file:
+    if not a.file:
         for d in resp.get("discoveries", []):
             print(f"#{d['issue']} (attempt {d['attempt']}) {d['title']}\n  {d['claim']}\n  why: {d['why']}")
         print(f"-- {resp.get('count', 0)} discovery(ies); re-run with --file to open deduped issues")
