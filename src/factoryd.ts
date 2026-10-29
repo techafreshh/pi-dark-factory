@@ -10,7 +10,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { opsBacklog, opsCleanup, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
   newRenderState,
@@ -180,6 +180,18 @@ export function startFactoryd(opts: FactorydOpts) {
           return respond(
             await opsScenarioTest(opts.stateDir, slug, kind, typeof body.branch === "string" && body.branch ? body.branch : undefined)
           );
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/prove-gates")) {
+          // the yardstick audit — plants every probe against a product-shaped
+          // stub and requires the gates to trip (runs the scenario harness;
+          // can run a minute per scenario; client uses its slow timeout)
+          return respond(await opsProveGates(opts.stateDir, slug));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/discoveries")) {
+          // harvested reviewer observations: preview lists, --file creates
+          // deduped GitHub issues (preview default — nothing files without it)
+          const body = await readJson(req);
+          return respond(await opsDiscoveries(opts.stateDir, slug, body?.file === true));
         }
         if (req.method === "POST" && tickEnd === undefined && path.endsWith("/config")) {
           return respond(await opsSetConfig(opts.stateDir, slug, await readJson(req)));

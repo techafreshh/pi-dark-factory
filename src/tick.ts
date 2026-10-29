@@ -15,7 +15,7 @@ import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/ver
 import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
-import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
+import { buildReviewPrompt, parseDiscoveries, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import { buildRuntimeContext } from "./runtime-context";
 import { ensureHostExtension, extensionPresent, stageTools, webToggle } from "./webtools";
 import { syncHostSkills } from "./skills";
@@ -627,6 +627,17 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     if (verdict.verdict === "unparseable") {
       verdict.verdict = "reject";
       verdict.findings = "review verdict unparseable after " + REVIEW_REASKS + " re-asks — failing closed:\n" + revRes.outcome.text.slice(0, 1500);
+    }
+    // discoveries harvest (archon-steal #4): persisted per attempt, never
+    // gating — the discoveries verb is the publication gate
+    const discoveries = parseDiscoveries(revRes.outcome.text);
+    if (discoveries.length > 0) {
+      try {
+        writeFileSync(
+          join(issueDir(stateDir, cfg.slug, n), `discoveries-${attempt}.json`),
+          JSON.stringify({ attempt, recordedAt: new Date().toISOString(), discoveries }, null, 2) + "\n"
+        );
+      } catch {}
     }
     if (verdict.verdict === "reject") {
       findings = verdict.findings;

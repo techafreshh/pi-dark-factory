@@ -4,6 +4,29 @@ import { webToggle } from "../webtools";
 export type Verdict = "approve" | "reject" | "unparseable";
 
 /** Lenient verdict parse — never a schema; a missing verdict is unparseable, not a crash. */
+export interface Discovery {
+  title: string;
+  claim: string;
+  why: string;
+}
+
+/** Extract the reviewer's DISCOVERIES section (archon-steal #4): up to five
+ *  `- title :: claim :: why` lines, tolerant of a missing section (returns
+ *  []) and of `none`. Never gates anything — harvesting only. */
+export function parseDiscoveries(reviewText: string): Discovery[] {
+  const m = reviewText.match(/##\s*DISCOVERIES[^\n]*\n([\s\S]*?)(?=\n##\s|\nINVARIANTS|$)/i);
+  if (!m) return [];
+  const out: Discovery[] = [];
+  for (const line of m[1].split("\n")) {
+    const t = line.trim();
+    if (!t.startsWith("- ") || /\bnone\b/i.test(t)) continue;
+    const parts = t.slice(2).split("::").map((s) => s.trim());
+    if (parts.length < 2 || !parts[0]) continue;
+    out.push({ title: parts[0], claim: parts[1] ?? "", why: parts[2] ?? "" });
+  }
+  return out.slice(0, 5);
+}
+
 export function parseVerdict(text: string): { verdict: Verdict; findings: string } {
   const m = text.match(/verdict\s*:\s*(approve|reject)/i);
   let verdict: Verdict | null = m ? m[1].toLowerCase() as Verdict : null;
@@ -82,6 +105,11 @@ export function buildReviewPrompt(
     "- APPROVE only when every acceptance item is MET and nothing you found is worth a round of repairs.",
     "- Simplify-lens findings are quality signals, never gates: they must not push the verdict to REJECT on their own. When overconstruction is all you found, APPROVE and attach the MEDIUM findings naming the smaller shape.",
     "- Then, in order: `What's good` (one or two lines); the acceptance-coverage list; numbered findings (write `none` on a clean approve).",
+    "",
+    "## DISCOVERIES (real, out-of-scope)",
+    "After the verdict, list up to 5 adjacent observations you noticed while reading the code but did NOT treat as findings — one line each, exactly:",
+    "- <short title> :: <one-line claim> :: <why it matters later>",
+    "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. They are harvested into a backlog someone else may pick up.",
     "",
     "INVARIANTS: read-only; do not fix anything yourself — rejections are routed back to the implementer with your findings.",
   ].join("\n");

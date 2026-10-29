@@ -18,6 +18,8 @@ Verbs (mirror the foreman CLI):
   config SLUG [--json '{...}']            read the FULL effective config; with --json, deep-merge a patch
                                           (models, env, merge, timeouts)
   scenario SLUG runtime|holdout --file F  write + server-side validate a scenario
+  prove-gates SLUG                        plant every probe against a product-shaped stub; gates must trip
+  discoveries SLUG [--file]               list harvested reviewer observations; --file opens deduped issues
   scenario SLUG runtime|holdout --test     execute the STORED scenario without a lap
   backlog SLUG --prd-file F [--max N]     slice a PRD; previews unless --create
   tick SLUG                               fire a lap now (pidfile arbitrates with the timer)
@@ -247,6 +249,30 @@ def cmd_onboard(a):
     print("next: push scenarios with the scenario verb;")
     print("then backlog + tick.")
 
+
+def cmd_prove_gates(a):
+    need(1, "usage: prove-gates SLUG")
+    code, resp = _api("POST", f"/repos/{a[0]}/prove-gates", {}, timeout=TIMEOUT_SLOW)
+    print(json.dumps(resp, indent=2))
+    sys.exit(0 if resp.get("verdict") == "healthy" else 1)
+
+
+def cmd_discoveries(a):
+    file = "--file" in a
+    slug = next((x for x in a if not x.startswith("--")), None)
+    if not slug:
+        sys.exit("usage: discoveries SLUG [--file]")
+    code, resp = _api("POST", f"/repos/{slug}/discoveries", {"file": file}, timeout=TIMEOUT_SLOW)
+    if not file:
+        for d in resp.get("discoveries", []):
+            print(f"#{d['issue']} (attempt {d['attempt']}) {d['title']}\n  {d['claim']}\n  why: {d['why']}")
+        print(f"-- {resp.get('count', 0)} discovery(ies); re-run with --file to open deduped issues")
+    else:
+        for f in resp.get("filed", []):
+            print(f"filed #{f['issue']}: {f['title']}")
+        print(f"-- {len(resp.get('filed', []))} filed of {resp.get('count', 0)} harvested")
+
+
 def cmd_scenario(a):
     if a.kind not in ("runtime", "holdout"):
         die("kind must be runtime or holdout")
@@ -401,6 +427,7 @@ def main():
     table = {
         "health": cmd_health, "doctor": cmd_doctor, "status": cmd_status, "logs": cmd_logs,
         "session": cmd_session, "config": cmd_config, "onboard": cmd_onboard, "scenario": cmd_scenario,
+        "prove-gates": cmd_prove_gates, "discoveries": cmd_discoveries,
         "models": cmd_models,
         "backlog": cmd_backlog, "tick": cmd_tick, "unblock": cmd_unblock, "cleanup": cmd_cleanup,
         "pause": cmd_pause, "unpause": cmd_unpause,

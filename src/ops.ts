@@ -15,6 +15,7 @@ import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from ".
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
+import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
 import { receipt } from "./receipts";
@@ -470,6 +471,156 @@ export function opsScenarioLint(stateDir: string, slug: string, kind: "runtime" 
  * cloned to the branch, and destroyed in the finally. Read-only for the
  * ledger; a receipt lands either way.
  */
+export interface ProveGatesSurvivor {
+  scenario: string;
+  id: string;
+  expect: string;
+}
+
+/**
+ * prove-gates (archon-steal #2): audit the yardstick itself. Every probe in
+ * the repo's scenarios is planted against a stub that answers 200
+ * "gatecheck" to everything — the product-shaped lie. A probe whose full
+ * expect grammar passes against that lie cannot tell a working product from
+ * a broken one: a dead gate. Verdict is gates-dead only when NOTHING trips
+ * (the harness as a whole is blind); probes that survive are surfaced by
+ * name so the operator can tighten them (a status-only probe is weak, not
+ * broken). Runs host-side against the reserved pair — needs the repo idle,
+ * so it takes the repo lock and refuses otherwise (a concurrent lap's
+ * scenario server would otherwise be reclaimed by the port strays).
+ */
+export interface DiscoveryItem {
+  issue: number;
+  attempt: number;
+  title: string;
+  claim: string;
+  why: string;
+  path: string;
+}
+
+/**
+ * Discoveries (archon-steal #4): reviewers notice adjacent work that never
+ * blocks a lap and was previously dropped. The reviewer lists up to five
+ * (prompt contract), tick persists one JSON per attempt, and this verb is
+ * the publication gate: preview (default) lists everything deduped by
+ * title; --file creates `[discovery] ...` GitHub issues, skipping titles
+ * that already exist open. Discoveries are ordinary issues — no dependency
+ * edges, claimable by the factory like any work.
+ */
+export async function opsDiscoveries(stateDir: string, slug: string, file: boolean) {
+  const cfgDir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(cfgDir, "config.json"))) throw new Error(`repo ${slug} is not onboarded`);
+  const cfg = loadRepoConfig(join(cfgDir, "config.json"));
+  const issuesDir = join(cfgDir, "issues");
+  const found: DiscoveryItem[] = [];
+  if (existsSync(issuesDir)) {
+    for (const d of readdirSync(issuesDir)) {
+      if (!/^\d+$/.test(d)) continue;
+      const dir = join(issuesDir, d);
+      for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+        if (!f.startsWith("discoveries-") || !f.endsWith(".json")) continue;
+        const path = join(dir, f);
+        try {
+          const parsed = JSON.parse(readFileSync(path, "utf8"));
+          for (const item of parsed.discoveries ?? []) {
+            found.push({
+              issue: Number(d),
+              attempt: parsed.attempt ?? 0,
+              title: String(item.title ?? ""),
+              claim: String(item.claim ?? ""),
+              why: String(item.why ?? ""),
+              path,
+            });
+          }
+        } catch {}
+      }
+    }
+  }
+  const seen = new Set<string>();
+  const deduped = found.filter((d) => (d.title && !seen.has(d.title) ? (seen.add(d.title), true) : false));
+  if (!file) return { slug, count: deduped.length, discoveries: deduped, filed: [] };
+  const gh = new Gh(cfg.repo);
+  const open = await gh.issueListOpen(100);
+  const filed: { issue: number; title: string }[] = [];
+  for (const d of deduped) {
+    const title = `[discovery] ${d.title}`;
+    if (open.some((i) => i.title === title)) continue;
+    const body = `${d.claim}\n\nWhy it matters: ${d.why}\n\nHarvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.\n`;
+    filed.push({ issue: await gh.issueCreate(title, body), title });
+  }
+  receipt(stateDir, `discoveries ${slug}: filed ${filed.length} of ${deduped.length} harvested observation(s)`, slug);
+  return { slug, count: deduped.length, discoveries: deduped, filed };
+}
+
+export async function opsProveGates(
+  stateDir: string,
+  slug: string
+): Promise<{
+  slug: string;
+  verdict: "healthy" | "gates-dead";
+  planted: number;
+  tripped: number;
+  survived: ProveGatesSurvivor[];
+  scenarios: { name: string; planted: number; tripped: number }[];
+}> {
+  const cfgDir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(cfgDir, "config.json"))) throw new Error(`repo ${slug} is not onboarded`);
+  const cfg = loadRepoConfig(join(cfgDir, "config.json"));
+  const files = ([
+    ["runtime", cfg.scenario.runtime],
+    ["holdout", cfg.scenario.holdout],
+  ] as const).filter((pair): pair is [string, string] => !!pair[1]);
+  if (files.length === 0) throw new Error(`no scenarios configured for ${slug}`);
+  if (!acquireRepoLock(stateDir, slug)) {
+    throw new Error(`a lap is live for ${slug} (repo lock held) — run prove-gates when the repo is idle`);
+  }
+  try {
+    const STUB_START =
+      `node -e 'require("node:http").createServer((q,s)=>{s.writeHead(200,{"content-type":"text/plain"});s.end("gatecheck")}).listen(Number(process.env.PORT),"127.0.0.1")'`;
+    const survived: ProveGatesSurvivor[] = [];
+    const perScenario: { name: string; planted: number; tripped: number }[] = [];
+    let planted = 0;
+    let tripped = 0;
+    for (const [name, file] of files) {
+      const spec = loadScenario(join(cfgDir, file));
+      spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
+      spec.setup = "";
+      spec.start = STUB_START;
+      spec.readiness_path = "/";
+      const scratch = join(cfgDir, "prove-gates", name);
+      rmSync(scratch, { recursive: true, force: true });
+      const result = await runScenario(spec, scratch, {
+        readinessSeconds: Math.min(cfg.timeouts.readiness_seconds, 60),
+        defaultProbeMs: cfg.timeouts.probe_ms,
+        preClean: `pdf-${slug}-`,
+      });
+      const expects = new Map(spec.probes.map((p) => [p.id, p.expect]));
+      let sPlanted = 0;
+      let sTripped = 0;
+      for (const p of result.results) {
+        sPlanted++;
+        if (p.pass) {
+          survived.push({ scenario: name, id: p.id, expect: expects.get(p.id) ?? "" });
+        } else {
+          sTripped++;
+        }
+      }
+      planted += sPlanted;
+      tripped += sTripped;
+      perScenario.push({ name, planted: sPlanted, tripped: sTripped });
+    }
+    const verdict = planted > 0 && tripped === 0 ? "gates-dead" : "healthy";
+    receipt(
+      stateDir,
+      `prove-gates ${slug}: ${verdict} — ${planted} probes planted against the gatecheck stub, ${tripped} tripped, ${survived.length} survived${survived.length ? ` (weak: ${survived.map((s) => `${s.scenario}/${s.id}`).join(", ")})` : ""}`,
+      slug
+    );
+    return { slug, verdict, planted, tripped, survived, scenarios: perScenario };
+  } finally {
+    releaseRepoLock(stateDir, slug);
+  }
+}
+
 export async function opsScenarioTest(
   stateDir: string,
   slug: string,
