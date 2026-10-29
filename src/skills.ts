@@ -1,5 +1,7 @@
-import { readdirSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -71,4 +73,57 @@ export function collectSkillsB64(dir: string = skillsSourceDir()): string | null
 
 function escapeArg(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Host-side twin of the machine channel: copy pi-skills/ into
+ * $HOME/.pi/agent/skills so pi's discovery sees it in every host-side stage.
+ * That is not an optimization — instabox laps run PLAN on the host (only
+ * implement/review go through the machine driver), and host/compose stages
+ * run entirely here (compose bind-mounts ~/.pi, so the sync reaches
+ * containers too). Hash-gated like ensureHostExtension: stages re-sync
+ * constantly and an unchanged tree must not churn the install. A vanished
+ * or emptied tree also clears the install, so retiring a skill retires it
+ * everywhere. Returns true when a payload is installed.
+ */
+export function syncHostSkills(target: string = join(homedir(), ".pi", "agent", "skills")): boolean {
+  const signature = treeSignature(skillsSourceDir());
+  if (!signature) {
+    if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+    return false;
+  }
+  if (existsSync(target) && treeSignature(target) === signature) return true;
+  rmSync(target, { recursive: true, force: true });
+  mkdirSync(target, { recursive: true });
+  cpSync(skillsSourceDir(), target, { recursive: true });
+  return true;
+}
+
+/** Stable content signature of the tree (relative paths + file bytes), or
+ *  null when absent, unreadable, empty, or dotfiles-only. */
+function treeSignature(dir: string): string | null {
+  let files: string[];
+  try {
+    files = [];
+    const walk = (rel: string) => {
+      for (const e of readdirSync(join(dir, rel))) {
+        if (e.startsWith(".")) continue;
+        const r = rel ? `${rel}/${e}` : e;
+        if (statSync(join(dir, r)).isDirectory()) walk(r);
+        else files.push(r);
+      }
+    };
+    walk("");
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  const h = createHash("sha256");
+  for (const f of files.sort()) {
+    h.update(f);
+    h.update("\0");
+    h.update(readFileSync(join(dir, f)));
+    h.update("\0");
+  }
+  return h.digest("hex");
 }

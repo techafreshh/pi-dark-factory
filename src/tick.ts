@@ -18,6 +18,7 @@ import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
 import { buildRuntimeContext } from "./runtime-context";
 import { ensureHostExtension, extensionPresent, stageTools, webToggle } from "./webtools";
+import { syncHostSkills } from "./skills";
 import { reapOrphanMachines } from "./ops";
 import { acquireRepoLock, acquireTickLock, releaseRepoLock, releaseTickLock } from "./lock";
 import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
@@ -58,6 +59,11 @@ const QUIET_KILL_MS = 15 * 60_000;
 
 export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
   return async (stage, a) => {
+    // every host-side stage gets the factory skills tree synced into
+    // ~/.pi/agent/skills first — this covers instabox plan (host-side by
+    // design) and all stages of host/compose repos; instabox implement and
+    // review take the machine channel instead (PDF_PI_SKILLS_B64)
+    syncHostSkills();
     // container mode: pi runs inside the product's worker environment
     const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name);
     const base = {
