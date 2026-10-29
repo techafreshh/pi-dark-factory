@@ -556,7 +556,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- VERIFY (all deterministic)
-    const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree: worktree ?? undefined, machine: machine ?? undefined, pr });
+    const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree: worktree ?? undefined, machine: machine ?? undefined, pr, attempt });
     if (!v.pass) {
       // receipt/ledger get the one-line summary; the repair round gets FULL
       // reproduction evidence (failing probe's command, expect, and the
@@ -569,6 +569,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at verify: ${summary.replace(/\n/g, " ; ")}`);
       continue outer;
+    }
+    if (v.provenance) {
+      const head = (v.provenance.worktreeHead ?? v.provenance.prHead ?? "?").slice(0, 10);
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} verify green — HEAD=${head} PR-head=${(v.provenance.prHead ?? "?").slice(0, 10)} evidence=${v.provenance.sidecar}`);
     }
 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
@@ -633,6 +637,18 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- MERGE (all gates green + APPROVE)
+    // TOCTOU guard: re-read the PR head and refuse on anything but the exact
+    // sha verify probed — missing or inconclusive evidence holds the merge
+    // (archon-steal #6; a gh blip here costs one attempt, not a wrong merge)
+    if (v.provenance?.prHead) {
+      const nowHead = await deps.gh.prHeadSha(pr).catch(() => null);
+      if (nowHead !== v.provenance.prHead) {
+        lastError = `merge refused: PR #${pr} head moved after verify (${v.provenance.prHead.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
+        continue outer;
+      }
+    }
     await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch);
     try {
       const iv = await deps.gh.issueView(n);

@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GhApi, } from "../gh";
 import { waitChecks } from "../gh";
@@ -19,10 +19,48 @@ export interface GateFailure {
   repair?: string;
 }
 
+export interface VerifyProvenance {
+  /** host/compose modes: the local worktree HEAD the gates probed */
+  worktreeHead: string | null;
+  /** the PR head every mode anchored on (machine mode verifies the pushed branch) */
+  prHead: string | null;
+  /** evidence sidecar path — unique per attempt, first failure survives retries */
+  sidecar: string;
+}
+
 export interface VerifyOutcome {
   pass: boolean;
   failures: GateFailure[];
   scenarios: ScenarioResult[];
+  provenance?: VerifyProvenance;
+}
+
+/**
+ * Per-attempt evidence sidecar (archon-steal #6): which revision the gates
+ * probed and exactly what they saw, in a path unique to this attempt so a
+ * retry can never overwrite the first failure's bodies. Months later,
+ * "which sha did the asterisk gate probe?" is answerable from disk.
+ */
+let evidenceSeq = 0;
+export function writeVerifyEvidence(
+  stateDir: string,
+  slug: string,
+  issue: number,
+  data: {
+    attempt?: number;
+    pr: number | null;
+    worktreeHead: string | null;
+    prHead: string | null;
+    failures: GateFailure[];
+    scenarios: ScenarioResult[];
+  }
+): string {
+  const dir = join(stateDir, "repos", slug, "issues", String(issue), "verify-evidence");
+  mkdirSync(dir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const path = join(dir, `attempt-${data.attempt ?? "x"}-${ts}-${++evidenceSeq}.json`);
+  writeFileSync(path, JSON.stringify({ recordedAt: new Date().toISOString(), issue, ...data }, null, 2) + "\n");
+  return path;
 }
 
 function summarizeScenario(s: ScenarioResult): string {
@@ -65,10 +103,23 @@ export async function runVerify(
     /** instabox machine mode: scenario setup/start run inside this machine */
     machine?: { ssh(): Promise<SshTarget> };
     pr: number | null;
+    attempt?: number;
   }
 ): Promise<VerifyOutcome> {
   const failures: GateFailure[] = [];
   const scenarios: ScenarioResult[] = [];
+
+  // provenance anchors, captured BEFORE probing: the merge refuses to run if
+  // the PR head later differs from the prHead recorded here (TOCTOU guard)
+  let worktreeHead: string | null = null;
+  if (opts.worktree) {
+    const r = await sh(["git", "-C", opts.worktree, "rev-parse", "HEAD"], { timeoutMs: 15000 });
+    worktreeHead = r.code === 0 ? r.stdout.trim() || null : null;
+  }
+  let prHead: string | null = null;
+  if (opts.pr !== null) {
+    try { prHead = await gh.prHeadSha(opts.pr); } catch { prHead = null; }
+  }
 
   // 1. changed gate (re-checked here so repairs are judged the same way).
   // Machine mode judges the fetched pushed branch — same diff, another side
@@ -153,7 +204,15 @@ export async function runVerify(
     }
   }
 
-  return { pass: failures.length === 0, failures, scenarios };
+  const sidecar = writeVerifyEvidence(opts.stateDir, cfg.slug, opts.issue, {
+    attempt: opts.attempt,
+    pr: opts.pr,
+    worktreeHead,
+    prHead,
+    failures,
+    scenarios,
+  });
+  return { pass: failures.length === 0, failures, scenarios, provenance: { worktreeHead, prHead, sidecar } };
 }
 
 export function scenarioSummary(scenarios: ScenarioResult[]): string {

@@ -19,6 +19,7 @@ export interface GhApi {
   prCreate(head: string, base: string, title: string, body: string): Promise<number>;
   prClose(n: number): Promise<void>;
   prChecks(n: number): Promise<CheckState[]>;
+  prHeadSha(n: number): Promise<string | null>;
   prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<void>;
 }
 
@@ -124,6 +125,13 @@ export class Gh implements GhApi {
     return rollup
       .filter((c: any) => c && c.state)
       .map((c: any) => ({ name: c.name ?? c.workflowName ?? c.context ?? "check", state: String(c.state) }));
+  }
+
+  /** The PR's head commit sha — the provenance anchor: what verify probed and
+   *  what merge must still see (a moved head between the two is a refused merge). */
+  async prHeadSha(n: number): Promise<string | null> {
+    const raw = await ghJson<any>(this.repo, ["pr", "view", String(n), "--json", "headRefOid"]);
+    return typeof raw?.headRefOid === "string" && raw.headRefOid ? raw.headRefOid : null;
   }
 
   async prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<void> {
