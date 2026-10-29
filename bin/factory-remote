@@ -251,18 +251,13 @@ def cmd_onboard(a):
 
 
 def cmd_prove_gates(a):
-    need(1, "usage: prove-gates SLUG")
-    code, resp = _api("POST", f"/repos/{a[0]}/prove-gates", {}, timeout=TIMEOUT_SLOW)
+    code, resp = _api("POST", f"/repos/{a.slug}/prove-gates", {}, timeout=TIMEOUT_SLOW)
     print(json.dumps(resp, indent=2))
     sys.exit(0 if resp.get("verdict") == "healthy" else 1)
 
 
 def cmd_discoveries(a):
-    file = "--file" in a
-    slug = next((x for x in a if not x.startswith("--")), None)
-    if not slug:
-        sys.exit("usage: discoveries SLUG [--file]")
-    code, resp = _api("POST", f"/repos/{slug}/discoveries", {"file": file}, timeout=TIMEOUT_SLOW)
+    code, resp = _api("POST", f"/repos/{a.slug}/discoveries", {"file": a.file}, timeout=TIMEOUT_SLOW)
     if not file:
         for d in resp.get("discoveries", []):
             print(f"#{d['issue']} (attempt {d['attempt']}) {d['title']}\n  {d['claim']}\n  why: {d['why']}")
@@ -415,6 +410,8 @@ def main():
     sp.add_argument("--test", action="store_true", help="execute the STORED scenario against a branch WITHOUT spending a lap (the verifier's own test bench)")
     sp.add_argument("--branch", help="branch for --test (default: the repo's default branch — test the merged state)")
     sp = sub.add_parser("backlog"); sp.add_argument("slug"); sp.add_argument("--prd-file", required=True); sp.add_argument("--max", type=int, default=40); sp.add_argument("--create", action="store_true")
+    sp = sub.add_parser("prove-gates"); sp.add_argument("slug")
+    sp = sub.add_parser("discoveries"); sp.add_argument("slug"); sp.add_argument("--file", action="store_true", help="open deduped [discovery] issues (preview default: list only)")
     sp = sub.add_parser("config"); sp.add_argument("slug"); sp.add_argument("--json",
                         help="config patch JSON: models, env, merge, timeouts keys (omit to READ the effective config)")
     sp = sub.add_parser("tick"); sp.add_argument("slug")
