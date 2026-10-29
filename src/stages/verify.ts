@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GhApi, } from "../gh";
 import { waitChecks } from "../gh";
@@ -217,4 +217,90 @@ export async function runVerify(
 
 export function scenarioSummary(scenarios: ScenarioResult[]): string {
   return scenarios.length === 0 ? "(no scenarios configured)" : scenarios.map(summarizeScenario).join("\n");
+}
+
+/**
+ * Post-merge regression pass (archon-steal #1, report-only form): re-run the
+ * repo's scenario contracts against the ACTUAL merged main. A chained lap
+ * verifies its branch pre-merge, but main's post-squash tree is one no gate
+ * has probed whenever a human push landed between laps — this is the
+ * standing "main is contract-green" receipt. Report-only by design: it
+ * repairs nothing and pauses nothing; a failure files one deduped evidence
+ * issue and the chain moves on. Blocking semantics come later, once the
+ * pass has proven quiet. Host/compose repos only — machine-mode repos get
+ * their per-lap verify against current main already.
+ */
+export async function runPostMergeRegression(
+  cfg: RepoConfig,
+  gh: GhApi,
+  opts: { stateDir: string; pr: number }
+): Promise<{ pass: boolean; summary: string; issue: number | null }> {
+  const src = sourceDir(opts.stateDir, cfg.slug);
+  const tmpRoot = join(opts.stateDir, "repos", cfg.slug, "issues", "regression");
+  rmSync(tmpRoot, { recursive: true, force: true });
+  mkdirSync(tmpRoot, { recursive: true });
+  const wt = join(tmpRoot, "wt");
+  const fetched = await sh(["git", "-C", src, "fetch", "origin", cfg.default_branch, "--prune"], { timeoutMs: 120_000 });
+  if (fetched.code !== 0) return { pass: false, summary: `fetch failed: ${fetched.stderr.trim().slice(0, 200)}`, issue: null };
+  const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${cfg.default_branch}`], { timeoutMs: 120_000 });
+  if (added.code !== 0) return { pass: false, summary: `worktree add failed: ${added.stderr.trim().slice(0, 200)}`, issue: null };
+  try {
+    const scenarios: ScenarioResult[] = [];
+    for (const [key, file] of [
+      ["runtime", cfg.scenario.runtime],
+      ["holdout", cfg.scenario.holdout],
+    ] as const) {
+      if (!file) continue;
+      const path = join(opts.stateDir, "repos", cfg.slug, file);
+      let spec;
+      try {
+        spec = loadScenario(path);
+        spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
+      } catch (e: any) {
+        scenarios.push({ name: key, pass: false, error: `bad scenario file ${path}: ${e.message}`, results: [] });
+        continue;
+      }
+      const scratch = join(tmpRoot, key);
+      const envBuild =
+        cfg.env.mode === "compose"
+          ? buildStageCmd(cfg, wt, opts.stateDir, `pdf-${cfg.slug}-regress-${key}`, {
+              extraEnv: { PORT: String(spec.port), WORKTREE: wt },
+              publishPorts: true,
+            })
+          : undefined;
+      const result = await runScenario(spec, scratch, {
+        readinessSeconds: cfg.timeouts.readiness_seconds,
+        defaultProbeMs: cfg.timeouts.probe_ms,
+        worktree: wt,
+        preClean: `pdf-${cfg.slug}-`,
+        wrap: envBuild
+          ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
+          : undefined,
+      });
+      scenarios.push(result);
+    }
+    const failed = scenarios.filter((s) => !s.pass);
+    const summary = scenarios.length === 0 ? "no scenarios configured" : scenarios.map(summarizeScenario).join("\n");
+    if (failed.length === 0) return { pass: true, summary, issue: null };
+
+    const failingNames = failed.map((s) => s.name).join("+");
+    const title = `[regression] ${cfg.default_branch} broke the ${failingNames} contract after PR #${opts.pr}`;
+    const body = [
+      `Post-merge regression pass against \`origin/${cfg.default_branch}\` (report-only: the chain was not paused).`,
+      `Merged via PR #${opts.pr}; the scenarios had passed on the branch before the squash.`,
+      "",
+      ...failed.map((s) => repairForScenario(s)),
+      "",
+      "This issue is evidence, not a repair order — the next lap or a human decides.",
+    ].join("\n");
+    let issue: number | null = null;
+    try {
+      const open = await gh.issueListOpen(100);
+      if (!open.some((i) => i.title === title)) issue = await gh.issueCreate(title, body);
+    } catch {}
+    return { pass: false, summary, issue };
+  } finally {
+    await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
 }

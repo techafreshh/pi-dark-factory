@@ -11,7 +11,7 @@ import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
-import { scenarioSummary, runVerify } from "./stages/verify";
+import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
 import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
@@ -667,6 +667,20 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
     repoReceipt(cfg.slug, stateDir, `lap #${n} MERGED via PR #${pr} (squash) — ledger closed`);
     try { await deps.gh.issueComment(n, mergedComment(cfg, pr, n)); } catch {}
+    // post-merge regression pass (archon-steal #1, report-only): re-probe the
+    // merged main — the one tree no gate has seen when humans push between
+    // laps. A failure files one deduped evidence issue; the chain moves on.
+    if (cfg.env.mode !== "instabox" && (cfg.scenario.runtime || cfg.scenario.holdout)) {
+      try {
+        const reg = await runPostMergeRegression(cfg, deps.gh, { stateDir, pr });
+        const line = reg.pass
+          ? `post-merge regression: main green — ${reg.summary.replace(/\n/g, " ; ")}`
+          : `post-merge regression: REGRESSION on main — ${reg.summary.replace(/\n/g, " ; ")}${reg.issue ? ` (issue #${reg.issue})` : ""}`;
+        repoReceipt(cfg.slug, stateDir, line);
+      } catch (e) {
+        repoReceipt(cfg.slug, stateDir, `post-merge regression pass errored (chain unaffected): ${e instanceof Error ? e.message : e}`);
+      }
+    }
     outcome = "merged";
     break outer;
   }
