@@ -287,6 +287,7 @@ describe("buildMachineEnvFile (token resolution)", () => {
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
     delete process.env.TINYFISH_API_KEY;
+    delete process.env.PDF_SKILLS_DIR;
   });
 
   test("GH_TOKEN (the service env name) exports as GITHUB_TOKEN", () => {
@@ -314,6 +315,28 @@ describe("buildMachineEnvFile (token resolution)", () => {
     const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
     expect(f).not.toContain("TINYFISH_API_KEY");
     if (had !== undefined) process.env.TINYFISH_API_KEY = had;
+  });
+
+  test("PDF_PI_SKILLS_B64 ships a populated skills tree", () => {
+    const d = mkdtempSync(join(tmpdir(), "pdfskills-"));
+    writeFileSync(join(d, "demo.md"), "skill body\n");
+    process.env.PDF_SKILLS_DIR = d;
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).toContain("export PDF_PI_SKILLS_B64=");
+  });
+
+  test("an empty skills tree ships no PDF_PI_SKILLS_B64", () => {
+    process.env.PDF_SKILLS_DIR = mkdtempSync(join(tmpdir(), "pdfskills-empty-"));
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).not.toContain("PDF_PI_SKILLS_B64");
+  });
+
+  test("the stage driver re-materializes skills before pi runs", () => {
+    expect(STAGE_DRIVER).toContain('rm -rf "$AD/skills"');
+    const extIdx = STAGE_DRIVER.indexOf("PDF_PI_EXT_MAIN_B64");
+    const skillsIdx = STAGE_DRIVER.indexOf("PDF_PI_SKILLS_B64");
+    expect(skillsIdx).toBeGreaterThan(extIdx);
+    expect(skillsIdx).toBeLessThan(STAGE_DRIVER.indexOf("PI_ARGS"));
   });
 
   test("bootstrap sources the env file before its script", async () => {

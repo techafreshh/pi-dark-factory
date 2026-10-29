@@ -29,6 +29,7 @@ import { dirname } from "node:path";
 import { InstaBox, machineNameFor, type InstaMachine, type InstaSshToken } from "./instabox";
 import type { ModelSpec, RepoConfig, StageModels } from "./types";
 import { extensionFiles, webToggle } from "./webtools";
+import { collectSkillsB64 } from "./skills";
 import { branchName } from "./stages/intake";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -122,6 +123,10 @@ export const STAGE_DRIVER = [
   // whether the stage actually sees them). ONE file — pi auto-loads every
   // extensions/*.ts, so the client must not live in its own file there.
   `if [ -n "\${PDF_PI_EXT_MAIN_B64:-}" ]; then mkdir -p "$AD/extensions"; printf %s "$PDF_PI_EXT_MAIN_B64" | base64 -d > "$AD/extensions/pdf-tinyfish.ts"; fi`,
+  // factory-managed skills (src/skills.ts): wiped and re-unpacked every stage
+  // so a reused machine never shows stale ones — pi lists each SKILL.md in
+  // the stage's system prompt from its user-skills dir
+  `if [ -n "\${PDF_PI_SKILLS_B64:-}" ]; then rm -rf "$AD/skills"; mkdir -p "$AD/skills"; printf %s "$PDF_PI_SKILLS_B64" | base64 -d | tar xzf - -C "$AD/skills"; fi`,
   `cd "$REPO_DIR" || { echo "PDFRC=94" >&2; echo "cd $REPO_DIR failed" >&2; exit 94; }`,
   `mapfile -d '' PI_ARGS < "$D/args.bin"`,
   `"$PI_BIN" "\${PI_ARGS[@]}" < "$D/prompt.md" > "$D/pi.jsonl" 2> "$D/pi.err"`,
@@ -201,6 +206,11 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
       lines.push(`export PDF_PI_EXT_MAIN_B64=${escapeSh(b64)}`);
     }
   }
+  // factory-managed skills ride the same channel as the extension (see
+  // src/skills.ts) — host and compose need no channel, machines freeze ~/.pi
+  // into a snapshot, so this is how pi-skills/ stays fresh inside every lap
+  const skills = collectSkillsB64();
+  if (skills) lines.push(`export PDF_PI_SKILLS_B64=${escapeSh(skills)}`);
   return lines.join("\n") + "\n";
 }
 
