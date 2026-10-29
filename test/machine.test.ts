@@ -286,6 +286,7 @@ describe("buildMachineEnvFile (token resolution)", () => {
   afterEach(() => {
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
+    delete process.env.TINYFISH_API_KEY;
   });
 
   test("GH_TOKEN (the service env name) exports as GITHUB_TOKEN", () => {
@@ -299,6 +300,20 @@ describe("buildMachineEnvFile (token resolution)", () => {
     process.env.GITHUB_TOKEN = "gh_winner";
     const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
     expect(f).toContain("export GITHUB_TOKEN='gh_winner'");
+  });
+
+  test("TINYFISH_API_KEY force-passes a pass_env list that predates web grounding", () => {
+    process.env.TINYFISH_API_KEY = "tf_test_key";
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).toContain("export TINYFISH_API_KEY='tf_test_key'");
+  });
+
+  test("an absent TINYFISH_API_KEY exports nothing", () => {
+    const had = process.env.TINYFISH_API_KEY;
+    delete process.env.TINYFISH_API_KEY;
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" });
+    expect(f).not.toContain("TINYFISH_API_KEY");
+    if (had !== undefined) process.env.TINYFISH_API_KEY = had;
   });
 
   test("bootstrap sources the env file before its script", async () => {

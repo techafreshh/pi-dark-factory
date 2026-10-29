@@ -80,7 +80,10 @@ No Docker is required for instabox-mode repos.
 Web grounding (on by default for every repo) needs `TINYFISH_API_KEY` in the service unit's
 environment (`factoryd.env`) — get a key at agent.tinyfish.ai/api-keys. The bundled
 `pi-extensions/pdf-tinyfish.ts` extension provides `web_search` + `web_fetch`; without the
-key the tools are silently omitted and prompts fall back to the non-grounding text. Verify
+key the tools are silently omitted and prompts fall back to the non-grounding text. The
+service-env key is force-delivered into every stage environment (host, compose containers,
+instabox machines) regardless of a repo's `pass_env` list — no per-repo config entry needed.
+Verify
 the extension loads for the factory user:
 
 ```sh

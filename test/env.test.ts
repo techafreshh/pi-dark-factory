@@ -99,6 +99,18 @@ describe("buildStageCmd (container execution environment)", () => {
     delete process.env.PDF_TEST_PRESENT;
   });
 
+  test("TINYFISH_API_KEY rides into compose stages even when pass_env omits it", () => {
+    const had = process.env.TINYFISH_API_KEY;
+    process.env.TINYFISH_API_KEY = "tf_test_key";
+    try {
+      const s = buildStageCmd(cfg({ mode: "compose", pass_env: ["GITHUB_TOKEN"] }), mkdtempSync(join(tmpdir(), "pdfenv-")), "/state", "n");
+      expect(s.argvPrefix.join(" ")).toContain("-e TINYFISH_API_KEY");
+    } finally {
+      if (had === undefined) delete process.env.TINYFISH_API_KEY;
+      else process.env.TINYFISH_API_KEY = had;
+    }
+  });
+
   test("git identity: read from ~/.gitconfig and injected as stage git config", () => {
     const home = mkdtempSync(join(tmpdir(), "pdfenv-home-"));
     expect(readGitIdentity(home)).toBeNull(); // absent config -> no injection

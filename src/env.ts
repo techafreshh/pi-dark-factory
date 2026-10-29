@@ -87,6 +87,9 @@ export function buildStageCmd(
       .filter(Boolean)
       .filter((k) => process.env[k] !== undefined)
       .flatMap((k) => ["-e", k]),
+    // compose twin of buildMachineEnvFile's force-pass: an explicit pass_env
+    // list from before web grounding never carries TINYFISH_API_KEY
+    ...(process.env.TINYFISH_API_KEY ? ["-e", "TINYFISH_API_KEY"] : []),
   ];
   const rm = ["docker", "rm", "-f", uniqueName];
 

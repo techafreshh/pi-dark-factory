@@ -171,6 +171,12 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
   // repository" while the host held a valid token the whole time)
   const gh = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
   if (gh) lines.push(`export GITHUB_TOKEN=${escapeSh(gh)}`);
+  // same class as GITHUB_TOKEN: repos whose config predates web grounding
+  // carry explicit pass_env lists without TINYFISH_API_KEY, and the shallow
+  // env merge keeps it that way — force it through or machine stages run the
+  // tools key-less (observed: bi-ai-ui #80, qed #14, 2026-10-28/29)
+  const tf = process.env.TINYFISH_API_KEY;
+  if (tf) lines.push(`export TINYFISH_API_KEY=${escapeSh(tf)}`);
   // the box's pi needs the factory's own provider credentials: compose mode
   // gets them for free by bind-mounting ~/.pi into the stage container, but
   // a machine has its own root — ship auth.json/models.json over the same
