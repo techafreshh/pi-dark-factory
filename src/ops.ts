@@ -257,7 +257,7 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   if (existing) await ib.deleteMachine(name);
   const op = await ib.createMachine({
     name,
-    template: baseSnap ? undefined : ibx.template,
+    templateId: baseSnap ? undefined : ibx.template,
     snapshotId: baseSnap?.id,
     metadata: { factory: "1", bake: cfg.slug },
   });
@@ -497,7 +497,7 @@ export async function opsScenarioTest(
     const snap = snaps.find((s) => s.name === cfg.env.instabox!.snapshot);
     const m = await ib.ensureRunning({
       name,
-      template: snap ? undefined : cfg.env.instabox.template,
+      templateId: snap ? undefined : cfg.env.instabox.template,
       snapshotId: snap?.id,
       metadata: { factory: "1", repo: cfg.repo, issue: "scen-test" },
     });

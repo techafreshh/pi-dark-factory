@@ -488,7 +488,7 @@ export class LapMachine {
     const ibx = this.ibx();
     this.machine = await this.ib.ensureRunning({
       name: this.name,
-      template: ibx.snapshot ? undefined : ibx.template,
+      templateId: ibx.snapshot ? undefined : ibx.template,
       snapshotId: ibx.snapshot ? await this.snapshotIdByName(ibx.snapshot) : undefined,
       metadata: { factory: "1", repo: this.cfg.repo, issue: String(this.issue) },
     });

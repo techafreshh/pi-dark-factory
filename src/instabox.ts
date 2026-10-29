@@ -87,7 +87,8 @@ export function sanitizeMachinePart(s: string): string {
 
 export interface CreateMachineInput {
   name: string;
-  template?: string;
+  /** the API field is templateId — a bare "template" body key is 400 unknown_field */
+  templateId?: string;
   snapshotId?: string;
   metadata?: Record<string, string>;
 }

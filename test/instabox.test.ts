@@ -46,10 +46,10 @@ describe("InstaBox client", () => {
       rec.method === "POST" && rec.path === "/v1/machines" ? { status: 202, body: op("op1", "pending") } : undefined
     );
     const ib = new InstaBox("https://api.instabox.sh", "KEY", { fetchImpl: impl });
-    const res = await ib.createMachine({ name: "pdf-toy-i1", template: "basic" });
+    const res = await ib.createMachine({ name: "pdf-toy-i1", templateId: "basic" });
     expect(res.id).toBe("op1");
     expect(calls[0].headers["idempotency-key"]).toBeString();
-    expect(calls[0].body).toEqual({ name: "pdf-toy-i1", template: "basic" });
+    expect(calls[0].body).toEqual({ name: "pdf-toy-i1", templateId: "basic" });
   });
 
   test("waitOperation polls until succeeded, throws on failed", async () => {
@@ -96,11 +96,11 @@ describe("InstaBox client", () => {
     });
     const ib = new InstaBox("https://api.instabox.sh", "KEY", { fetchImpl: impl, pollMs: 1 });
 
-    await ib.ensureRunning({ name: "pdf-toy-i1", template: "basic" });
+    await ib.ensureRunning({ name: "pdf-toy-i1", templateId: "basic" });
     expect(created).toBe(true);
 
     machines["pdf-toy-i1"].state = "paused";
-    await ib.ensureRunning({ name: "pdf-toy-i1", template: "basic" });
+    await ib.ensureRunning({ name: "pdf-toy-i1", templateId: "basic" });
     expect(resumed).toBe(1);
     expect(created).toBe(true); // no second create
     void resumed;
