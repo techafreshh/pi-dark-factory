@@ -125,9 +125,9 @@ export class InstaBox {
     method: string,
     path: string,
     body?: unknown,
-    opts: { idempotent?: boolean; tolerate404?: boolean } = {}
+    opts: { idempotent?: boolean; tolerate404?: boolean; extraHeaders?: Record<string, string> } = {}
   ): Promise<T> {
-    const headers: Record<string, string> = { "X-API-Key": this.apiKey };
+    const headers: Record<string, string> = { "X-API-Key": this.apiKey, ...(opts.extraHeaders ?? {}) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (opts.idempotent) headers["Idempotency-Key"] = crypto.randomUUID();
     const res = await this.fetchFn(`${this.base}${path}`, {
@@ -165,12 +165,26 @@ export class InstaBox {
     await this.lifecycle(id, "start");
   }
 
-  async deleteMachine(id: string): Promise<void> {
+  async deleteMachine(idOrName: string): Promise<void> {
+    // the DELETE path resolves only the machine ID — a name there is a 404
+    // this method's tolerance would swallow as "already gone". Resolve names
+    // up front so every caller (laps pass ids, ops pass names) actually deletes.
+    let id = idOrName;
+    if (!idOrName.startsWith("m_")) {
+      const byName = await this.machineByName(idOrName).catch(() => null);
+      if (!byName) return; // nothing to delete
+      id = byName.id;
+    }
     try {
-      // the API requires Idempotency-Key on DELETE too — without it every
-      // machine cleanup 400s and the box lingers for the janitor
+      // the API requires Idempotency-Key AND X-Confirm-Delete (id or exact
+      // name) on machine DELETE — missing either 400/409s, and the old catch
+      // swallowed the confirmation 409 as "already gone", so NO factory path
+      // could actually delete a machine (laps, janitor, scenario tests —
+      // discovered live 2026-10-30: two stray boxes lingered through their
+      // own delete calls)
       const op = await this.call<InstaOperation>("DELETE", `/v1/machines/${encodeURIComponent(id)}`, undefined, {
         idempotent: true,
+        extraHeaders: { "X-Confirm-Delete": id },
       });
       if (op?.id) await this.waitOperation(op.id);
     } catch (e: any) {
@@ -193,7 +207,10 @@ export class InstaBox {
   }
 
   async deleteSnapshot(id: string): Promise<void> {
-    await this.call<void>("DELETE", `/v1/snapshots/${encodeURIComponent(id)}`, undefined, { idempotent: true }).catch((e) => {
+    await this.call<void>("DELETE", `/v1/snapshots/${encodeURIComponent(id)}`, undefined, {
+      idempotent: true,
+      extraHeaders: { "X-Confirm-Delete": id },
+    }).catch((e) => {
       if (!(e instanceof InstaBoxError && e.status === 404)) throw e;
     });
   }
