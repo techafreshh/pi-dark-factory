@@ -136,6 +136,13 @@ def cmd_doctor(_a):
             if not wt.get("key_set"):
                 missing.append("TINYFISH_API_KEY unset in factoryd.env — web_search/web_fetch will error until it is")
             print("web tools: " + "; ".join(missing))
+    sb = body.get("shared_base") or {}
+    if sb.get("snapshot"):
+        print(f"shared base: {sb['snapshot']} — {sb.get('template', 'template ?')}, baked {sb.get('bakedAt', '?')[:10]}")
+        if sb.get("contents"):
+            print(f"  contents: {sb['contents']}")
+    else:
+        print("shared base: UNMAPPED — write state/base-snapshot.json on the VPS (instabox repos naming 'shared-base' cannot boot until then)")
     code, body = _api("GET", "/status")
     if code != 200:
         die(f"/status answered {code} — check FACTORY_API_KEY")

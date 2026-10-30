@@ -10,6 +10,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { readSharedBase } from "./sharedbase";
 import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
@@ -58,6 +59,9 @@ export function startFactoryd(opts: FactorydOpts) {
             extension_on_host: existsSync(join(homedir(), ".pi", "agent", "extensions", "pdf-tinyfish.ts")),
             key_set: !!process.env.TINYFISH_API_KEY,
           },
+          // which snapshot `shared-base` resolves to right now — configs and
+          // skills say the token and NEVER a version; this answer is the truth
+          shared_base: readSharedBase(opts.stateDir),
         });
       }
 

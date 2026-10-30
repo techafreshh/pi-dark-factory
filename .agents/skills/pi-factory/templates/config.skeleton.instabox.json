@@ -37,7 +37,7 @@
   "env": {
     "mode": "instabox",
     "instabox": {
-      "snapshot": "factory-base-r2"
+      "snapshot": "shared-base"
     },
     "pass_env": ["GITHUB_TOKEN", "ZAI_API_KEY", "DEEPSEEK_API_KEY"]
   }

@@ -32,6 +32,7 @@ import { extensionFiles, webToggle } from "./webtools";
 import { collectSkillsB64 } from "./skills";
 import { branchName } from "./stages/intake";
 import { existsSync, readFileSync } from "node:fs";
+import { resolveSnapshotName } from "./sharedbase";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -468,7 +469,8 @@ export class LapMachine {
     private cfg: RepoConfig,
     public issue: number,
     private log: (msg: string) => void = () => {},
-    gen?: number
+    gen?: number,
+    private stateDir?: string
   ) {
     this.name = machineNameFor(cfg.slug, issue, gen);
   }
@@ -489,7 +491,9 @@ export class LapMachine {
     this.machine = await this.ib.ensureRunning({
       name: this.name,
       templateId: ibx.snapshot ? undefined : ibx.template,
-      snapshotId: ibx.snapshot ? await this.snapshotIdByName(ibx.snapshot) : undefined,
+      snapshotId: ibx.snapshot
+        ? await this.snapshotIdByName(this.stateDir ? resolveSnapshotName(this.stateDir, ibx.snapshot) : ibx.snapshot)
+        : undefined,
       metadata: { factory: "1", repo: this.cfg.repo, issue: String(this.issue) },
     });
     return this.machine;
@@ -592,7 +596,7 @@ export class LapMachine {
   }
 }
 
-export function openLapMachine(cfg: RepoConfig, issue: number, log?: (msg: string) => void, gen?: number): LapMachine {
+export function openLapMachine(cfg: RepoConfig, issue: number, log?: (msg: string) => void, gen?: number, stateDir?: string): LapMachine {
   const ib = InstaBox.fromEnv(cfg.env.instabox);
-  return new LapMachine(ib, cfg, issue, log, gen);
+  return new LapMachine(ib, cfg, issue, log, gen, stateDir);
 }

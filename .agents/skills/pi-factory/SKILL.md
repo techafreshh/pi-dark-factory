@@ -154,7 +154,8 @@ run warn.
 
 **The canonical config skeletons ship in `templates/` in this skill's
 folder** — `config.skeleton.json` and `config.skeleton.instabox.json`
-(`env.mode: "instabox"` with the `factory-base-r2` snapshot). They are
+(`env.mode: "instabox"` with the `shared-base` snapshot token — resolved VPS-side
+via `state/base-snapshot.json`; `factory-remote doctor` prints the current mapping). They are
 SHAPE references (field nesting, per-stage thinking, fallback strings) with
 one example lineup — swap the provider/model entries for whatever
 `factory-remote models` showed and the user approved. Fill the
@@ -259,7 +260,7 @@ disagreement, re-echo the effective config once before proceeding.
   branch/base, gate list, boundaries incl. commit discipline). The agent
   never spends turns discovering its environment.
 
-#### The factory-base-r2 snapshot — what's in the box (instabox mode)
+#### The shared base snapshot — what's in the box (instabox mode)
 
 **Diff the PRD's runtime needs against this list at Stage 2 and SPEAK UP
 before the first lap.** A missing toolchain never surfaces at onboarding —
@@ -299,7 +300,10 @@ enrichments, so an existing image never needs to be overridden.
    first) — for a shared-base re-bake, **pause the instabox repos first**
    (`factory-remote pause <slug>`): new machine boots fail in the
    delete→re-save window. The windowless alternative, preferred while the
-   wheel is busy: save under a NEW versioned name (`factory-base-r3`, …)
+   wheel is busy: save under a NEW versioned name (factory-base-r4, …)
+   and flip `state/base-snapshot.json` to point the `shared-base` token at
+   it — configs, templates, and skills only ever say the token, so the flip
+   is the ENTIRE rollout (old names stay on the platform as rollback aliases)
    and repoint configs — and KEEP the old name alive as an alias until
    tick turnover, because **a long-running tick holds configs in memory
    for hours and keeps resolving the OLD snapshot name** (kintsugi,

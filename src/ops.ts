@@ -18,6 +18,7 @@ import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from
 import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
+import { readSharedBase, resolveSnapshotName, SHARED_BASE_ALIAS } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
@@ -244,8 +245,20 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   // everything the golden base carries (pi, node, docker — reproducer's
   // pip/venv bake, 2026-10-26, caught before it ran). Fresh repos with no
   // snapshot still start from the template.
+  // a config naming the alias means "boot the fleet base" — a per-repo bake
+  // would re-save the repo's OWN deps as the base every project boots from.
+  // The shared base is re-baken by the operator procedure (fresh template →
+  // new versioned name → flip state/base-snapshot.json), never by this verb.
+  if (ibx.snapshot === SHARED_BASE_ALIAS) {
+    const cur = readSharedBase(stateDir);
+    throw new Error(
+      `"${SHARED_BASE_ALIAS}" is the fleet base (currently ${cur?.snapshot ?? "UNMAPPED — write state/base-snapshot.json first"}). ` +
+      `A per-repo bake here would pollute every project's base — put repo deps in the scenario setup, or give this repo its own snapshot name. ` +
+      `To upgrade the shared base itself: fresh-template bake → new versioned name → flip state/base-snapshot.json.`
+    );
+  }
   const baseSnap = ibx.snapshot
-    ? (await ib.listSnapshots()).find((s) => s.name === ibx.snapshot)
+    ? (await ib.listSnapshots()).find((s) => s.name === resolveSnapshotName(stateDir, ibx.snapshot))
     : undefined;
   if (ibx.snapshot && !baseSnap) throw new Error(`instabox snapshot "${ibx.snapshot}" not found — bake it first: foreman bake ${slug}`);
 
@@ -645,7 +658,7 @@ export async function opsScenarioTest(
     try {
       snaps = await ib.listSnapshots();
     } catch {}
-    const snap = snaps.find((s) => s.name === cfg.env.instabox!.snapshot);
+    const snap = snaps.find((s) => s.name === resolveSnapshotName(stateDir, cfg.env.instabox!.snapshot));
     const m = await ib.ensureRunning({
       name,
       templateId: snap ? undefined : cfg.env.instabox.template,

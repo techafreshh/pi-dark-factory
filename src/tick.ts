@@ -469,7 +469,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     let worktree: string | null = null;
     let implRes: PiStageResult;
     if (cfg.env.mode === "instabox") {
-      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId);
+      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
       const machRes = await machine.callStage("implement", {
         models: implModels,
         prompt:
