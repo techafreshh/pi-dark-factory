@@ -628,6 +628,20 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       verdict.verdict = "reject";
       verdict.findings = "review verdict unparseable after " + REVIEW_REASKS + " re-asks — failing closed:\n" + revRes.outcome.text.slice(0, 1500);
     }
+    // the review lands on the PR itself: verdict + full reviewer text, for
+    // every attempt (approve or reject) — the PR thread is the audit trail
+    // humans actually read. A failed comment never fails the lap.
+    try {
+      const reviewBody = [
+        `## Factory review — issue #${n}, attempt ${attempt}/${cfg.attempts} — VERDICT: ${verdict.verdict.toUpperCase()}`,
+        "",
+        revRes.outcome.text.slice(0, 30_000) + (revRes.outcome.text.length > 30_000 ? "\n\n…(truncated at 30k chars — full text in the factory's session records)" : ""),
+        "",
+        "<sub>Posted automatically by the pi-dark-factory review stage (read-only reviewer). Findings ride the normal repair loop; DISCOVERIES are harvested separately.</sub>",
+      ].join("\n");
+      await deps.gh.issueComment(pr, reviewBody);
+    } catch {}
+
     // discoveries harvest (archon-steal #4): persisted per attempt, never
     // gating — the discoveries verb is the publication gate
     const discoveries = parseDiscoveries(revRes.outcome.text);
