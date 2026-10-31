@@ -9,7 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadRepoConfig, parseModelString, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
-import { Gh, repoDefaultBranch } from "./gh";
+import { Gh, repoDefaultBranch, type GhApi } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
 import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
@@ -552,17 +552,54 @@ export async function opsDiscoveries(stateDir: string, slug: string, file: boole
   const seen = new Set<string>();
   const deduped = found.filter((d) => (d.title && !seen.has(d.title) ? (seen.add(d.title), true) : false));
   if (!file) return { slug, count: deduped.length, discoveries: deduped, filed: [] };
-  const gh = new Gh(cfg.repo);
+  const filed = await fileDiscoveries(stateDir, slug, new Gh(cfg.repo), deduped);
+  receipt(stateDir, `discoveries ${slug}: filed ${filed.length} of ${deduped.length} harvested observation(s)`, slug);
+  return { slug, count: deduped.length, discoveries: deduped, filed };
+}
+
+export const DISCOVERY_LABEL = "discovery";
+
+/**
+ * The filing half of the discoveries gate, shared by the manual verb and the
+ * tick's auto_file path: title-deduped `[discovery]` issues, labeled so the
+ * class stays manageable (skip_labels can opt a repo out of working them),
+ * with an acceptance nudge — a discovery arrives as a claim, and the plan
+ * stage is what turns it into a verifiable change.
+ */
+export async function fileDiscoveries(
+  stateDir: string,
+  slug: string,
+  gh: GhApi,
+  deduped: { issue: number; attempt: number; title: string; claim: string; why: string }[]
+): Promise<{ issue: number; title: string }[]> {
   const open = await gh.issueListOpen(100);
   const filed: { issue: number; title: string }[] = [];
   for (const d of deduped) {
     const title = `[discovery] ${d.title}`;
     if (open.some((i) => i.title === title)) continue;
-    const body = `${d.claim}\n\nWhy it matters: ${d.why}\n\nHarvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.\n`;
-    filed.push({ issue: await gh.issueCreate(title, body), title });
+    const body = [
+      d.claim,
+      "",
+      `Why it matters: ${d.why}`,
+      "",
+      "Acceptance: the plan stage derives concrete acceptance from the claim above — demonstrate the resolved state, not just the absence of the old one. The repo's scenario gates must stay green and the review must judge the claim addressed.",
+      "",
+      `Harvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.`,
+    ].join("\n");
+    const n = await gh.issueCreate(title, body);
+    filed.push({ issue: n, title });
+    try {
+      await gh.issueAddLabels(n, [DISCOVERY_LABEL]);
+    } catch {
+      // the label may not exist yet — create it once and retry (best-effort:
+      // a label failure must never lose a filed discovery)
+      try {
+        await sh(["gh", "label", "create", DISCOVERY_LABEL, "--repo", gh.repo, "--description", "harvested reviewer discovery (future-bug candidate)", "--force"]);
+        await gh.issueAddLabels(n, [DISCOVERY_LABEL]);
+      } catch {}
+    }
   }
-  receipt(stateDir, `discoveries ${slug}: filed ${filed.length} of ${deduped.length} harvested observation(s)`, slug);
-  return { slug, count: deduped.length, discoveries: deduped, filed };
+  return filed;
 }
 
 export async function opsProveGates(
@@ -817,7 +854,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
 }
 
 const CONFIG_PATCH_ALLOW = [
-  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "pi",
+  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "pi", "discoveries",
 ];
 
 function deepMerge(base: any, patch: any): any {
@@ -941,6 +978,12 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   // shape-validate models at WRITE time — the silent-broken shapes (dotted
   // strings, thinking suffixes inside the model id) passed this write-only
   // merge and cost a whole onboarding session (kvstore 2026-10-23)
+  if (patch.discoveries !== undefined) {
+    if (typeof patch.discoveries !== "object" || Array.isArray(patch.discoveries))
+      throw new Error("config patch discoveries must be an object {auto_file?: boolean}");
+    if (patch.discoveries.auto_file !== undefined && typeof patch.discoveries.auto_file !== "boolean")
+      throw new Error("config patch discoveries.auto_file must be true or false");
+  }
   if (patch.models && typeof patch.models === "object") {
     for (const [stage, entry] of Object.entries(patch.models)) {
       if (entry === null) continue;

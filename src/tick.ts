@@ -16,6 +16,7 @@ import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseDiscoveries, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
+import { fileDiscoveries } from "./ops";
 import { buildRuntimeContext } from "./runtime-context";
 import { ensureHostExtension, extensionPresent, stageTools, webToggle } from "./webtools";
 import { syncHostSkills } from "./skills";
@@ -652,6 +653,19 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           JSON.stringify({ attempt, recordedAt: new Date().toISOString(), discoveries }, null, 2) + "\n"
         );
       } catch {}
+    }
+    if (cfg.discoveries?.auto_file && discoveries.length > 0) {
+      // the fleet works its own future-bug candidates: file new discoveries
+      // (title-deduped, labeled) straight into the backlog — the next tick's
+      // intake claims them in number order, behind the main chain. A filing
+      // failure never fails the lap; the sidecar keeps everything for --file.
+      try {
+        const filed = await fileDiscoveries(stateDir, cfg.slug, deps.gh, discoveries.map((d) => ({ issue: n, attempt, ...d })));
+        if (filed.length > 0)
+          repoReceipt(cfg.slug, stateDir, `discoveries auto-filed ${filed.length}: ${filed.map((f) => f.title).join("; ").slice(0, 200)}`);
+      } catch (e) {
+        repoReceipt(cfg.slug, stateDir, `discoveries auto-file errored (harvest preserved): ${e instanceof Error ? e.message : e}`);
+      }
     }
     if (verdict.verdict === "reject") {
       findings = verdict.findings;

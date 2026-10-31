@@ -5,6 +5,7 @@ const DEFAULTS = {
   attempts: 3,
   merge: { method: "squash" as const, required_checks: [] as string[], delete_branch: true },
   timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
+  discoveries: { auto_file: false },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -120,6 +121,7 @@ export function loadRepoConfig(path: string): RepoConfig {
       holdout: raw.scenario?.holdout,
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
+    discoveries: { ...DEFAULTS.discoveries, ...(raw.discoveries ?? {}) },
     pi: {
       ...DEFAULTS.pi,
       ...raw.pi,
@@ -136,6 +138,8 @@ export function loadRepoConfig(path: string): RepoConfig {
   // web flags must be booleans — a string "false" from a bad remote patch
   // would otherwise truthy through and flip the toggle the operator meant
   // to close (same fail-fast rule as the roster checks: reject at write time)
+  if (cfg.discoveries!.auto_file !== undefined && typeof cfg.discoveries!.auto_file !== "boolean")
+    throw new Error(`config discoveries.auto_file must be true or false (got ${JSON.stringify(cfg.discoveries!.auto_file)})`);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")

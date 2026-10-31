@@ -101,6 +101,10 @@ export interface RepoConfig {
       fetch?: boolean;
     };
   };
+  /** discoveries harvest: auto_file=true files new reviewer discoveries as
+   *  `[discovery]` issues straight after each review (title-deduped), so the
+   *  factory works future-bug candidates like any backlog item. */
+  discoveries?: { auto_file?: boolean };
 }
 
 export interface IssueLite {
