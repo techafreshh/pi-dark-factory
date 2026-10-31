@@ -151,7 +151,14 @@ every mode sees the same tree:
 Add a skill by dropping a directory in `pi-skills/` — the next stage carries it, no
 restart (the collector refuses payloads over 4 MiB of base64 rather than bloat every
 stage's ssh stdin, and loose `.md` files in the tree root load as skills too, so use
-directories). The starter, `scenario-harness`, teaches agents the runtime-verification
+directories). With `discoveries.auto_file: true` in a repo config (flipped on fleet-wide as of
+2026-10-31), new discoveries are filed automatically right after each review — labeled
+`discovery`, title-deduped, and claimed by the next tick's intake in number order behind
+the main chain; each issue body carries an acceptance nudge because a discovery arrives
+as a claim and the plan stage is what makes it verifiable. Without the flag, filing stays
+behind `factory-remote discoveries <slug> --file`.
+
+The starter, `scenario-harness`, teaches agents the runtime-verification
 contract: the `expect`-token grammar probes are judged with, what failed-probe
 reproduction data means, and why probes are the issue's contract rather than something
 to game.
