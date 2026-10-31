@@ -22,7 +22,7 @@ function stubGh(opts: { openTitles?: string[] } = {}) {
   const open: IssueLite[] = (opts.openTitles ?? []).map((title, i) => ({ number: 55 + i, title, body: "", headRefName: "", labels: [] }));
   const gh: GhApi = {
     issueList: () => Promise.resolve([] as IssueLite[]),
-    issueListOpen: () => Promise.resolve(open),
+    issueList: (state) => Promise.resolve(state === "open" ? open : []),
     issueView: () => Promise.resolve({ number: 0, title: "", body: "", labels: [], createdAt: "", state: "open" }),
     issueComment: () => Promise.resolve(),
     issueClose: () => Promise.resolve(),

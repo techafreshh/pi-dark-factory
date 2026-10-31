@@ -572,7 +572,7 @@ export async function fileDiscoveries(
   gh: GhApi,
   deduped: { issue: number; attempt: number; title: string; claim: string; why: string }[]
 ): Promise<{ issue: number; title: string }[]> {
-  const open = await gh.issueListOpen(100);
+  const open = await gh.issueList("open", 100);
   const filed: { issue: number; title: string }[] = [];
   for (const d of deduped) {
     const title = `[discovery] ${d.title}`;
