@@ -122,7 +122,10 @@ export async function prioritizeDiscoveries(
   _ledger: Ledger,
   _gh: GhApi
 ): Promise<IssueLite[]> {
-  const idx = claimable.findIndex((i) => (i.labels ?? []).includes(DISCOVERY_LABEL));
-  if (idx <= 0) return claimable; // none claimable, or already front
-  return [claimable[idx], ...claimable.slice(0, idx), ...claimable.slice(idx + 1)];
+  // stable partition: the whole discovery queue is the front of the line
+  // (number order inside each class) — promoting only the first discovery
+  // would strand its siblings behind product issues within one snapshot
+  const isDiscovery = (i: IssueLite) => (i.labels ?? []).includes(DISCOVERY_LABEL);
+  if (!claimable.some(isDiscovery)) return claimable;
+  return [...claimable.filter(isDiscovery), ...claimable.filter((i) => !isDiscovery(i))];
 }
