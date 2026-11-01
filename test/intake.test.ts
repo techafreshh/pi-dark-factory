@@ -183,62 +183,47 @@ describe("pickClaimable (deterministic intake)", () => {
   });
 });
 
-describe("prioritizeDiscoveries (discovery jumps the queue, alternation-guarded)", () => {
-  const lap = (ledger: Ledger, n: number, outcome: string) => {
-    const id = ledger.startLap(cfg.repo, n);
-    ledger.endLap(id, outcome, "");
-  };
-
+describe("prioritizeDiscoveries (discoveries drain fully before product work)", () => {
   test("promotes the oldest claimable discovery ahead of product issues", async () => {
     const gh = new FakeGh();
     gh.issues = [issue(5, "Product"), issue(6, "Product 2"), issue(28, "Discovery", "", ["discovery"])];
-    const ledger = new Ledger(":memory:");
-    lap(ledger, 5, "merged"); // last merged lap was product → promotion allowed
-    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, ledger, gh), ledger, gh);
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
     expect(ordered.map((i) => i.number)).toEqual([28, 5, 6]);
   });
 
-  test("no promotion right after a merged discovery lap (product interleaves back)", async () => {
+  test("STILL promotes right after a merged discovery lap — no alternation, the backlog drains", async () => {
     const gh = new FakeGh();
     gh.issues = [issue(5, "Product"), issue(28, "Discovery", "", ["discovery"])];
     const ledger = new Ledger(":memory:");
-    lap(ledger, 28, "merged"); // a discovery lap just merged → product goes next
-    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, ledger, gh), ledger, gh);
-    expect(ordered.map((i) => i.number)).toEqual([5, 28]);
-  });
-
-  test("a failed discovery lap does not consume the alternation slot (recovery first)", async () => {
-    const gh = new FakeGh();
-    gh.issues = [issue(5, "Product"), issue(28, "Discovery", "", ["discovery"])];
-    const ledger = new Ledger(":memory:");
-    lap(ledger, 5, "merged");
-    lap(ledger, 28, "failed"); // not merged → guard still sees the product lap
-    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, ledger, gh), ledger, gh);
-    expect(ordered.map((i) => i.number)).toEqual([28, 5]); // reclaimable recovery doesn't park behind product
-  });
-
-  test("unreadable last-lap issue fails open toward freshness", async () => {
-    const gh = new FakeGh();
-    gh.issues = [issue(5, "Product"), issue(28, "Discovery", "", ["discovery"])];
-    const ledger = new Ledger(":memory:");
-    lap(ledger, 999, "merged"); // merged issue unknown to gh → issueView rejects
+    const id = ledger.startLap(cfg.repo, 28);
+    ledger.endLap(id, "merged", ""); // a discovery lap just merged — siblings still go next
     const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, ledger, gh), ledger, gh);
     expect(ordered.map((i) => i.number)).toEqual([28, 5]);
   });
 
-  test("no discovery claimable → order untouched", async () => {
+  test("drains ALL discoveries before any product issue", async () => {
+    const gh = new FakeGh();
+    gh.issues = [
+      issue(2, "Product"),
+      issue(3, "Product 2"),
+      issue(10, "Discovery B", "", ["discovery"]),
+      issue(11, "Discovery C", "", ["discovery"]),
+    ];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    expect(ordered.map((i) => i.number)).toEqual([10, 11, 2, 3]);
+  });
+
+  test("no discovery claimable → order untouched (product claims normally)", async () => {
     const gh = new FakeGh();
     gh.issues = [issue(5, "Product"), issue(6, "Product 2")];
     const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
     expect(ordered.map((i) => i.number)).toEqual([5, 6]);
   });
 
-  test("discovery already at the front stays there even when the guard blocks promotion", async () => {
+  test("discovery already at the front stays there", async () => {
     const gh = new FakeGh();
-    gh.issues = [issue(28, "Discovery", "", ["discovery"]), issue(29, "Discovery 2", "", ["discovery"])];
-    const ledger = new Ledger(":memory:");
-    lap(ledger, 28, "merged");
-    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, ledger, gh), ledger, gh);
-    expect(ordered.map((i) => i.number)).toEqual([28, 29]);
+    gh.issues = [issue(28, "Discovery", "", ["discovery"]), issue(29, "Discovery 2", "", ["discovery"]), issue(5, "Product")];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    expect(ordered.map((i) => i.number)).toEqual([28, 29, 5]);
   });
 });

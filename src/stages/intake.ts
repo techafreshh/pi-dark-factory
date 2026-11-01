@@ -104,37 +104,25 @@ export async function pickClaimable(
 }
 
 /**
- * Discovery issues jump the claim queue — one at a time. A harvested
- * observation is cheapest to act on while its parent PR is still recent, but
- * filing gives it the next issue number, which under pure number order parks
- * it behind the entire product backlog (jetpack's 8 discoveries would wait
- * behind 18 product issues). So the oldest claimable [discovery] issue moves
- * to the front — UNLESS the repo's most recent merged lap was itself a
- * discovery lap: product issues always interleave back in, so a
- * discovery-heavy review phase can never starve the main chain. Number order
- * holds inside each class, claimability is untouched (skip_labels still
- * filters the class out entirely), and unreadable history fails open toward
- * freshness. A failed discovery lap also re-promotes: its row is still
- * reclaimable, and recovery should not park behind product work.
+ * Discovery issues drain fully before product work: the oldest claimable
+ * [discovery] issue ALWAYS moves to the front, and product issues claim only
+ * when no discovery is claimable. Owner policy (2026-11-01, explicit): each
+ * lap's discoveries are fixed before the next issue — the first cut of this
+ * interleaved one product lap after every discovery lap, which left the
+ * sibling discoveries parked behind the whole product backlog and was
+ * removed on sight. The class self-heals: a discovery that burns its
+ * attempts blocks and stops being claimable, so one bad observation cannot
+ * starve the drain; new discoveries filed by a product lap's review go
+ * straight back to the front; skip_labels still opts a repo out entirely;
+ * claimability (dependency chains, foreign PRs, ledger state) is untouched.
  */
 export async function prioritizeDiscoveries(
   cfg: RepoConfig,
   claimable: IssueLite[],
-  ledger: Ledger,
-  gh: GhApi
+  _ledger: Ledger,
+  _gh: GhApi
 ): Promise<IssueLite[]> {
   const idx = claimable.findIndex((i) => (i.labels ?? []).includes(DISCOVERY_LABEL));
   if (idx <= 0) return claimable; // none claimable, or already front
-  const last = ledger
-    .recentLaps(cfg.repo, 10)
-    .find((l) => l.outcome === "merged" && l.issue_number !== null);
-  if (last) {
-    try {
-      const viewed = await gh.issueView(last.issue_number);
-      if ((viewed.labels ?? []).includes(DISCOVERY_LABEL)) return claimable; // a discovery lap just merged — product next
-    } catch {
-      // unreadable history — promote (fail open toward freshness)
-    }
-  }
   return [claimable[idx], ...claimable.slice(0, idx), ...claimable.slice(idx + 1)];
 }
