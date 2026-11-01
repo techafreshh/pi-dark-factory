@@ -1071,7 +1071,12 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
             }
           }
           if (laps >= MAX_LAPS_PER_TICK_PER_REPO) {
-            const remaining = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+            const remaining = await prioritizeDiscoveries(
+              cfg,
+              await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []),
+              deps.ledger,
+              deps.gh
+            ).catch(() => []);
             if (remaining.length > 0) {
               repoReceipt(cfg.slug, opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
             }
