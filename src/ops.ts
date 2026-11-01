@@ -514,7 +514,7 @@ export interface DiscoveryItem {
 
 /**
  * Discoveries (archon-steal #4): reviewers notice adjacent work that never
- * blocks a lap and was previously dropped. The reviewer lists up to five
+ * blocks a lap and was previously dropped. The reviewer lists up to ten
  * (prompt contract), tick persists one JSON per attempt, and this verb is
  * the publication gate: preview (default) lists everything deduped by
  * title; --file creates `[discovery] ...` GitHub issues, skipping titles

@@ -10,11 +10,15 @@ export interface Discovery {
   why: string;
 }
 
-/** Extract the reviewer's DISCOVERIES section (archon-steal #4): up to five
+/** Extract the reviewer's DISCOVERIES section (archon-steal #4): up to ten
  *  `- title :: claim :: why` lines, tolerant of a missing section (returns
- *  []) and of `none`. Never gates anything — harvesting only. */
+ *  []) and of `none`. Never gates anything — harvesting only.
+ *  The header matches with or without markdown hashes — real reviewers
+ *  (jetpack #23–26) echo the section title as a bare `DISCOVERIES …` line,
+ *  and requiring `##` silently zeroed every harvest. Capture ends at the
+ *  first flush-left non-bullet line, so trailing prose can't leak items. */
 export function parseDiscoveries(reviewText: string): Discovery[] {
-  const m = reviewText.match(/##\s*DISCOVERIES[^\n]*\n([\s\S]*?)(?=\n##\s|\nINVARIANTS|$)/i);
+  const m = reviewText.match(/(?:^|\n)[ \t]*#{0,4}[ \t]*DISCOVERIES\b[^\n]*\n([\s\S]*?)(?=\n(?![-\s])|$)/i);
   if (!m) return [];
   const out: Discovery[] = [];
   for (const line of m[1].split("\n")) {
@@ -24,7 +28,7 @@ export function parseDiscoveries(reviewText: string): Discovery[] {
     if (parts.length < 2 || !parts[0]) continue;
     out.push({ title: parts[0], claim: parts[1] ?? "", why: parts[2] ?? "" });
   }
-  return out.slice(0, 5);
+  return out.slice(0, 10);
 }
 
 export function parseVerdict(text: string): { verdict: Verdict; findings: string } {
@@ -107,7 +111,7 @@ export function buildReviewPrompt(
     "- Then, in order: `What's good` (one or two lines); the acceptance-coverage list; numbered findings (write `none` on a clean approve).",
     "",
     "## DISCOVERIES (real, out-of-scope)",
-    "After the verdict, list up to 5 adjacent observations you noticed while reading the code but did NOT treat as findings — one line each, exactly:",
+    "After the verdict, list up to 10 adjacent observations you noticed while reading the code but did NOT treat as findings — one line each, exactly:",
     "- <short title> :: <one-line claim> :: <why it matters later>",
     "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. They are harvested into a backlog someone else may pick up.",
     "",
