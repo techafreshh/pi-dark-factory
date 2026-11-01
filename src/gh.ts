@@ -29,21 +29,37 @@ async function ghJson<T>(repo: string, args: string[]): Promise<T> {
   return parsed as T;
 }
 
+/**
+ * `gh --json labels` returns label OBJECTS ({name, id, color, …}); IssueLite
+ * promises string[]. Every string comparison against a raw entry — skip_labels,
+ * the needs-info gate, discovery prioritization — silently never matched the
+ * real CLI shape (observed 2026-11-01: every repo claimed issues in number
+ * order because the discovery promotion found no "discovery" among objects).
+ * Normalize at the boundary so the type tells the truth; tolerate strings for
+ * test fakes.
+ */
+export function labelNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((l: any) => (typeof l === "string" ? l : typeof l?.name === "string" ? l.name : ""))
+    .filter(Boolean);
+}
+
 export class Gh implements GhApi {
   constructor(public repo: string) {}
 
   issueList(state: "open" | "all", limit = 100): Promise<IssueLite[]> {
-    return ghJson(this.repo, [
+    return ghJson<(Omit<IssueLite, "labels"> & { labels: unknown })[]>(this.repo, [
       "issue", "list", "--state", state, "--limit", String(limit),
       "--json", "number,title,body,labels,createdAt,state",
-    ]);
+    ]).then((rs) => rs.map((r) => ({ ...r, labels: labelNames(r.labels) })));
   }
 
   async issueView(n: number): Promise<IssueLite & { state: string }> {
-    const r = await ghJson<IssueLite & { state: string }>(this.repo, [
+    const r = await ghJson<Omit<IssueLite, "labels"> & { labels: unknown; state: string }>(this.repo, [
       "issue", "view", String(n), "--json", "number,title,body,labels,state",
     ]);
-    return r;
+    return { ...r, labels: labelNames(r.labels) };
   }
 
   async issueComment(n: number, body: string): Promise<void> {
