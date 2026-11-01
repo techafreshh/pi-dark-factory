@@ -329,6 +329,21 @@ Fallback strings are `provider/model[:thinking]`. Provider errors advance the ch
 and spawn errors stop it. Tier lesson from the old factory's logs: cheap model for plan fan-out,
 disciplined model for implement/review.
 
+## Deploying changes to the factory
+
+Two code surfaces load differently — a `git pull` reaches only one of them:
+
+- **Timer ticks** (pi-factory.service, every 15 min) spawn a fresh process from the checkout
+  per firing — a pull lands at the next tick, safe mid-lap.
+- **The daemon** (pi-factoryd, :8077) dispatches slug-scoped ticks (`factory-remote tick SLUG`)
+  **in-process** (`factoryd.ts` → `beginTick`), so it runs its START-TIME code forever. A pull
+  without a restart leaves every daemon-dispatched tick on the old behavior — observed
+  2026-11-01: the discovery drain-first policy was on disk but scoped ticks kept alternating
+  until the restart. Any change to tick behavior (intake, stages, gates, merge) therefore ends
+  with `sudo systemctl restart pi-factoryd` — safe anytime EXCEPT while laps are in flight
+  (they run inside the daemon; restarting kills them mid-stage). Wait for the per-repo tick
+  locks to release first, restart, then resume.
+
 ## Development
 
 ```
