@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LapMachine, STAGE_DRIVER, bootstrapScriptFor, buildMachineEnvFile, callMachineStage, machineBash, PortForwarder, type SshTarget } from "../src/machine";
+import { LapMachine, STAGE_DRIVER, bootstrapScriptFor, buildMachineEnvFile, callMachineStage, machineBash, outcomeFromRun, PortForwarder, type SshTarget } from "../src/machine";
 import { InstaBox } from "../src/instabox";
 import { callPi } from "../src/pi";
 import { extensionPresent } from "../src/webtools";
@@ -429,5 +429,40 @@ describe("callPi is untouched by machine mode", () => {
       timeoutMs: 5000,
     });
     expect(res.kind).toBe("provider_error");
+  });
+});
+
+describe("outcomeFromRun (empty-model gate classification)", () => {
+  const spec = { provider: "x", model: "y" } as any;
+  const run = (stdout: string) =>
+    outcomeFromRun({ code: 0, stdout, stderr: "", timedOut: false }, spec);
+
+  test("gate failure with ZERO output tokens is a provider error — the fallback must advance", () => {
+    const { outcome } = run(
+      'PDFGATE=no commits ahead of base — nothing was implemented\n' +
+        '{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":1234,"output":0}}}\n'
+    );
+    expect(outcome.kind).toBe("provider_error");
+    if (outcome.kind === "provider_error") {
+      expect(outcome.error).toContain("produced no output");
+      expect(outcome.error).toContain("nothing was implemented");
+    }
+  });
+
+  test("gate failure with real model work stays a spawn_error (gates stop the model loop)", () => {
+    const { outcome } = run(
+      'PDFGATE=no commits ahead of base — nothing was implemented\n' +
+        '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"I looked at it"}],"usage":{"input":500,"output":900}}}\n'
+    );
+    expect(outcome.kind).toBe("spawn_error");
+    if (outcome.kind === "spawn_error") expect(outcome.error).toContain("machine gate failed");
+  });
+
+  test("zero output with PDFRC=0 is still the no-final-text provider error", () => {
+    const { outcome } = run(
+      'PDFRC=0\n' +
+        '{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":10,"output":0}}}\n'
+    );
+    expect(outcome.kind).toBe("provider_error");
   });
 });

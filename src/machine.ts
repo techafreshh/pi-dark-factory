@@ -296,7 +296,7 @@ export interface MachineStageResult {
   raw: string;
 }
 
-function outcomeFromRun(res: ShRes, spec: ModelSpec): { outcome: PiOutcome; raw: string } {
+export function outcomeFromRun(res: ShRes, spec: ModelSpec): { outcome: PiOutcome; raw: string } {
   if (res.timedOut) return { outcome: { kind: "timeout" }, raw: "" };
   const lines = res.stdout.split("\n");
   const markerIdx = lines.findIndex((l) => /^(PDFRC=|PDFGATE=)/.test(l.trim()));
@@ -310,15 +310,32 @@ function outcomeFromRun(res: ShRes, spec: ModelSpec): { outcome: PiOutcome; raw:
   const marker = lines[markerIdx].trim();
   const jsonl = lines.slice(markerIdx + 1).filter((l) => l.trim().length > 0);
   const raw = jsonl.join("\n") + (jsonl.length ? "\n" : "");
+  const parsed = parseEventStream(jsonl);
   if (marker.startsWith("PDFGATE=")) {
     const detail = res.stderr.trim().split("\n").slice(-6).join(" | ").slice(0, 400);
+    // a gate failure from a model that produced ZERO output tokens is a
+    // provider failure, not a work-quality failure: the model never acted,
+    // so "nothing was implemented" says nothing about the issue. Classify it
+    // as provider_error so the fallback chain advances — otherwise one dead
+    // endpoint burns every attempt on the primary (observed: tic-tac-toe #37
+    // burned 3 attempts on river/GLM returning empty 200s; the deepseek
+    // fallback never got tried because gates stop the model loop)
+    if (!parsed.usage || parsed.usage.output_tokens === 0) {
+      return {
+        outcome: {
+          kind: "provider_error",
+          usage: parsed.usage ?? null,
+          error: `machine model produced no output (gate: ${marker.slice("PDFGATE=".length)}): ${detail}`,
+        },
+        raw,
+      };
+    }
     return {
       outcome: { kind: "spawn_error", error: `machine gate failed (${marker.slice("PDFGATE=".length)}): ${detail}` },
       raw,
     };
   }
   const rc = Number(marker.slice("PDFRC=".length));
-  const parsed = parseEventStream(jsonl);
   if (rc !== 0) {
     const detail = parsed.errorHint ?? res.stderr.trim().split("\n").slice(-4).join("; ");
     return { outcome: { kind: "provider_error", usage: parsed.usage ?? null, error: `pi exited ${rc} in machine: ${(detail || "unknown").slice(0, 500)}` }, raw };
