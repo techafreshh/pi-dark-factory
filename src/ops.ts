@@ -18,6 +18,7 @@ import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from
 import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
+import { DISCOVERY_LABEL } from "./stages/intake";
 import { readBases, resolveSnapshotName } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
@@ -558,7 +559,7 @@ export async function opsDiscoveries(stateDir: string, slug: string, file: boole
   return { slug, count: deduped.length, discoveries: deduped, filed };
 }
 
-export const DISCOVERY_LABEL = "discovery";
+export { DISCOVERY_LABEL };
 
 /**
  * The filing half of the discoveries gate, shared by the manual verb and the

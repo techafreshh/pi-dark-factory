@@ -113,7 +113,7 @@ export function buildReviewPrompt(
     "## DISCOVERIES (real, out-of-scope)",
     "After the verdict, list up to 10 adjacent observations you noticed while reading the code but did NOT treat as findings — one line each, exactly:",
     "- <short title> :: <one-line claim> :: <why it matters later>",
-    "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. They are harvested into a backlog someone else may pick up.",
+    "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. They are harvested into a backlog someone else may pick up. The cap is a ceiling, never a quota — most reviews honestly surface 0–3, and padding the list to reach it breaks the same evidence bar.",
     "",
     "INVARIANTS: read-only; do not fix anything yourself — rejections are routed back to the implementer with your findings.",
   ].join("\n");

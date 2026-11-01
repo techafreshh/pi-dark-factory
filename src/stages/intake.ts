@@ -14,6 +14,9 @@ export function branchName(n: number) {
  */
 export const NEEDS_INFO_LABEL = "factory:needs-info";
 
+/** Reviewer discoveries file with this label (shared with ops's filing half). */
+export const DISCOVERY_LABEL = "discovery";
+
 /** every `Depends on: #1, #2` mention in an issue body */
 export function parseDepends(body: string): number[] {
   const out: number[] = [];
@@ -98,4 +101,40 @@ export async function pickClaimable(
   const open = await gh.issueList("open", 100);
   if (open.length === 0) return { issue: null, reason: "no open issues" };
   return { issue: null, reason: "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)" };
+}
+
+/**
+ * Discovery issues jump the claim queue — one at a time. A harvested
+ * observation is cheapest to act on while its parent PR is still recent, but
+ * filing gives it the next issue number, which under pure number order parks
+ * it behind the entire product backlog (jetpack's 8 discoveries would wait
+ * behind 18 product issues). So the oldest claimable [discovery] issue moves
+ * to the front — UNLESS the repo's most recent merged lap was itself a
+ * discovery lap: product issues always interleave back in, so a
+ * discovery-heavy review phase can never starve the main chain. Number order
+ * holds inside each class, claimability is untouched (skip_labels still
+ * filters the class out entirely), and unreadable history fails open toward
+ * freshness. A failed discovery lap also re-promotes: its row is still
+ * reclaimable, and recovery should not park behind product work.
+ */
+export async function prioritizeDiscoveries(
+  cfg: RepoConfig,
+  claimable: IssueLite[],
+  ledger: Ledger,
+  gh: GhApi
+): Promise<IssueLite[]> {
+  const idx = claimable.findIndex((i) => (i.labels ?? []).includes(DISCOVERY_LABEL));
+  if (idx <= 0) return claimable; // none claimable, or already front
+  const last = ledger
+    .recentLaps(cfg.repo, 10)
+    .find((l) => l.outcome === "merged" && l.issue_number !== null);
+  if (last) {
+    try {
+      const viewed = await gh.issueView(last.issue_number);
+      if ((viewed.labels ?? []).includes(DISCOVERY_LABEL)) return claimable; // a discovery lap just merged — product next
+    } catch {
+      // unreadable history — promote (fail open toward freshness)
+    }
+  }
+  return [claimable[idx], ...claimable.slice(0, idx), ...claimable.slice(idx + 1)];
 }

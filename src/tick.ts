@@ -12,7 +12,7 @@ import { blockedComment, mergedComment, needsContextComment, noActionComment, st
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
-import { listClaimable, NEEDS_INFO_LABEL } from "./stages/intake";
+import { listClaimable, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseDiscoveries, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
@@ -749,7 +749,7 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   // the next explicit tick (conservative — a crash deserves a human look)
   await autoReviveBlocked(cfg, stateDir, deps.ledger, deps.gh);
   await prepareRepo(cfg, stateDir, deps);
-  const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
+  const claimable = await prioritizeDiscoveries(cfg, await listClaimable(cfg, deps.ledger, deps.gh), deps.ledger, deps.gh);
   if (claimable.length === 0) {
     const lapId = deps.ledger.startLap(cfg.repo, null);
     deps.ledger.endLap(lapId, "idle", "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)");
@@ -1009,7 +1009,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // revive before prepareRepo/reconcile — see tickRepo's ordering note
           await autoReviveBlocked(cfg, opts.stateDir, deps.ledger, deps.gh);
           await prepareRepo(cfg, opts.stateDir, deps);
-          const claimable = await listClaimable(cfg, deps.ledger, deps.gh);
+          const claimable = await prioritizeDiscoveries(cfg, await listClaimable(cfg, deps.ledger, deps.gh), deps.ledger, deps.gh);
           // Chained laps: a merge (or block/idle) re-intakes immediately, so one
           // tick drains the dependency chain instead of doling out one issue per
           // manual tick. Strictly ordered one-lap-at-a-time still holds inside a
@@ -1017,9 +1017,9 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // MAX_LAPS bounds a pathological loop — the chain continues next tick.
           if (claimable.length === 0) return;
           const MAX_LAPS_PER_TICK_PER_REPO = 6;
-          repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${claimable[0].number} (${claimable.length - 1} claimable behind it)`);
           let laps = 0;
           let issue = claimable[0];
+          repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
           let revivedInTick = false;
           const REVIVE_COOLDOWN_MS = 10 * 60_000;
           while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
@@ -1065,7 +1065,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
               await autoReviveBlocked(cfg, opts.stateDir, deps.ledger, deps.gh);
               next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
             }
-            issue = next[0];
+            issue = (await prioritizeDiscoveries(cfg, next, deps.ledger, deps.gh).catch(() => next))[0];
             if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
               repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
             }
