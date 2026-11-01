@@ -22,6 +22,7 @@
  * when the lap books out. An infra crash leaves it parked for the janitor.
  */
 import { killTree, sh } from "./sh";
+import { readGitIdentity } from "./env";
 import { buildPiArgs, type PiOutcome } from "./pi";
 import { parseEventStream } from "./pievents";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
@@ -159,7 +160,11 @@ export const STAGE_DRIVER = [
 ].join("\n");
 
 /** Which host env vars ride into the machine for every stage (keys, GH token). */
-export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; branch: string; base: string }): string {
+export function buildMachineEnvFile(
+  cfg: RepoConfig,
+  stage: { gates: boolean; branch: string; base: string },
+  identity: { name: string; email: string } | null = readGitIdentity()
+): string {
   const lines = [
     `export PI_BIN=${escapeSh(cfg.pi.binary)}`,
     `export REPO_DIR=${escapeSh(cfg.env.instabox.repo_dir)}`,
@@ -183,6 +188,25 @@ export function buildMachineEnvFile(cfg: RepoConfig, stage: { gates: boolean; br
   // tools key-less (observed: bi-ai-ui #80, qed #14, 2026-10-28/29)
   const tf = process.env.TINYFISH_API_KEY;
   if (tf) lines.push(`export TINYFISH_API_KEY=${escapeSh(tf)}`);
+  // the InstaBox template bakes a generic git identity into the box user
+  // (observed: every child commit on night-street-racer PR #32 authored
+  // "pi-dark-factory <pi-dark-factory@instabox.local>", 2026-11-01) — ship
+  // the factory's own identity over the env channel, the machine twin of
+  // buildStageCmd's GIT_CONFIG_* pass: env config beats anything the
+  // template baked, and the squash merge alone doesn't fix attribution
+  // (it flattens the message, but the PR's commits tab keeps the child
+  // authors forever)
+  if (identity) {
+    lines.push(
+      "export GIT_CONFIG_COUNT=3",
+      "export GIT_CONFIG_KEY_0=safe.directory",
+      "export GIT_CONFIG_VALUE_0=*",
+      "export GIT_CONFIG_KEY_1=user.name",
+      `export GIT_CONFIG_VALUE_1=${escapeSh(identity.name)}`,
+      "export GIT_CONFIG_KEY_2=user.email",
+      `export GIT_CONFIG_VALUE_2=${escapeSh(identity.email)}`,
+    );
+  }
   // the box's pi needs the factory's own provider credentials: compose mode
   // gets them for free by bind-mounting ~/.pi into the stage container, but
   // a machine has its own root — ship auth.json/models.json over the same

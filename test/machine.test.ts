@@ -317,6 +317,25 @@ describe("buildMachineEnvFile (token resolution)", () => {
     if (had !== undefined) process.env.TINYFISH_API_KEY = had;
   });
 
+  test("ships the factory git identity via GIT_CONFIG_* (machine twin of the compose pass)", () => {
+    const f = buildMachineEnvFile(
+      miniCfg,
+      { gates: true, branch: "factory/issue-1", base: "main" },
+      { name: "Techa", email: "techa@example.com" }
+    );
+    expect(f).toContain("export GIT_CONFIG_COUNT=3");
+    expect(f).toContain("export GIT_CONFIG_KEY_0=safe.directory");
+    expect(f).toContain("export GIT_CONFIG_KEY_1=user.name");
+    expect(f).toContain("export GIT_CONFIG_VALUE_1='Techa'");
+    expect(f).toContain("export GIT_CONFIG_KEY_2=user.email");
+    expect(f).toContain("export GIT_CONFIG_VALUE_2='techa@example.com'");
+  });
+
+  test("no identity available → no GIT_CONFIG lines (the template's baked identity would apply)", () => {
+    const f = buildMachineEnvFile(miniCfg, { gates: true, branch: "factory/issue-1", base: "main" }, null);
+    expect(f).not.toContain("GIT_CONFIG_COUNT");
+  });
+
   test("PDF_PI_SKILLS_B64 ships a populated skills tree", () => {
     const d = mkdtempSync(join(tmpdir(), "pdfskills-"));
     writeFileSync(join(d, "demo.md"), "skill body\n");
