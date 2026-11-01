@@ -18,7 +18,7 @@ import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from
 import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
-import { readSharedBase, resolveSnapshotName, SHARED_BASE_ALIAS } from "./sharedbase";
+import { readBases, resolveSnapshotName } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
@@ -245,16 +245,17 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   // everything the golden base carries (pi, node, docker — reproducer's
   // pip/venv bake, 2026-10-26, caught before it ran). Fresh repos with no
   // snapshot still start from the template.
-  // a config naming the alias means "boot the fleet base" — a per-repo bake
-  // would re-save the repo's OWN deps as the base every project boots from.
-  // The shared base is re-baken by the operator procedure (fresh template →
-  // new versioned name → flip state/base-snapshot.json), never by this verb.
-  if (ibx.snapshot === SHARED_BASE_ALIAS) {
-    const cur = readSharedBase(stateDir);
+  // a config naming ANY base alias (shared-base, godot-base, …) means "boot
+  // a stack base" — a per-repo bake would re-save the repo's OWN deps as the
+  // base every project of that stack boots from. Bases are re-baken by the
+  // operator procedure (fresh template → tooling → stack install → new
+  // versioned name → flip the state file), never by this verb.
+  if (readBases(stateDir)[ibx.snapshot]) {
+    const cur = readBases(stateDir)[ibx.snapshot];
     throw new Error(
-      `"${SHARED_BASE_ALIAS}" is the fleet base (currently ${cur?.snapshot ?? "UNMAPPED — write state/base-snapshot.json first"}). ` +
-      `A per-repo bake here would pollute every project's base — put repo deps in the scenario setup, or give this repo its own snapshot name. ` +
-      `To upgrade the shared base itself: fresh-template bake → new versioned name → flip state/base-snapshot.json.`
+      `"${ibx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
+      `To upgrade a base: fresh-template bake → new versioned name → flip state/base-snapshot.json.`
     );
   }
   const baseSnap = ibx.snapshot

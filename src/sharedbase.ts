@@ -2,18 +2,24 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
- * The shared golden base resolves through ONE indirection so "the box starts
- * with whatever base we last baked" is a fact, not a memory exercise.
+ * Base snapshots resolve through named aliases so "the box starts with
+ * whatever base we last baked for this stack" is a fact, not a memory
+ * exercise. One state file (`state/base-snapshot.json`) maps alias tokens →
+ * physical platform snapshots:
  *
- * Configs, templates, and skills say the token `shared-base`; a single state
- * file (`state/base-snapshot.json`) maps it to the current physical platform
- * snapshot. A base re-bake saves a NEW versioned platform name
- * (factory-base-r4, …) and flips that one file — per-repo configs, docs, and
- * skills never mention versions again, and the old physical snapshot stays
- * on the platform as a rollback alias.
+ *   {
+ *     "shared-base":  { "snapshot": "factory-base-r3", "bakedAt": "...", ... },
+ *     "godot-base":   { "snapshot": "factory-godot-r1", "bakedAt": "...", ... }
+ *   }
  *
- * A config value that is not the token passes through untouched, so a repo
- * pointing at a literal snapshot (a per-repo fork) keeps working.
+ * A base re-bake saves a NEW versioned platform name and flips its entry —
+ * configs, templates, and skills only ever say the token, so the flip is the
+ * entire rollout and the old physical snapshot stays as a rollback alias.
+ * Stack bases (godot-base, …) are baked the same way as the shared base:
+ * fresh template → tooling → stack install → verify → new versioned name.
+ *
+ * A config value that is not a known alias passes through untouched, so a
+ * repo pointing at a literal snapshot (a per-repo fork) keeps working.
  */
 export const SHARED_BASE_ALIAS = "shared-base";
 
@@ -28,22 +34,36 @@ export function sharedBasePath(stateDir: string): string {
   return join(stateDir, "base-snapshot.json");
 }
 
-export function readSharedBase(stateDir: string): SharedBaseInfo | null {
+/**
+ * All alias mappings. Backward compatible with the original single-base flat
+ * file (`{"snapshot": …}` → an implicit shared-base entry).
+ */
+export function readBases(stateDir: string): Record<string, SharedBaseInfo> {
   try {
     const j = JSON.parse(readFileSync(sharedBasePath(stateDir), "utf8"));
-    return typeof j?.snapshot === "string" && j.snapshot ? (j as SharedBaseInfo) : null;
+    if (typeof j?.snapshot === "string" && j.snapshot) return { [SHARED_BASE_ALIAS]: j as SharedBaseInfo };
+    const out: Record<string, SharedBaseInfo> = {};
+    for (const [k, v] of Object.entries(j ?? {})) {
+      if (typeof (v as SharedBaseInfo)?.snapshot === "string" && (v as SharedBaseInfo).snapshot)
+        out[k] = v as SharedBaseInfo;
+    }
+    return out;
   } catch {
-    return null;
+    return {};
   }
 }
 
+/** The default (shared) base — what repos mean when they say the shared token. */
+export function readSharedBase(stateDir: string): SharedBaseInfo | null {
+  return readBases(stateDir)[SHARED_BASE_ALIAS] ?? null;
+}
+
 /**
- * The physical snapshot name for a config value: the token resolves through
- * the state file; anything else is already physical. A missing or unreadable
- * state file fails through with the token itself, so the caller's
- * "snapshot not found" error names the real problem (write the state file).
+ * The physical snapshot name for a config value: a known alias resolves
+ * through the state file; anything else is already physical. An unknown
+ * alias or missing state file fails through with the token itself, so the
+ * caller's "snapshot not found" error names the real problem.
  */
 export function resolveSnapshotName(stateDir: string, name: string): string {
-  if (name !== SHARED_BASE_ALIAS) return name;
-  return readSharedBase(stateDir)?.snapshot ?? name;
+  return readBases(stateDir)[name]?.snapshot ?? name;
 }
