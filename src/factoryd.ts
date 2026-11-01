@@ -10,7 +10,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { readSharedBase } from "./sharedbase";
+import { readBases, readSharedBase } from "./sharedbase";
 import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
 import { beginTick } from "./tick";
 import {
@@ -62,6 +62,7 @@ export function startFactoryd(opts: FactorydOpts) {
           // which snapshot `shared-base` resolves to right now — configs and
           // skills say the token and NEVER a version; this answer is the truth
           shared_base: readSharedBase(opts.stateDir),
+          bases: readBases(opts.stateDir),
         });
       }
 
