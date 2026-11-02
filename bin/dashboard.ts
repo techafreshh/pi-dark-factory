@@ -49,9 +49,13 @@ function tokensByProject(db: Database) {
 }
 
 function inProgressLaps(db: Database) {
+  // issue state 'in_progress' is the authoritative current-work signal — the
+  // laps table carries every interrupted lap since forever as outcome NULL,
+  // and without this filter the panel showed weeks of crash leftovers
   const laps = q(db, `SELECT l.id, l.repo, l.issue_number, l.started_at, i.attempts, i.pr, i.state AS issue_state
-                      FROM laps l LEFT JOIN issues i ON i.repo = l.repo AND i.issue_number = l.issue_number
-                      WHERE l.outcome IS NULL AND l.issue_number IS NOT NULL ORDER BY l.started_at`);
+                      FROM laps l JOIN issues i ON i.repo = l.repo AND i.issue_number = l.issue_number
+                      WHERE l.outcome IS NULL AND l.issue_number IS NOT NULL AND i.state = 'in_progress'
+                      ORDER BY l.started_at`);
   return laps.map((l) => {
     const [last] = q(db, `SELECT stage, model, attempt, started_at, ended_at
                           FROM stage_runs WHERE lap_id = ${Number(l.id)} ORDER BY id DESC LIMIT 1`);
@@ -133,7 +137,10 @@ let machinesCache: { at: number; data: any } = { at: 0, data: null };
 async function machines(): Promise<any> {
   if (Date.now() - machinesCache.at < 30_000) return machinesCache.data;
   try {
-    const env = readFileSync("/home/factory/factoryd.env", "utf8");
+    // dedicated key file (mode 600, factory-owned) — the dashboard gets only
+    // the InstaBox key, never the whole factoryd.env; key is used server-side
+    // for the read-only machine list and never served
+    const env = readFileSync("/home/factory/dashboard.env", "utf8");
     const key = /^INSTABOX_API_KEY=(.*)$/m.exec(env)?.[1]?.trim();
     if (!key) throw new Error("no key");
     const res = await fetch(MACHINES_URL, {
@@ -269,10 +276,10 @@ async function refresh(){
 refresh(); setInterval(refresh, 20000);
 </script></body></html>`;
 
-function handler(): Response {
+function handler() {
   const db = openReadonly();
   try {
-    return Response.json(computeSummary(db));
+    return computeSummary(db);
   } finally {
     db.close();
   }
@@ -287,9 +294,7 @@ if (import.meta.main) {
       const url = new URL(req.url);
       if (url.pathname === "/health") return Response.json({ ok: true });
       if (url.pathname === "/api/summary") {
-        const summary = handler();
-        summary.machines = await machines();
-        return summary;
+        return Response.json({ ...handler(), machines: await machines() });
       }
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     },
