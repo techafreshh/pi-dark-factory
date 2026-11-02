@@ -21,6 +21,16 @@ describe("review prompt (archon-steal #5 simplify lens)", () => {
     const p = buildReviewPrompt(cfg, { number: 1, title: "t", body: "b" }, { plan: "p", scenarioSummary: "s", attempt: 1 });
     expect(p).toContain("First line exactly `VERDICT: APPROVE` or `VERDICT: REJECT`");
   });
+
+  test("DISCOVERIES contract carries the severity axis and the sibling rule", () => {
+    const p = buildReviewPrompt(cfg, { number: 1, title: "t", body: "b" }, { plan: "p", scenarioSummary: "s", attempt: 1 });
+    expect(p).toContain("- <short title> :: <one-line claim> :: <why it matters later> :: <major|minor>");
+    expect(p).toContain("a bug a player/user of the CURRENT build can hit");
+    expect(p).toContain("the same class of issue at an adjacent call site");
+    expect(p).toContain("the Nth sibling of a class a previous fix already addressed, file it minor");
+    expect(p).toContain("Pure observations with nothing to fix stay in your prose");
+    expect(p).toContain("The cap is a ceiling, never a quota");
+  });
 });
 
 describe("parseDiscoveries (archon-steal #4)", () => {
@@ -37,7 +47,7 @@ describe("parseDiscoveries (archon-steal #4)", () => {
     ].join("\n");
     const d = parseDiscoveries(text);
     expect(d.length).toBe(4); // the "none" line drops
-    expect(d[0]).toEqual({ title: "Cache the catalog", claim: "/api/catalog re-queries the DB per request", why: "will hurt once issue #4 adds filters" });
+    expect(d[0]).toEqual({ title: "Cache the catalog", claim: "/api/catalog re-queries the DB per request", why: "will hurt once issue #4 adds filters", severity: "major" });
   });
 
   test("cap is 10: eleven items keep ten", () => {
@@ -65,8 +75,34 @@ describe("parseDiscoveries (archon-steal #4)", () => {
     ].join("\n");
     const d = parseDiscoveries(text);
     expect(d.length).toBe(3);
-    expect(d[0]).toEqual({ title: "Probe answers only GET, HEAD/POST get 501", claim: "only `do_GET` is defined in probe_server.py:22", why: "matters if verification ever uses HEAD checks." });
+    // recorded real reviewer shape (jetpack #23–26): 3-part bullets with no
+    // severity field — those predate the severity axis and must keep parsing,
+    // defaulting to major (the old behavior) rather than deferring to the tail
+    expect(d[0]).toEqual({ title: "Probe answers only GET, HEAD/POST get 501", claim: "only `do_GET` is defined in probe_server.py:22", why: "matters if verification ever uses HEAD checks.", severity: "major" });
     expect(d[2].title).toBe("Generated boot.gd.uid is untracked noise");
+  });
+
+  test("severity rides the 4th :: field — minor and major", () => {
+    const text = [
+      "VERDICT: APPROVE",
+      "DISCOVERIES (real, out-of-scope)",
+      "- Dead-dummy corpses linger in group :: blast iterates them :: waste :: minor",
+      "- Player motion unfrozen after end_run :: no run-active gate in _physics_process :: the run never freezes :: major",
+    ].join("\n");
+    const d = parseDiscoveries(text);
+    expect(d.map((x) => x.severity)).toEqual(["minor", "major"]);
+  });
+
+  test("unparseable or missing severity fails OPEN to major (never silently defers a find)", () => {
+    const text = [
+      "VERDICT: APPROVE",
+      "DISCOVERIES (real, out-of-scope)",
+      "- One :: claim :: why :: severe",
+      "- Two :: claim :: why ::",
+      "- Three :: claim :: why",
+    ].join("\n");
+    const d = parseDiscoveries(text);
+    expect(d.map((x) => x.severity)).toEqual(["major", "major", "major"]);
   });
 
   test("trailing flush-left prose after the bullets cannot leak into the harvest", () => {

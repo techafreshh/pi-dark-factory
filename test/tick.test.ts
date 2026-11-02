@@ -483,3 +483,56 @@ describe("runWithConcurrency (unabated-by-default dispatcher)", () => {
     expect(maxActive).toBe(5);
   });
 });
+
+describe("discovery recursion gate + severity filing (tickRepo end-to-end)", () => {
+  const reviewWithDiscoveries =
+    "VERDICT: APPROVE\nfine\n\nDISCOVERIES (real, out-of-scope)\n" +
+    "- Crash on empty input :: parser throws on empty string :: breaks boot :: major\n" +
+    "- Stale header comment :: names the constant, not the path :: polish :: minor\n";
+
+  test("recursion gate: a discovery lap's review never auto-files new discoveries", async () => {
+    const w = makeWorld();
+    w.gh.issues = [{ number: 1, title: "[discovery] Fix the spawner guard", body: "fix it", labels: ["discovery"] }];
+    w.cfg.discoveries = { auto_file: true };
+    let created = 0;
+    // distinct out-of-band numbers: issueCreate must not append to gh.issues
+    // (a filed discovery is a NEXT-tick claim, not this tick's chain), but
+    // each create needs its own number or the label assertions collide
+    w.gh.issueCreate = (_title: string, _body: string) => {
+      created++;
+      return Promise.resolve(100 + created - 1);
+    };
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: makeCallStage(w, { reviewPlan: [reviewWithDiscoveries] }),
+    });
+    expect(outcome).toBe("merged");
+    expect(created).toBe(0); // the gate: no issues minted from a discovery lap
+    expect(w.gh.labelsAdded).toEqual({}); // nothing filed, nothing labeled
+    // the audit trail survives: findings still ride the PR review comment and the sidecar
+    expect(w.gh.comments.join("\n")).toContain("Stale header comment");
+    expect(readFileSync(join(w.stateDir, "laps.log")).toString()).toContain("recursion gate");
+  }, 60000);
+
+  test("a product lap's review still auto-files — severity lands as labels", async () => {
+    const w = makeWorld();
+    w.cfg.discoveries = { auto_file: true };
+    // same distinct-number stub as the gate test: both creates must get their
+    // own number or the two filings' labels collapse onto one fake issue
+    let created = 0;
+    w.gh.issueCreate = (_title: string, _body: string) => {
+      created++;
+      return Promise.resolve(100 + created - 1);
+    };
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: makeCallStage(w, { reviewPlan: [reviewWithDiscoveries] }),
+    });
+    expect(outcome).toBe("merged");
+    expect(w.gh.labelsAdded[100]).toEqual(["discovery"]); // major: discovery only
+    expect(w.gh.labelsAdded[101]).toEqual(["discovery", "minor"]); // minor: deferred class
+    expect(readFileSync(join(w.stateDir, "laps.log")).toString()).toContain("auto-filed 2");
+  }, 60000);
+});

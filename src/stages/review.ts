@@ -8,15 +8,19 @@ export interface Discovery {
   title: string;
   claim: string;
   why: string;
+  severity: "major" | "minor";
 }
 
 /** Extract the reviewer's DISCOVERIES section (archon-steal #4): up to ten
- *  `- title :: claim :: why` lines, tolerant of a missing section (returns
- *  []) and of `none`. Never gates anything — harvesting only.
- *  The header matches with or without markdown hashes — real reviewers
+ *  `- title :: claim :: why :: major|minor` lines, tolerant of a missing
+ *  section (returns []) and of `none`. Never gates anything — harvesting
+ *  only. The header matches with or without markdown hashes — real reviewers
  *  (jetpack #23–26) echo the section title as a bare `DISCOVERIES …` line,
  *  and requiring `##` silently zeroed every harvest. Capture ends at the
- *  first flush-left non-bullet line, so trailing prose can't leak items. */
+ *  first flush-left non-bullet line, so trailing prose can't leak items.
+ *  Severity is optional in the line: anything missing or unparseable is
+ *  major — a reviewer regression must fail toward MORE work (the old
+ *  behavior), never silently defer findings to the tail. */
 export function parseDiscoveries(reviewText: string): Discovery[] {
   const m = reviewText.match(/(?:^|\n)[ \t]*#{0,4}[ \t]*DISCOVERIES\b[^\n]*\n([\s\S]*?)(?=\n(?![-\s])|$)/i);
   if (!m) return [];
@@ -26,7 +30,12 @@ export function parseDiscoveries(reviewText: string): Discovery[] {
     if (!t.startsWith("- ") || /\bnone\b/i.test(t)) continue;
     const parts = t.slice(2).split("::").map((s) => s.trim());
     if (parts.length < 2 || !parts[0]) continue;
-    out.push({ title: parts[0], claim: parts[1] ?? "", why: parts[2] ?? "" });
+    out.push({
+      title: parts[0],
+      claim: parts[1] ?? "",
+      why: parts[2] ?? "",
+      severity: parts[3]?.toLowerCase() === "minor" ? "minor" : "major",
+    });
   }
   return out.slice(0, 10);
 }
@@ -112,8 +121,9 @@ export function buildReviewPrompt(
     "",
     "## DISCOVERIES (real, out-of-scope)",
     "After the verdict, list up to 10 adjacent observations you noticed while reading the code but did NOT treat as findings — one line each, exactly:",
-    "- <short title> :: <one-line claim> :: <why it matters later>",
-    "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. They are harvested into a backlog someone else may pick up. The cap is a ceiling, never a quota — most reviews honestly surface 0–3, and padding the list to reach it breaks the same evidence bar.",
+    "- <short title> :: <one-line claim> :: <why it matters later> :: <major|minor>",
+    "Severity: major = a bug a player/user of the CURRENT build can hit — broken behavior, crash, wrong results, stuck state, data loss, or a guard/gate that no longer holds. minor = a real but low-stakes follow-up: the same class of issue at an adjacent call site, test hygiene, stale comments/docs, micro-performance, hardening, polish.",
+    "Rules: same evidence bar as findings (concrete, provable); NOT about the current issue's contract (that is what findings are for); they have NO effect on the verdict; write `none` when there are none. Pure observations with nothing to fix stay in your prose, never in this list. If a defect you noticed is the Nth sibling of a class a previous fix already addressed, file it minor — one lap per sibling is waste. The cap is a ceiling, never a quota — most reviews honestly surface 0–3, and padding the list to reach it breaks the same evidence bar.",
     "",
     "INVARIANTS: read-only; do not fix anything yourself — rejections are routed back to the implementer with your findings.",
   ].join("\n");

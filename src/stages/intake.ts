@@ -17,6 +17,11 @@ export const NEEDS_INFO_LABEL = "factory:needs-info";
 /** Reviewer discoveries file with this label (shared with ops's filing half). */
 export const DISCOVERY_LABEL = "discovery";
 
+/** Second-axis severity label on discoveries (never on product issues):
+ *  minor discoveries defer to the roadmap — they claim only after the last
+ *  product issue is claimable (owner policy 2026-11-02). */
+export const MINOR_LABEL = "minor";
+
 /** every `Depends on: #1, #2` mention in an issue body */
 export function parseDepends(body: string): number[] {
   const out: number[] = [];
@@ -104,17 +109,27 @@ export async function pickClaimable(
 }
 
 /**
- * Discovery issues drain fully before product work: the oldest claimable
- * [discovery] issue ALWAYS moves to the front, and product issues claim only
- * when no discovery is claimable. Owner policy (2026-11-01, explicit): each
- * lap's discoveries are fixed before the next issue — the first cut of this
- * interleaved one product lap after every discovery lap, which left the
- * sibling discoveries parked behind the whole product backlog and was
- * removed on sight. The class self-heals: a discovery that burns its
- * attempts blocks and stops being claimable, so one bad observation cannot
- * starve the drain; new discoveries filed by a product lap's review go
- * straight back to the front; skip_labels still opts a repo out entirely;
- * claimability (dependency chains, foreign PRs, ledger state) is untouched.
+ * Discovery queue policy (two rules, both owner-set):
+ *
+ * 1. MAJOR discoveries drain fully before product work (2026-11-01): the
+ *    oldest claimable [discovery] issue ALWAYS moves to the front, and
+ *    product issues claim only when no discovery is claimable. The class
+ *    self-heals: a discovery that burns its attempts blocks and stops being
+ *    claimable, so one bad observation cannot starve the drain; new
+ *    discoveries filed by a product lap's review go straight back to the
+ *    front; skip_labels still opts a repo out entirely.
+ *
+ * 2. MINOR discoveries (severity-labeled at filing, 2026-11-02) defer to the
+ *    roadmap entirely: while ANY product issue is claimable they are left
+ *    out of the queue, and they flow only once the PRD backlog has drained
+ *    (after majors, before nothing). This is the anti-starvation half —
+ *    combined with the tick's recursion gate (a discovery lap's review never
+ *    auto-files), it keeps the "same class at the sibling call site" families
+ *    from pushing the roadmap forward forever: 72–90% of all harvests in the
+ *    first 36 hours were filed by discovery laps themselves.
+ *
+ * Claimability (dependency chains, foreign PRs, ledger state) is untouched;
+ * stable partition inside each class keeps number order deterministic.
  */
 export async function prioritizeDiscoveries(
   cfg: RepoConfig,
@@ -122,10 +137,16 @@ export async function prioritizeDiscoveries(
   _ledger: Ledger,
   _gh: GhApi
 ): Promise<IssueLite[]> {
-  // stable partition: the whole discovery queue is the front of the line
-  // (number order inside each class) — promoting only the first discovery
-  // would strand its siblings behind product issues within one snapshot
-  const isDiscovery = (i: IssueLite) => (i.labels ?? []).includes(DISCOVERY_LABEL);
-  if (!claimable.some(isDiscovery)) return claimable;
-  return [...claimable.filter(isDiscovery), ...claimable.filter((i) => !isDiscovery(i))];
+  const labels = (i: IssueLite) => i.labels ?? [];
+  const isDiscovery = (i: IssueLite) => labels(i).includes(DISCOVERY_LABEL);
+  const isMinor = (i: IssueLite) => labels(i).includes(MINOR_LABEL);
+  const majors = claimable.filter((i) => isDiscovery(i) && !isMinor(i));
+  const minors = claimable.filter((i) => isDiscovery(i) && isMinor(i));
+  const product = claimable.filter((i) => !isDiscovery(i));
+  if (minors.length === 0) {
+    if (majors.length === 0) return claimable;
+    return [...majors, ...product];
+  }
+  if (product.length === 0) return [...majors, ...minors];
+  return [...majors, ...product]; // minors wait: the roadmap outranks polish
 }

@@ -12,7 +12,7 @@ import { blockedComment, mergedComment, needsContextComment, noActionComment, st
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
-import { listClaimable, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
+import { DISCOVERY_LABEL, listClaimable, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseDiscoveries, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
@@ -655,17 +655,26 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       } catch {}
     }
     if (cfg.discoveries?.auto_file && discoveries.length > 0) {
-      // the fleet works its own future-bug candidates: file new discoveries
-      // (title-deduped, labeled) straight into the backlog — the next tick's
-      // intake claims them in number order, behind the main chain. A filing
-      // failure never fails the lap; the sidecar keeps everything for --file.
-      try {
-        const filed = await fileDiscoveries(stateDir, cfg.slug, deps.gh, discoveries.map((d) => ({ issue: n, attempt, ...d })));
-        if (filed.length > 0)
-          repoReceipt(cfg.slug, stateDir, `discoveries auto-filed ${filed.length}: ${filed.map((f) => f.title).join("; ").slice(0, 200)}`);
-      } catch (e) {
-        repoReceipt(cfg.slug, stateDir, `discoveries auto-file errored (harvest preserved): ${e instanceof Error ? e.message : e}`);
-      }
+      // Recursion gate (owner policy 2026-11-02): a DISCOVERY lap never
+      // auto-files. The first 36 hours of harvests measured 72–90% filed by
+      // discovery-fix laps themselves — reviews re-reading the adjacent code
+      // and filing "the same class at the sibling call site" seconds before
+      // their own merge, which pushed whole roadmaps (jetpack: zero product
+      // work for ~25h) behind self-propagating chains. The review text with
+      // any findings still lands on the PR above (the audit trail), and a
+      // fix that did not fix rides the reject→repair loop — nothing of
+      // value is lost by refusing to mint issues here.
+      const parentIsDiscovery = (issue.labels ?? []).includes(DISCOVERY_LABEL);
+      if (parentIsDiscovery) {
+        repoReceipt(cfg.slug, stateDir, `discoveries from discovery lap #${n} withheld (recursion gate): ${discoveries.map((d) => d.title).join("; ").slice(0, 200)}`);
+      } else
+        try {
+          const filed = await fileDiscoveries(stateDir, cfg.slug, deps.gh, discoveries.map((d) => ({ issue: n, attempt, ...d })));
+          if (filed.length > 0)
+            repoReceipt(cfg.slug, stateDir, `discoveries auto-filed ${filed.length}: ${filed.map((f) => f.title).join("; ").slice(0, 200)}`);
+        } catch (e) {
+          repoReceipt(cfg.slug, stateDir, `discoveries auto-file errored (harvest preserved): ${e instanceof Error ? e.message : e}`);
+        }
     }
     if (verdict.verdict === "reject") {
       findings = verdict.findings;

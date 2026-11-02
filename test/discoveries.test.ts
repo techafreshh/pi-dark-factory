@@ -85,6 +85,23 @@ describe("fileDiscoveries (auto-file + verb filing)", () => {
     expect(filed).toEqual([]);
     expect(calls.created).toEqual([]);
   });
+
+  test("severity=minor files with the second label and the deferral note in the body", async () => {
+    const d = tmp();
+    seed("toy", 3, 1, ["Stale header comment"]);
+    const { gh, calls } = stubGh();
+    await fileDiscoveries(d, "toy", gh, [
+      { issue: 3, attempt: 1, title: "Stale header comment", claim: "c", why: "w", severity: "minor" },
+      { issue: 3, attempt: 1, title: "Crash on empty input", claim: "c2", why: "w2", severity: "major" },
+    ]);
+    expect(calls.labeled).toEqual([
+      [101, [DISCOVERY_LABEL, "minor"]],
+      [102, [DISCOVERY_LABEL]],
+    ]);
+    expect(calls.created[0][1]).toContain("Severity: minor");
+    expect(calls.created[0][1]).toContain("deferred until the PRD backlog drains");
+    expect(calls.created[1][1]).toContain("Severity: major");
+  });
 });
 
 describe("discoveries.auto_file config", () => {

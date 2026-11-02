@@ -18,7 +18,7 @@ import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from
 import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
-import { DISCOVERY_LABEL } from "./stages/intake";
+import { DISCOVERY_LABEL, MINOR_LABEL } from "./stages/intake";
 import { readBases, resolveSnapshotName } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
@@ -510,6 +510,7 @@ export interface DiscoveryItem {
   title: string;
   claim: string;
   why: string;
+  severity?: "major" | "minor";
   path: string;
 }
 
@@ -544,6 +545,7 @@ export async function opsDiscoveries(stateDir: string, slug: string, file: boole
               title: String(item.title ?? ""),
               claim: String(item.claim ?? ""),
               why: String(item.why ?? ""),
+              severity: item.severity === "minor" ? "minor" : "major",
               path,
             });
           }
@@ -566,13 +568,16 @@ export { DISCOVERY_LABEL };
  * tick's auto_file path: title-deduped `[discovery]` issues, labeled so the
  * class stays manageable (skip_labels can opt a repo out of working them),
  * with an acceptance nudge — a discovery arrives as a claim, and the plan
- * stage is what turns it into a verifiable change.
+ * stage is what turns it into a verifiable change. Severity (major|minor,
+ * from the reviewer's line; old sidecars default major) lands as a second
+ * label: minor issues are how intake's roadmap-deferral recognizes them
+ * (owner policy 2026-11-02 — minors wait until the PRD backlog drains).
  */
 export async function fileDiscoveries(
   stateDir: string,
   slug: string,
   gh: GhApi,
-  deduped: { issue: number; attempt: number; title: string; claim: string; why: string }[]
+  deduped: { issue: number; attempt: number; title: string; claim: string; why: string; severity?: "major" | "minor" }[]
 ): Promise<{ issue: number; title: string }[]> {
   const open = await gh.issueList("open", 100);
   const filed: { issue: number; title: string }[] = [];
@@ -584,20 +589,24 @@ export async function fileDiscoveries(
       "",
       `Why it matters: ${d.why}`,
       "",
+      `Severity: ${d.severity === "minor" ? "minor — consistency/hygiene/polish; deferred until the PRD backlog drains (owner policy 2026-11-02)" : "major — a bug the current build's user can hit"}`,
+      "",
       "Acceptance: the plan stage derives concrete acceptance from the claim above — demonstrate the resolved state, not just the absence of the old one. The repo's scenario gates must stay green and the review must judge the claim addressed.",
       "",
       `Harvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.`,
     ].join("\n");
     const n = await gh.issueCreate(title, body);
     filed.push({ issue: n, title });
+    const labels = d.severity === "minor" ? [DISCOVERY_LABEL, MINOR_LABEL] : [DISCOVERY_LABEL];
     try {
-      await gh.issueAddLabels(n, [DISCOVERY_LABEL]);
+      await gh.issueAddLabels(n, labels);
     } catch {
       // the label may not exist yet — create it once and retry (best-effort:
       // a label failure must never lose a filed discovery)
       try {
-        await sh(["gh", "label", "create", DISCOVERY_LABEL, "--repo", gh.repo, "--description", "harvested reviewer discovery (future-bug candidate)", "--force"]);
-        await gh.issueAddLabels(n, [DISCOVERY_LABEL]);
+        for (const l of labels)
+          await sh(["gh", "label", "create", l, "--repo", gh.repo, "--description", l === MINOR_LABEL ? "minor discovery — deferred until the product backlog drains" : "harvested reviewer discovery (future-bug candidate)", "--force"]);
+        await gh.issueAddLabels(n, labels);
       } catch {}
     }
   }

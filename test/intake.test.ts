@@ -226,4 +226,38 @@ describe("prioritizeDiscoveries (discoveries drain fully before product work)", 
     const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
     expect(ordered.map((i) => i.number)).toEqual([28, 29, 5]);
   });
+
+  test("minor discoveries defer to the roadmap: product + majors claim, minors drop out entirely", async () => {
+    const gh = new FakeGh();
+    gh.issues = [
+      issue(5, "Product"),
+      issue(6, "Major discovery", "", ["discovery"]),
+      issue(7, "Minor discovery", "", ["discovery", "minor"]),
+      issue(8, "Minor discovery 2", "", ["discovery", "minor"]),
+    ];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    // majors keep drain-first; minors are invisible while any product issue is claimable
+    expect(ordered.map((i) => i.number)).toEqual([6, 5]);
+  });
+
+  test("minors flow after majors once the PRD backlog has drained (no claimable product issue)", async () => {
+    const gh = new FakeGh();
+    gh.issues = [issue(6, "Major discovery", "", ["discovery"]), issue(7, "Minor discovery", "", ["discovery", "minor"])];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    expect(ordered.map((i) => i.number)).toEqual([6, 7]);
+  });
+
+  test("a queue of only minors stands aside entirely while product work exists", async () => {
+    const gh = new FakeGh();
+    gh.issues = [issue(5, "Product"), issue(7, "Minor discovery", "", ["discovery", "minor"])];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    expect(ordered.map((i) => i.number)).toEqual([5]);
+  });
+
+  test("the minor label alone (no discovery label) never defers an issue — mislabeled product work stays product", async () => {
+    const gh = new FakeGh();
+    gh.issues = [issue(5, "Product with stray minor label", "", ["minor"]), issue(6, "Product 2")];
+    const ordered = await prioritizeDiscoveries(cfg, await listClaimable(cfg, new Ledger(":memory:"), gh), new Ledger(":memory:"), gh);
+    expect(ordered.map((i) => i.number)).toEqual([5, 6]);
+  });
 });
