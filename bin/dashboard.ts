@@ -220,7 +220,9 @@ const slug = (repo,slugs) => slugs[repo] || repo;
 const esc = s => String(s??"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 function row(t){const tr=document.createElement("tr");tr.innerHTML=t;return tr;}
 async function refresh(){
-  const d = await (await fetch("/api/summary")).json();
+  // relative on purpose — the page resolves under any mount point
+  // (standalone at /, or behind Caddy at pi-factory.techa.pro/dashboard/)
+  const d = await (await fetch("api/summary")).json();
   const S = d.slugs;
   document.getElementById("meta").textContent =
     "refreshed " + new Date(d.generatedAt).toLocaleTimeString() +
