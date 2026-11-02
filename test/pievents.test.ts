@@ -79,7 +79,7 @@ describe("usage accounting (cache tokens + event-type precedence)", () => {
       message: {
         role: "assistant",
         content: [{ type: "text", text: "ok" }],
-        usage: { input, output, cacheRead, cacheWrite: 0, reasoning, cost: 0.01, totalTokens: input + cacheRead + output },
+        usage: { input, output, cacheRead, cacheWrite: 0, reasoning, cost: { input: 0.001, output: 0.0001, cacheRead: 0, cacheWrite: 0, total: 0.01 }, totalTokens: input + cacheRead + output },
       },
     });
 
