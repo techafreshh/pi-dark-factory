@@ -40,12 +40,12 @@ const q = (db: Database, sql: string): any[] => {
 };
 
 function tokensByProject(db: Database) {
-  const all = q(db, `SELECT repo, COUNT(*) stages, SUM(input_tokens) i, SUM(output_tokens) o
+  const all = q(db, `SELECT repo, COUNT(*) stages, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cost) cost
                      FROM stage_runs GROUP BY repo ORDER BY o DESC`);
-  const today = q(db, `SELECT repo, SUM(input_tokens) i, SUM(output_tokens) o
+  const today = q(db, `SELECT repo, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cost) cost
                       FROM stage_runs WHERE substr(started_at,1,10) = date('now') GROUP BY repo`);
   const t = new Map(today.map((r) => [r.repo, r]));
-  return all.map((r) => ({ ...r, today_i: t.get(r.repo)?.i ?? 0, today_o: t.get(r.repo)?.o ?? 0 }));
+  return all.map((r) => ({ ...r, today_i: t.get(r.repo)?.i ?? 0, today_o: t.get(r.repo)?.o ?? 0, today_cost: t.get(r.repo)?.cost ?? 0 }));
 }
 
 function inProgressLaps(db: Database) {
@@ -65,18 +65,18 @@ function inProgressLaps(db: Database) {
 
 function tokensByLap(db: Database) {
   return q(db, `SELECT lap_id, repo, issue_number, COUNT(*) stages,
-                       SUM(input_tokens) i, SUM(output_tokens) o, MIN(started_at) started
+                       SUM(input_tokens) i, SUM(output_tokens) o, SUM(cost) cost, MIN(started_at) started
                 FROM stage_runs WHERE lap_id IS NOT NULL
                 GROUP BY lap_id ORDER BY lap_id DESC LIMIT 40`);
 }
 
 function tokensByStageModel(db: Database) {
-  return q(db, `SELECT stage, model, COUNT(*) n, SUM(input_tokens) i, SUM(output_tokens) o
+  return q(db, `SELECT stage, model, COUNT(*) n, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cost) cost
                 FROM stage_runs GROUP BY stage, model ORDER BY o DESC LIMIT 24`);
 }
 
 function tokensByDay(db: Database) {
-  const rows = q(db, `SELECT substr(started_at,1,10) day, SUM(input_tokens) i, SUM(output_tokens) o
+  const rows = q(db, `SELECT substr(started_at,1,10) day, SUM(input_tokens) i, SUM(output_tokens) o, SUM(cost) cost
                       FROM stage_runs GROUP BY day ORDER BY day DESC LIMIT 30`);
   return rows.reverse(); // oldest first for the chart
 }

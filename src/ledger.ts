@@ -37,6 +37,7 @@ export interface StageRunRow {
   exit: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cost: number | null;
   error: string | null;
 }
 
@@ -88,6 +89,11 @@ export class Ledger {
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec(SCHEMA);
+    // additive migration: pi's usage carries a computed dollar cost — try the
+    // column once per open; duplicate-column errors mean it's already there
+    try {
+      this.db.run("ALTER TABLE stage_runs ADD COLUMN cost REAL");
+    } catch {}
   }
 
   /** Returns false if the issue was already claimed (row exists). */
@@ -154,12 +160,14 @@ export class Ledger {
   endStage(
     id: number,
     exit: string,
-    tokens?: { input_tokens: number; output_tokens: number } | null,
+    tokens?: { input_tokens: number; output_tokens: number; cost?: number } | null,
     error?: string | null
   ) {
     this.db
-      .query("UPDATE stage_runs SET ended_at = ?, exit = ?, input_tokens = ?, output_tokens = ?, error = ? WHERE id = ?")
-      .run(now(), exit, tokens?.input_tokens ?? null, tokens?.output_tokens ?? null, error ?? null, id);
+      .query(
+        "UPDATE stage_runs SET ended_at = ?, exit = ?, input_tokens = ?, output_tokens = ?, cost = ?, error = ? WHERE id = ?"
+      )
+      .run(now(), exit, tokens?.input_tokens ?? null, tokens?.output_tokens ?? null, tokens?.cost ?? null, error ?? null, id);
   }
 
   recentStages(repo?: string, limit = 20): StageRunRow[] {

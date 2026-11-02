@@ -85,7 +85,7 @@ describe("usage accounting (cache tokens + event-type precedence)", () => {
 
   test("cacheRead folds into input — the real muse shape (2026-11-02: input 106k, cacheRead 2.2M)", () => {
     const p = parseEventStream([museMessageEnd(106626, 2210654, 32764, 17946)]);
-    expect(p.usage).toEqual({ input_tokens: 106626 + 2210654, output_tokens: 32764 + 17946 });
+    expect(p.usage).toEqual({ input_tokens: 106626 + 2210654, output_tokens: 32764 + 17946, cost: 0.01 });
   });
 
   test("turn_end totals are the fallback when message_end carries no usage (the dead path, now live)", () => {
@@ -100,7 +100,7 @@ describe("usage accounting (cache tokens + event-type precedence)", () => {
       museMessageEnd(1000, 5000, 100),
       JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 1000, output: 100, cacheRead: 5000 } } }),
     ]);
-    expect(p.usage).toEqual({ input_tokens: 6000, output_tokens: 100 });
+    expect(p.usage).toEqual({ input_tokens: 6000, output_tokens: 100, cost: 0.01 });
   });
 
   test("agent_end is the last-resort source", () => {

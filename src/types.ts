@@ -126,6 +126,8 @@ export interface PrLite {
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
+  /** pi's computed dollar cost for the messages — summed like the tokens */
+  cost?: number;
 }
 
 export type StageName = "plan" | "implement" | "review";

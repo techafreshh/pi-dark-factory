@@ -21,6 +21,7 @@ function extractUsage(u: any): Usage | null {
   const input = u.inputTokens ?? u.input_tokens ?? u.promptTokens ?? u.prompt_tokens ?? u.input;
   const output = u.outputTokens ?? u.output_tokens ?? u.completionTokens ?? u.completion_tokens ?? u.output;
   const reasoning = u.reasoningTokens ?? u.reasoning ?? 0;
+  const cost = typeof u.cost === "number" ? u.cost : undefined;
   const cache =
     Number(u.cacheRead ?? u.cacheReadTokens ?? u.cache_read_input_tokens ?? u.cache_read ?? 0) +
     Number(u.cacheWrite ?? u.cacheWriteTokens ?? u.cache_creation_input_tokens ?? u.cache_write ?? 0);
@@ -28,6 +29,7 @@ function extractUsage(u: any): Usage | null {
   return {
     input_tokens: Number(input ?? 0) + cache,
     output_tokens: Number(output ?? 0) + Number(reasoning ?? 0),
+    ...(cost !== undefined ? { cost } : {}),
   };
 }
 
@@ -36,7 +38,11 @@ function extractUsage(u: any): Usage | null {
 function addUsage(into: Usage | null, u: Usage | null): Usage | null {
   if (!u) return into;
   if (!into) return { ...u };
-  return { input_tokens: into.input_tokens + u.input_tokens, output_tokens: into.output_tokens + u.output_tokens };
+  return {
+    input_tokens: into.input_tokens + u.input_tokens,
+    output_tokens: into.output_tokens + u.output_tokens,
+    cost: (into.cost ?? 0) + (u.cost ?? 0) || undefined,
+  };
 }
 
 function textOfMessage(message: any): string {
