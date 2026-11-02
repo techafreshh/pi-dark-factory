@@ -55,7 +55,10 @@ describe("parseEventStream (pi --mode json wire format)", () => {
     const parsed = parseEventStream(lines);
     expect(parsed.assistantText).toBe("two");
     expect(parsed.usage).toEqual({
-      input_tokens: 8693 + 3633,
+      // input includes cacheRead (2048 + 10496) — Meta's console counts
+      // cached + uncached as one Input total; the old expectation here
+      // dropped cache and undercounted input by the cache share
+      input_tokens: 8693 + 3633 + 2048 + 10496,
       output_tokens: (2643 + 2554) + (223 + 66), // output + reasoning, per message, summed
     });
   });
@@ -66,5 +69,44 @@ describe("parseEventStream (pi --mode json wire format)", () => {
       '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}',
     ]);
     expect(parsed.assistantText).toBe("ok");
+  });
+});
+
+describe("usage accounting (cache tokens + event-type precedence)", () => {
+  const museMessageEnd = (input: number, cacheRead: number, output: number, reasoning = 0) =>
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "ok" }],
+        usage: { input, output, cacheRead, cacheWrite: 0, reasoning, cost: 0.01, totalTokens: input + cacheRead + output },
+      },
+    });
+
+  test("cacheRead folds into input — the real muse shape (2026-11-02: input 106k, cacheRead 2.2M)", () => {
+    const p = parseEventStream([museMessageEnd(106626, 2210654, 32764, 17946)]);
+    expect(p.usage).toEqual({ input_tokens: 106626 + 2210654, output_tokens: 32764 + 17946 });
+  });
+
+  test("turn_end totals are the fallback when message_end carries no usage (the dead path, now live)", () => {
+    const p = parseEventStream([
+      JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 100, output: 20, cacheRead: 900 } } }),
+    ]);
+    expect(p.usage).toEqual({ input_tokens: 1000, output_tokens: 20 });
+  });
+
+  test("message_end wins over turn_end totals — the same tokens are never summed twice", () => {
+    const p = parseEventStream([
+      museMessageEnd(1000, 5000, 100),
+      JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [], usage: { input: 1000, output: 100, cacheRead: 5000 } } }),
+    ]);
+    expect(p.usage).toEqual({ input_tokens: 6000, output_tokens: 100 });
+  });
+
+  test("agent_end is the last-resort source", () => {
+    const p = parseEventStream([
+      JSON.stringify({ type: "agent_end", usage: { input: 50, output: 5, cacheRead: 0 } }),
+    ]);
+    expect(p.usage).toEqual({ input_tokens: 50, output_tokens: 5 });
   });
 });
