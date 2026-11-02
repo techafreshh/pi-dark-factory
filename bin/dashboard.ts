@@ -16,7 +16,7 @@ import { join } from "node:path";
 const STATE_DIR = process.env.DASHBOARD_STATE_DIR ?? "/home/factory/state";
 const HOST = process.env.DASHBOARD_HOST ?? "10.0.1.1";
 const PORT = Number(process.env.DASHBOARD_PORT ?? 8787);
-const MACHINES_URL = process.env.DASHBOARD_MACHINES_URL ?? "https://api.instabox.sh/machines";
+const MACHINES_URL = process.env.DASHBOARD_MACHINES_URL ?? "https://api.instabox.sh/v1/machines";
 
 const DB_PATH = join(STATE_DIR, "factory.db");
 const LOG_PATH = join(STATE_DIR, "laps.log");
@@ -144,7 +144,7 @@ async function machines(): Promise<any> {
     const key = /^INSTABOX_API_KEY=(.*)$/m.exec(env)?.[1]?.trim();
     if (!key) throw new Error("no key");
     const res = await fetch(MACHINES_URL, {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: { "X-API-Key": key },
       signal: AbortSignal.timeout(5000),
     });
     const list = (await res.json()) as any[];
