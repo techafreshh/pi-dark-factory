@@ -181,102 +181,25 @@ export function computeSummary(db: Database) {
   };
 }
 
-// ── HTML: one page, dark, no dependencies, auto-refresh every 20s ────────────
+// ── UI: the built React app (dashboard-ui/dist, beUI charts) ────────────────
 
-const html = `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>pi-dark-factory</title><style>
-:root{color-scheme:dark}
-body{background:#0d1117;color:#c9d1d9;font:14px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:16px}
-h1{font-size:18px;margin:0 0 2px} h2{font-size:13px;color:#8b949e;text-transform:uppercase;letter-spacing:.08em;margin:22px 0 6px}
-.sub{color:#8b949e;font-size:12px}
-table{border-collapse:collapse;width:100%;font-size:12.5px}
-th{color:#8b949e;text-align:left;font-weight:500;padding:3px 8px;border-bottom:1px solid #21262d}
-td{padding:3px 8px;border-bottom:1px solid #161b22}
-tr:hover td{background:#161b22}
-.slug{color:#58a6ff}.num{color:#f0883e}.ok{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}.dim{color:#8b949e}
-.gauge{display:inline-block;padding:2px 10px;border:1px solid #21262d;border-radius:4px;margin-right:8px}
-.bar{height:10px;background:#1f6feb;border-radius:2px;min-width:2px;display:inline-block;vertical-align:middle}
-.bar2{background:#f0883e}
-.feed{max-height:260px;overflow-y:auto;font-size:11.5px;white-space:pre-wrap;background:#010409;padding:8px;border-radius:6px;border:1px solid #21262d}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px}
-.pill{display:inline-block;padding:0 8px;border-radius:10px;border:1px solid #30363d;font-size:11px;margin:1px 2px}
-.err{color:#f85149;font-size:11px}
-</style></head><body>
-<h1>🕯️ pi-dark-factory</h1><div class="sub" id="meta">loading…</div>
-<h2>Needs you</h2><div id="attention" class="sub">—</div>
-<h2>Laps in progress</h2><table id="laps"><thead><tr><th>repo</th><th>issue</th><th>stage</th><th>model</th><th>attempt</th><th>lap age</th><th>last stage</th></tr></thead><tbody></tbody></table>
-<h2>Tokens by project</h2><table id="byproj"><thead><tr><th>repo</th><th>today in/out</th><th>all-time in/out</th><th>stages</th><th>share</th></tr></thead><tbody></tbody></table>
-<h2>Daily token trend (30d)</h2><div id="trend"></div>
-<h2>Throughput — merges per day</h2><div id="throughput"></div>
-<div class="grid"><div><h2>Tokens by lap (recent)</h2><table id="bylap"><thead><tr><th>repo</th><th>issue</th><th>stages</th><th>in</th><th>out</th><th>when</th></tr></thead><tbody></tbody></table></div>
-<div><h2>By stage × model</h2><table id="bystage"><thead><tr><th>stage</th><th>model</th><th>runs</th><th>in</th><th>out</th></tr></thead><tbody></tbody></table></div></div>
-<h2>Live activity</h2><div id="feed" class="feed"></div>
-<script>
-const f = n => n==null ? "—" : n>=1e6 ? (n/1e6).toFixed(1)+"M" : n>=1e3 ? (n/1e3).toFixed(1)+"k" : String(n);
-const ago = iso => { if(!iso) return "—"; const s=(Date.now()-new Date(iso))/1e3;
-  return s<90?Math.round(s)+"s":s<5400?Math.round(s/60)+"m":s<172800?Math.round(s/3600)+"h":Math.round(s/86400)+"d"; };
-const slug = (repo,slugs) => slugs[repo] || repo;
-const esc = s => String(s??"").replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-function row(t){const tr=document.createElement("tr");tr.innerHTML=t;return tr;}
-async function refresh(){
-  // relative on purpose — the page resolves under any mount point
-  // (standalone at /, or behind Caddy at pi-factory.techa.pro/dashboard/)
-  const d = await (await fetch("api/summary")).json();
-  const S = d.slugs;
-  document.getElementById("meta").textContent =
-    "refreshed " + new Date(d.generatedAt).toLocaleTimeString() +
-    (d.machines && d.machines.total!=null ? " · machines: " + d.machines.running + " running / " + d.machines.total + " total (cap 5)" : "");
-  // attention
-  const attn=[];
-  for(const b of d.blocked) attn.push('<span class="slug">'+esc(slug(b.repo,S))+' #'+b.issue_number+'</span> BLOCKED ×'+b.attempts+' <span class="err">'+esc((b.last_error||"").slice(0,140))+'</span>');
-  for(const p of d.paused) attn.push('<span class="slug">'+esc(p)+'</span> <span class="warn">paused</span>');
-  document.getElementById("attention").innerHTML = attn.length?attn.join("<br>"):"all clear — nothing blocked, nothing paused";
-  // laps in progress
-  const lb=document.querySelector("#laps tbody"); lb.innerHTML="";
-  for(const l of d.in_progress){
-    const running = l.last_stage && !l.last_stage.ended_at;
-    lb.append(row('<td class="slug">'+esc(slug(l.repo,S))+'</td><td>#'+l.issue_number+'</td>'+
-      '<td class="'+(running?"ok":"dim")+'">'+esc(l.last_stage?l.last_stage.stage:"starting")+(running?" ▸":"")+'</td>'+
-      '<td class="dim">'+esc(l.last_stage?l.last_stage.model:"")+'</td><td>'+esc(l.last_stage?l.last_stage.attempt:l.attempts)+'</td>'+
-      '<td class="dim">'+ago(l.started_at)+'</td><td class="dim">'+ago(l.last_stage?.started_at)+'</td>'));
-  }
-  if(!d.in_progress.length) lb.append(row('<td colspan="7" class="dim">no laps in progress</td>'));
-  // tokens by project
-  const pb=document.querySelector("#byproj tbody"); pb.innerHTML="";
-  const maxO = Math.max(1,...d.tokens_by_project.map(r=>r.o||0));
-  for(const r of d.tokens_by_project){
-    pb.append(row('<td class="slug">'+esc(slug(r.repo,S))+'</td><td class="num">'+f(r.today_i)+' / '+f(r.today_o)+'</td>'+
-      '<td class="num">'+f(r.i)+' / '+f(r.o)+'</td><td class="dim">'+f(r.stages)+'</td>'+
-      '<td><span class="bar" style="width:'+Math.max(2,Math.round(120*(r.o||0)/maxO))+'px"></span> <span class="bar bar2" style="width:'+Math.max(2,Math.round(40*(r.today_o||0)/maxO))+'px"></span></td>'));
-  }
-  // daily trend
-  const maxD = Math.max(1,...d.tokens_by_day.map(r=>(r.i||0)+(r.o||0)));
-  document.getElementById("trend").innerHTML = d.tokens_by_day.map(r=>{
-    const w=Math.round(100*((r.i||0)+(r.o||0))/maxD);
-    return '<div style="display:flex;align-items:center;gap:8px;margin:2px 0"><span class="dim" style="width:80px">'+r.day.slice(5)+'</span>'+
-      '<span class="bar" style="width:'+Math.max(2,w*3)+'px"></span><span class="num" style="width:110px">'+f(r.i)+' / '+f(r.o)+'</span></div>';
-  }).join("") || '<span class="dim">no data</span>';
-  // throughput: merges per day per repo
-  const reposT=[...new Set(d.merges_per_day.map(r=>r.repo))];
-  const daysT=[...new Set(d.merges_per_day.map(r=>r.day))].sort().reverse().slice(0,14);
-  const m=new Map(d.merges_per_day.map(r=>[r.repo+"|"+r.day,r.n]));
-  document.getElementById("throughput").innerHTML='<table><tr><th></th>'+daysT.map(x=>"<th>"+x.slice(5)+"</th>").join("")+'</tr>'+
-    reposT.map(r=>'<tr><td class="slug">'+esc(slug(r,S))+'</td>'+daysT.map(day=>'<td class="dim">'+(m.get(r+"|"+day)||"·")+'</td>').join("")+'</tr>').join("")+'</table>';
-  // tokens by lap
-  const lb2=document.querySelector("#bylap tbody"); lb2.innerHTML="";
-  for(const l of d.tokens_by_lap.slice(0,20))
-    lb2.append(row('<td class="slug">'+esc(slug(l.repo,S))+'</td><td>#'+l.issue_number+'</td><td class="dim">'+l.stages+'</td>'+
-      '<td class="num">'+f(l.i)+'</td><td class="num">'+f(l.o)+'</td><td class="dim">'+ago(l.started)+'</td>'));
-  // stage × model
-  const sb=document.querySelector("#bystage tbody"); sb.innerHTML="";
-  for(const s of d.tokens_by_stage_model)
-    sb.append(row('<td>'+esc(s.stage)+'</td><td class="dim" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">'+esc(s.model)+'</td><td class="dim">'+s.n+'</td><td class="num">'+f(s.i)+'</td><td class="num">'+f(s.o)+'</td>'));
-  // feed
-  document.getElementById("feed").textContent = d.receipts.slice().reverse().join("\\n");
+const DIST = join(import.meta.dir, "..", "dashboard-ui", "dist");
+const MIME: Record<string, string> = {
+  ".js": "text/javascript", ".css": "text/css", ".html": "text/html",
+  ".svg": "image/svg+xml", ".map": "application/json", ".woff2": "font/woff2",
+};
+
+function serveStatic(pathname: string): Response | null {
+  // mounted at / (operator) and behind Caddy at /dashboard/ (handle_path strips
+  // the prefix) — accept both shapes
+  let p = pathname.startsWith("/dashboard/") ? pathname.slice("/dashboard".length) : pathname;
+  if (p === "/" || p === "") p = "/index.html";
+  const file = join(DIST, p.replace(/^\/+/, ""));
+  if (p.includes("..") || !existsSync(file) || !statSync(file).isFile()) return null;
+  return new Response(readFileSync(file), {
+    headers: { "content-type": MIME[file.slice(file.lastIndexOf("."))] ?? "application/octet-stream" },
+  });
 }
-refresh(); setInterval(refresh, 20000);
-</script></body></html>`;
 
 function handler() {
   const db = openReadonly();
@@ -298,7 +221,10 @@ if (import.meta.main) {
       if (url.pathname === "/api/summary") {
         return Response.json({ ...handler(), machines: await machines() });
       }
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+      const staticRes = serveStatic(url.pathname);
+      if (staticRes) return staticRes;
+      // SPA fallback: unknown non-API paths render the app
+      return serveStatic("/index.html") ?? new Response("dashboard ui not built", { status: 404 });
     },
   });
   console.log(`dashboard reading ${DB_PATH} — serving http://${HOST}:${PORT}`);

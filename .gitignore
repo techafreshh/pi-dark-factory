@@ -2,3 +2,4 @@ node_modules/
 state/
 *.log
 .DS_Store
+dashboard-ui/node_modules/\ndashboard-ui/dist/
