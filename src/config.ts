@@ -5,7 +5,13 @@ const DEFAULTS = {
   attempts: 3,
   merge: { method: "squash" as const, required_checks: [] as string[], delete_branch: true },
   timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
-  discoveries: { auto_file: false },
+  // default ON (2026-11-03): the settled fleet policy is auto-filing, and a
+  // false default made every fresh onboard silently miss it — the flag had to
+  // be re-flipped by hand per repo (jetpack/night-street-racer/sigkill on
+  // 2026-10-31, scrabble/lvl-devil/together on 2026-11-03: harvests parked in
+  // sidecars nobody filed). A repo that wants quiet discoveries opts OUT with
+  // {"discoveries":{"auto_file":false}} — explicit beats absent.
+  discoveries: { auto_file: true },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,

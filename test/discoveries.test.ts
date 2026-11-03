@@ -105,11 +105,13 @@ describe("fileDiscoveries (auto-file + verb filing)", () => {
 });
 
 describe("discoveries.auto_file config", () => {
-  test("defaults false and validates the boolean", () => {
+  test("defaults TRUE (the settled fleet policy — fresh onboards must not silently miss filing) and validates the boolean", () => {
     const d = tmp();
     writeFileSync(join(d, "config.json"), JSON.stringify({ repo: "acme/toy", models: { default: { provider: "p", model: "m" } } }));
     const cfg = loadRepoConfig(join(d, "config.json"));
-    expect(cfg.discoveries!.auto_file).toBe(false);
+    expect(cfg.discoveries!.auto_file).toBe(true);
+    writeFileSync(join(d, "config.json"), JSON.stringify({ repo: "acme/toy", models: { default: { provider: "p", model: "m" } }, discoveries: { auto_file: false } }));
+    expect(loadRepoConfig(join(d, "config.json")).discoveries!.auto_file).toBe(false); // explicit opt-out still wins
     writeFileSync(join(d, "config.json"), JSON.stringify({ repo: "acme/toy", models: { default: { provider: "p", model: "m" } }, discoveries: { auto_file: "yes" } }));
     expect(() => loadRepoConfig(join(d, "config.json"))).toThrow(/auto_file must be true or false/);
   });
