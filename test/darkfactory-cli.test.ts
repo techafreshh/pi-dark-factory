@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatModels, formatStatus, parseArgs, run } from "../cli/bin/dark-factory.js";
@@ -267,6 +267,20 @@ describe("n8n-style ergonomics (per-verb help, inline flags, --format json)", ()
     });
     const parsed = JSON.parse(out.join("").split("\n").filter((l) => l.trim())[0] ? out.join("") : "{}");
     expect(parsed.repos[0].slug).toBe("app"); // the raw body, not the rendered table
+  });
+});
+
+describe("published-artifact traps (npm bin entry)", () => {
+  test("the CLI runs through an npm-style SYMLINKED bin, not just `node <path>`", async () => {
+    // npm installs global bins as symlinks; a naive isMain compares the
+    // symlink argv against the resolved import URL and the bin exits
+    // silently (the 0.1.0 published artifact did exactly that)
+    const d = tmp();
+    const link = join(d, "df-bin-link");
+    symlinkSync(join(import.meta.dir, "..", "cli", "bin", "dark-factory.js"), link);
+    const proc = Bun.spawnSync(["node", link, "unblock", "--help"]);
+    expect(proc.exitCode).toBe(0); // bare --help is exit-2 usage; verb help is success
+    expect(proc.stdout.toString()).toContain("unblock SLUG ISSUE");
   });
 });
 

@@ -17,10 +17,10 @@
  *
  * Exit code 0 = success, 1 = error (message on stderr).
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const TIMEOUT_FAST = 60_000;
 const TIMEOUT_SLOW = 900_000; // backlog slicing runs an LLM server-side
@@ -667,7 +667,18 @@ Every verb takes --help for its detailed usage (dark-factory unblock --help).
 Exit codes: 0 success · 1 error or failed verdict · 2 usage.`;
 
 /* ── entry: run when invoked directly (node, bun, npm bin shim) ─────────── */
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// npm installs global bins as SYMLINKS: argv[1] is the symlink while
+// import.meta.url is the resolved real file, so a plain URL comparison never
+// matches and the bin exits silently (seen live on the published artifact —
+// `node <path>` worked while the npm shim printed nothing). realpath BOTH
+// sides so symlinked and direct invocation both count as main.
+const isMain = (() => {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
 
 if (isMain) {
   process.on("SIGINT", () => {
