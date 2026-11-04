@@ -674,5 +674,10 @@ if (isMain) {
     process.stdout.write("\nbye\n");
     process.exit(0);
   });
-  run(process.argv.slice(2)).then((code) => process.exit(code ?? 0));
+  // exit via exitCode, never process.exit(): writes > 64KiB (status --format
+  // json on a big fleet) flush to the pipes asynchronously, and a hard exit
+  // truncates the remainder mid-JSON — seen live on pi-factory's real /status
+  run(process.argv.slice(2)).then((code) => {
+    process.exitCode = code ?? 0;
+  });
 }
