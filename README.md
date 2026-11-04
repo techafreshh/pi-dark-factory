@@ -271,9 +271,17 @@ the InstaBox key wired into the service environment.
 
 ### Day 2 — onboarding a project (back on your laptop)
 
+Two remote clients speak to the same HTTPS endpoint (`X-Api-Key` edge gate —
+the daemon additionally rejects keys it does not hold; Caddy OR-matches the
+revocable per-client edge keys; `/health` stays open):
+
 ```sh
-export FACTORY_URL=https://<your-domain> FACTORY_API_KEY=<from factoryd.env>
-python3 bin/factory-remote doctor      # from any checkout of the factory repo
+# any OS with Node >= 18 — Windows-native, no WSL, zero deps:
+npx @techafreshh/dark-factory setup https://<your-domain> <edge-key>
+npx @techafreshh/dark-factory doctor
+# the Python twin (stdlib), from any checkout of the factory repo:
+export FACTORY_URL=https://<your-domain> FACTORY_API_KEY=<key>
+python3 bin/factory-remote doctor
 ```
 
 Then run the sibling **`pi-factory` skill** and say "onboard <owner/name>": it PRD-checks

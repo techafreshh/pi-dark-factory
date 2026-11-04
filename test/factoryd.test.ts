@@ -28,6 +28,23 @@ describe("factoryd (remote-control API)", () => {
     expect(bad.status).toBe(401);
   });
 
+  test("the laptop companion key authorizes like the primary (and both stay required)", async () => {
+    process.env.DARK_FACTORY_LAPTOP_KEY = "laptop-key-test";
+    const s2 = startFactoryd({ stateDir: dir, port: 0, key: "primary-test" });
+    const b2 = `http://127.0.0.1:${s2.port}/`;
+    try {
+      expect((await fetch(b2 + "status", { headers: { "x-api-key": "laptop-key-test" } })).status).toBe(200);
+      expect((await fetch(b2 + "status", { headers: { "x-api-key": "primary-test" } })).status).toBe(200);
+      expect((await fetch(b2 + "status", { headers: { "x-api-key": "stranger" } })).status).toBe(401);
+      expect((await fetch(b2 + "status")).status).toBe(401);
+      const h = (await (await fetch(b2 + "health")).json()) as any;
+      expect(h.laptop_key_set).toBe(true);
+    } finally {
+      s2.stop(true);
+      delete process.env.DARK_FACTORY_LAPTOP_KEY;
+    }
+  });
+
   test("status echoes the ledger through the ops core", async () => {
     const ledger = new Ledger(join(dir, "factory.db"));
     ledger.claim("acme/app", 7);

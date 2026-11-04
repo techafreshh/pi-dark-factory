@@ -59,6 +59,9 @@ export function startFactoryd(opts: FactorydOpts) {
             extension_on_host: existsSync(join(homedir(), ".pi", "agent", "extensions", "pdf-tinyfish.ts")),
             key_set: !!process.env.TINYFISH_API_KEY,
           },
+          // parity with web_tools.key_set: doctor flags a half-provisioned
+          // laptop-key rollout without shell access to the box
+          laptop_key_set: !!process.env.DARK_FACTORY_LAPTOP_KEY,
           // which snapshot `shared-base` resolves to right now — configs and
           // skills say the token and NEVER a version; this answer is the truth
           shared_base: readSharedBase(opts.stateDir),
@@ -66,8 +69,17 @@ export function startFactoryd(opts: FactorydOpts) {
         });
       }
 
+      // multi-key gate: the primary secret plus companion keys that carry the
+      // same trust (the laptop client's DARK_FACTORY_LAPTOP_KEY — separately
+      // revocable at the edge, but it must authorize the daemon too or it
+      // would pass Caddy just to be 401'd here). Absent/empty env entries
+      // drop out; the primary key is still required to exist.
+      const acceptedKeys = [opts.key, process.env.DARK_FACTORY_LAPTOP_KEY].filter(
+        (k): k is string => !!k
+      );
       const key = req.headers.get("x-api-key");
-      if (!opts.key || key !== opts.key) return fail(401, "bad or missing X-Api-Key");
+      if (acceptedKeys.length === 0 || !key || !acceptedKeys.includes(key))
+        return fail(401, "bad or missing X-Api-Key");
       const slug = decodeURIComponent(/^\/repos\/([^/]+)/.exec(path)?.[1] ?? "");
       const tickEnd = /^\/repos\/[^/]+\/(tick|backlog|unblock)$/.exec(path)?.[1];
 
