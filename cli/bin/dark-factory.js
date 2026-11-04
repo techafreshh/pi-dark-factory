@@ -27,8 +27,8 @@ const TIMEOUT_SLOW = 900_000; // backlog slicing runs an LLM server-side
 const STREAM_IDLE_MS = 120_000; // session follow: abort when no bytes land
 const RECONNECT_MS = 5_000;
 
-const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max"];
-const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force"];
+const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format"];
+const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--help", "-h"];
 
 export function parseArgs(argv) {
   const a = { _: [] };
@@ -44,6 +44,7 @@ export function parseArgs(argv) {
       return { error: `unknown flag ${t}` };
     } else a._.push(t);
   }
+  if (a.h) a.help = true; // -h and --help are the same verb-level help
   return a;
 }
 
@@ -51,25 +52,30 @@ export function configPaths(home = homedir()) {
   return { file: join(home, ".dark-factory", "config.json") };
 }
 
-function loadConfig(home) {
-  const envUrl = process.env.DARK_FACTORY_URL;
-  const envKey = process.env.DARK_FACTORY_API_KEY;
-  if (envUrl && envKey) return { url: envUrl.replace(/\/+$/, ""), key: envKey, source: "env" };
+/* Connection resolution mirrors the n8n CLI: inline flags beat env vars beat
+ * the stored config file. */
+function loadConfig(home, override = {}) {
+  const pick = (flagVal, envVal) => (flagVal ? [flagVal, "flags"] : envVal ? [envVal, "env"] : [undefined, undefined]);
+  const [u, uTag] = pick(override.url, process.env.DARK_FACTORY_URL);
+  const [k, kTag] = pick(override.key, process.env.DARK_FACTORY_API_KEY);
+  const url = (u || "").replace(/\/+$/, "");
+  const key = k || "";
+  if (url && key) return { url, key, source: [...new Set([uTag, kTag])].join("+") };
   const { file } = configPaths(home);
   try {
     const cfg = JSON.parse(readFileSync(file, "utf8"));
     return {
-      url: (envUrl || cfg.url || "").replace(/\/+$/, ""),
-      key: envKey || cfg.key || "",
-      source: envUrl || envKey ? "env+file" : "file",
+      url: (u || cfg.url || "").replace(/\/+$/, ""),
+      key: k || cfg.key || "",
+      source: [...new Set([uTag, kTag].filter(Boolean).concat("file"))].join("+"),
       file,
     };
   } catch {
-    if (!envUrl && !envKey)
+    if (!(u || k))
       throw new Error(
         "not set up — run `dark-factory setup <url> <key>`, or set DARK_FACTORY_URL and DARK_FACTORY_API_KEY"
       );
-    return { url: envUrl.replace(/\/+$/, ""), key: envKey, source: "env" };
+    return { url, key, source: [...new Set([uTag, kTag].filter(Boolean))].join("+"), file };
   }
 }
 
@@ -215,13 +221,17 @@ async function cmdHealth(a, ctx) {
 async function cmdDoctor(a, ctx) {
   const health = (await ctx.api("GET", "/health", undefined, { needKey: false, timeout: 10_000 })).body;
   const status = (await ctx.api("GET", "/status")).body;
+  if (a.format === "json") {
+    ctx.out(JSON.stringify({ health, status }, null, 2));
+    return 0;
+  }
   ctx.out(formatDoctor(health, status));
   return 0;
 }
 
 async function cmdStatus(a, ctx) {
   const { body } = await ctx.api("GET", "/status" + (a.repo ? `?slug=${encodeURIComponent(a.repo)}` : ""));
-  if (a.raw) {
+  if (a.raw || a.format === "json") {
     ctx.out(JSON.stringify(body, null, 2));
     return 0;
   }
@@ -234,12 +244,20 @@ async function cmdLogs(a, ctx) {
   if (a.repo) q.push(`slug=${encodeURIComponent(a.repo)}`);
   if (a.tail) q.push(`tail=${a.tail}`);
   const { body } = await ctx.api("GET", "/logs" + (q.length ? "?" + q.join("&") : ""));
+  if (a.format === "json") {
+    ctx.out(JSON.stringify(body, null, 2));
+    return 0;
+  }
   for (const line of body.lines ?? []) ctx.out(line);
   return 0;
 }
 
 async function cmdModels(a, ctx) {
   const { body } = await ctx.api("GET", "/models");
+  if (a.format === "json") {
+    ctx.out(JSON.stringify(body, null, 2));
+    return 0;
+  }
   ctx.out(formatModels(body));
   return 0;
 }
@@ -520,6 +538,10 @@ export async function run(argv, ctx = {}) {
     err(`unknown verb: ${verb} (dark-factory help lists verbs)`);
     return 2;
   }
+  if (a.help) {
+    out(HELP[verb] ?? USAGE);
+    return 0;
+  }
   if (a._.length - 1 < def.min) {
     err(`${verb}: missing arguments (dark-factory help)`);
     return 2;
@@ -529,7 +551,7 @@ export async function run(argv, ctx = {}) {
   if (!def.noApi) {
     if (!api) {
       try {
-        const cfg = loadConfig(home);
+        const cfg = loadConfig(home, { url: a.url, key: a.key });
         cfg_ = cfg;
         api = makeApi(cfg, ctx.fetchImpl ?? fetch);
       } catch (e) {
@@ -547,6 +569,72 @@ export async function run(argv, ctx = {}) {
     return 1;
   }
 }
+
+const HELP = {
+  setup: `setup <url> <key>
+Store the connection in ~/.dark-factory/config.json (chmod 600 where the OS
+allows). Flags --url/--key override env/file per call; env vars
+DARK_FACTORY_URL / DARK_FACTORY_API_KEY rank between flags and the file.
+Example: dark-factory setup https://pi-factory.techa.pro <edge-key>`,
+  where: `where
+Show the active connection: url, masked key, which layer it came from
+(flags > env > file), and the config file path.`,
+  health: `health
+The open /health endpoint — connectivity check without a key. Prints JSON.`,
+  doctor: `doctor [--format json]
+Auth + readiness sweep: health, web tools, stack bases, repo count. Flags a
+half-provisioned laptop key (daemon-side) without shell access to the VPS.`,
+  models: `models [--format json]
+The LIVE provider roster from models.json (signing keys stripped). Config
+patches validate against this roster — unknown providers and unsupported
+thinking levels reject.`,
+  status: `status [--repo SLUG] [--raw | --format json]
+Claimable chain depth, in-flight laps, ledger rows, recent laps/stages,
+worktrees. --repo scopes to one slug; --raw/--format json dump the full
+response for scripting.`,
+  logs: `logs [--repo SLUG] [--tail N] [--format json]
+laps.log tail (default 200) — the audit spine. --format json returns the raw
+{lines:[...]} payload.`,
+  session: `session SLUG [-f|--follow] [--think] [--issue N]
+Human-readable view of the repo's newest pi session. --follow streams live
+and auto-reconnects 5s after drops (the server caps a stream at 4h); --think
+includes the model's reasoning text; --issue pins one issue. Ctrl-C stops.`,
+  onboard: `onboard OWNER/NAME
+Write the config template, scenario templates and a port pair. Idempotent
+("already" when done). Then: config → scenario → backlog → tick.`,
+  config: `config SLUG [--json PATCH]
+Read the COMPLETE effective config (nothing filtered — a filtered readback
+once hid env.instabox.* and thinking). With --json, deep-merge a patch:
+  dark-factory config app --json '{"pi":{"web":{"search":false}}}'
+A successful patch bumps the inputs-epoch; two-writer rule: last write wins.`,
+  scenario: `scenario SLUG runtime|holdout [--file F | --lint | --dump | --test [--branch B]]
+Write + server-side validate a scenario (--file), dry-run validate (--lint —
+ALWAYS lint before writing), print stored (--dump), or execute WITHOUT
+spending a lap (--test; targets the repo's default branch unless --branch;
+exit 1 on a failed verdict).`,
+  "prove-gates": `prove-gates SLUG
+Plant every probe against a product-shaped stub; the gates must trip. Exit 1
+unless the verdict is "healthy".`,
+  discoveries: `discoveries SLUG [--file]
+List harvested reviewer observations (preview). --file opens deduped
+[discovery] issues — that spends repo writes.`,
+  backlog: `backlog SLUG --prd-file F [--max N] [--create]
+Slice a PRD into dependency-ordered issues. Preview by default; --create
+publishes. --max caps issues (40).`,
+  tick: `tick SLUG
+Fire a lap now — the pidfile arbitrates with the systemd timer, so this can
+never double-run a lap. 409 = another tick is mid-flight; only a
+'queued: <slug> #N' log line means a lap truly started.`,
+  pause: `pause SLUG / unpause SLUG
+Pull a repo off the tick wheel / put it back. Pause lets an in-flight lap
+finish; unpause is picked up on the next tick (fire one: tick SLUG).`,
+  unblock: `unblock SLUG ISSUE [--prune] [--force]
+Drop the ledger row for a wedged issue. --prune also closes the PR, branch
+and worktree; --force overrides the in-progress guard — only after verifying
+the lap is actually dead.`,
+  cleanup: `cleanup
+Prune caches and kill stale pi workers on the VPS.`,
+};
 
 const USAGE = `dark-factory — drive a pi-dark-factory over HTTPS (Node >= 18, zero deps)
 
@@ -572,7 +660,10 @@ pause SLUG / unpause SLUG        pull a repo off / put it back on the tick wheel
 unblock SLUG ISSUE [--prune] [--force]               drop a ledger row (optionally close PR/branch)
 cleanup                          prune caches, kill stale pi workers
 
-Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config.
+Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config;
+inline --url / --key override everything (resolution: flags > env > file).
+--format json gives machine-readable output on status/logs/models/doctor.
+Every verb takes --help for its detailed usage (dark-factory unblock --help).
 Exit codes: 0 success · 1 error or failed verdict · 2 usage.`;
 
 /* ── entry: run when invoked directly (node, bun, npm bin shim) ─────────── */

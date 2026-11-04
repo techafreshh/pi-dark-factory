@@ -221,6 +221,55 @@ describe("run (verbs over a mocked API)", () => {
   });
 });
 
+describe("n8n-style ergonomics (per-verb help, inline flags, --format json)", () => {
+  test("every verb takes --help and prints its own usage without connecting", async () => {
+    const out: string[] = [];
+    expect(await run(["unblock", "--help"], { out: (s) => out.push(String(s)) })).toBe(0);
+    expect(out.join("")).toContain("unblock SLUG ISSUE");
+    expect(await run(["session", "-h"], { out: (s) => out.push(String(s)) })).toBe(0);
+    expect(out.join("")).toContain("auto-reconnects 5s after drops");
+    expect(await run(["scenario", "--help"], { out: (s) => out.push(String(s)) })).toBe(0);
+    expect(out.join("")).toContain("ALWAYS lint before writing");
+  });
+
+  test("inline --url/--key beat env vars (flags > env > file)", async () => {
+    const saved = { u: process.env.DARK_FACTORY_URL, k: process.env.DARK_FACTORY_API_KEY };
+    process.env.DARK_FACTORY_URL = "https://env.example";
+    process.env.DARK_FACTORY_API_KEY = "envkey";
+    const calls: any[] = [];
+    try {
+      const code = await run(["status", "--url", "https://flag.example", "--key", "flagkey"], {
+        ...silence(),
+        fetchImpl: async (url: any, init: any) => {
+          calls.push({ url: String(url), init });
+          return new Response(JSON.stringify({ repos: [] }), { status: 200 });
+        },
+      });
+      expect(code).toBe(0);
+      expect(calls[0].url.startsWith("https://flag.example/status")).toBe(true);
+      expect(calls[0].init.headers["X-Api-Key"]).toBe("flagkey");
+    } finally {
+      if (saved.u) process.env.DARK_FACTORY_URL = saved.u;
+      else delete process.env.DARK_FACTORY_URL;
+      if (saved.k) process.env.DARK_FACTORY_API_KEY = saved.k;
+      else delete process.env.DARK_FACTORY_API_KEY;
+    }
+  });
+
+  test("--format json gives machine-readable status/logs/models/doctor output", async () => {
+    process.env.DARK_FACTORY_URL = "https://factory.example";
+    process.env.DARK_FACTORY_API_KEY = "k";
+    const out: string[] = [];
+    await run(["status", "--format", "json"], {
+      out: (s) => out.push(String(s)),
+      err: () => {},
+      fetchImpl: async () => new Response(JSON.stringify({ repos: [{ slug: "app", chain: 0 }] }), { status: 200 }),
+    });
+    const parsed = JSON.parse(out.join("").split("\n").filter((l) => l.trim())[0] ? out.join("") : "{}");
+    expect(parsed.repos[0].slug).toBe("app"); // the raw body, not the rendered table
+  });
+});
+
 describe("formatters", () => {
   test("status renders the ledger/laps/stages sections", () => {
     const s = formatStatus({

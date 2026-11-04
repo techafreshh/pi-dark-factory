@@ -43,6 +43,19 @@ it like a password.
 backoff) — Ctrl-C to stop. `scenario --test` and `prove-gates` exit non-zero
 on a failed verdict, so they script cleanly.
 
+## Ergonomics (mirroring the n8n CLI conventions)
+
+- **Connection resolution: inline flags > env > file** — per call:
+  `dark-factory status --url https://pi-factory.techa.pro --key <key>`,
+  or `DARK_FACTORY_URL`/`DARK_FACTORY_API_KEY` in the shell, or the stored
+  config from `setup`. `dark-factory where` shows which layer is in play
+  (key material always masked).
+- **Every verb takes `--help`**: `dark-factory unblock --help` explains the
+  flags, the gates and the gotchas of that verb.
+- **`--format json`** for machine-readable output on `status`, `logs`,
+  `models` and `doctor` (`--raw` on status is the same thing, kept for parity
+  with `factory-remote`).
+
 Exit codes: `0` success · `1` error or failed verdict · `2` usage.
 
 ## How it talks
