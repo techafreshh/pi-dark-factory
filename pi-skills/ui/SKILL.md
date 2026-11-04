@@ -1,6 +1,6 @@
 ---
 name: ui
-description: Router for frontend/UI work across the factory's approved component libraries (coss, efferd, Preline, beUI) — which library fits the stack, exact install commands, combination rules, the per-project ledger, and no-MCP access paths for each source. Consult BEFORE writing any new component, page, screen, block, layout, landing, dashboard, form, or styling pass, or whenever an issue mentions UI, components, blocks, design, markup, or a redesign.
+description: Router for frontend/UI work across the factory's approved component libraries (coss, efferd, Preline, beUI) — which library fits the stack, exact install commands, combination rules, the per-project ledger, and no-MCP access paths for each source. Consult BEFORE writing any new component, page, screen, block, layout, nav, modal, card, table, form, dashboard, hero, landing, or styling pass — or whenever an issue says UI, components, blocks, redesign, restyle, "make it look better", polish, or mentions design/markup/themes. Also consult when deciding NOT to use a library (plain CSS hand-rolling) — the skill is where that call is made properly.
 ---
 
 # The UI router
@@ -93,8 +93,20 @@ Plain CSS following existing patterns wins when in doubt.
 - **Never vendor paid or license-gated components** (Preline Pro 🔥, beUI Pro
   / React-Native line, efferd Pro) into a factory repo.
 - **Record the pick.** The first library install in a repo creates
-  `docs/UI_LIBRARY.md`: library chosen, why, the install command, components
-  landed, theme/token changes. Later laps keep it current.
+  `docs/UI_LIBRARY.md` and later laps keep it current. Keep it short and
+  factual — this shape:
+
+  ```markdown
+  # UI library ledger
+  ## coss (chosen 2026-04-03, issue #12)
+  - Why: needed accessible dialog/form primitives; repo is Next.js + Tailwind v4.
+  - Installed: `npx shadcn@latest add <registry-url>` → dialog, input, select.
+  - Theme: used existing CSS vars; no token changes.
+  ## efferd (issue #18)
+  - Why: landing hero + pricing section blocks.
+  - Registries: `"@efferd": "https://efferd.com/r/{style}/{name}.json"` in components.json.
+  - Rule reminder: primitives stay coss; sections stay efferd; never mix inside one component.
+  ```
 - **Verify what you shipped.** When the stage lets you run the app, screenshot
   the screen you built with the agent-browser skill (already on this box) and
   include what you saw in your stage summary. "It compiled" is not UI
