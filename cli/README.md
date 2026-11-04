@@ -1,67 +1,81 @@
+<div align="center">
+
 # @techafresh/dark-factory
 
-`dark-factory` — remote control for a [pi-dark-factory](https://github.com/techafreshh/pi-dark-factory)
-from any OS with **Node >= 18** (Windows, macOS, Linux — no WSL, no Python).
-Zero runtime dependencies; one file.
+*Remote control for a pi-dark-factory — watch and drive your unattended build loop from any OS*
+
+[![npm](https://img.shields.io/npm/v/@techafresh/dark-factory?style=flat-square)](https://www.npmjs.com/package/@techafresh/dark-factory)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-3c873a?style=flat-square)](https://nodejs.org)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+
+[Installation](#installation) • [Setup](#setup) • [Verbs](#verbs) • [Scripting](#scripting)
+
+</div>
+
+**dark-factory** is the command-line client for a [pi-dark-factory](https://github.com/techafreshh/pi-dark-factory) instance — an unattended loop where AI agents pick up GitHub issues, implement them, verify them against running services, and merge. This CLI is how you **watch and drive** that loop from anywhere with Node ≥ 18 (Windows, macOS, Linux — no WSL, no Python, zero runtime dependencies):
+
+- **Observe** — live status per repo (claimable chain depth, laps in flight), ledger and laps, the audit log, cost/token telemetry per stage, and a live stream of what any agent is thinking right now.
+- **Drive** — fire a lap on demand, pause/unpause repos, deep-merge config patches, validate and test-run scenarios without spending a lap, slice a PRD into a dependency-ordered backlog, unblock wedged issues, prune caches.
+
+## Installation
 
 ```bash
-npx @techafresh/dark-factory doctor          # try it without installing
-npm i -g @techafresh/dark-factory            # or install the command once
-dark-factory status
+npm install -g @techafresh/dark-factory
 ```
 
-## Setup (once per machine)
+Or without installing:
 
 ```bash
-dark-factory setup https://pi-factory.techa.pro <your-factory-api-key>
+npx @techafresh/dark-factory <verb>
+```
+
+## Setup
+
+Once per machine, point it at your factory:
+
+```bash
+dark-factory setup <factory-url> <api-key>
 dark-factory doctor
 ```
 
-The config lands in `~/.dark-factory/config.json` (your user profile — on
-Windows `%USERPROFILE%\.dark-factory\config.json`). Per-shell overrides:
+- `<factory-url>` — the public URL of your factory (its operator, or the factory's own docs, tells you what this is).
+- `<api-key>` — a factory edge API key. **Whoever holds a key controls the factory** — treat it like a password.
+
+Config lands in `~/.dark-factory/config.json`. Per-shell overrides and precedence, highest first:
+
+1. Inline flags — `dark-factory status --url <factory-url> --key <api-key>`
+2. Environment — `DARK_FACTORY_URL` / `DARK_FACTORY_API_KEY`
+3. The stored config file (`dark-factory where` shows what's in play, key always masked)
+
+> [!TIP]
+> Provision one key per client (e.g. a dedicated key per laptop). They're independently revocable at the factory edge without disturbing other clients.
+
+## Verbs
+
+| watch | drive |
+|---|---|
+| `health` · `doctor` · `models` | `onboard OWNER/NAME` |
+| `status [--repo SLUG] [--raw]` | `config SLUG [--json PATCH]` |
+| `logs [--repo SLUG] [--tail N]` | `tick SLUG` · `pause SLUG` · `unpause SLUG` |
+| `session SLUG [--follow] [--think] [--issue N]` | `scenario SLUG runtime\|holdout [--file F] [--lint] [--test] [--dump]` |
+| | `prove-gates SLUG` · `discoveries SLUG [--file]` |
+| | `backlog SLUG --prd-file F [--max N] [--create]` |
+| | `unblock SLUG ISSUE [--prune] [--force]` · `cleanup` |
+
+Every verb has its own, detailed manual: `dark-factory <verb> --help`.
+
+`session --follow` streams the agent's work as it happens (reasoning included with `--think`) and reconnects automatically after drops — Ctrl-C to stop. `scenario --lint` always validates before a write ever lands; `scenario --test` executes a scenario against a branch **without** spending a lap.
+
+## Scripting
+
+- `--format json` renders `status`, `logs`, `models` and `doctor` as machine-readable JSON.
+- Exit codes: `0` success · `1` error or failed verdict · `2` usage — so `scenario --test` and `prove-gates` gate cleanly in CI or shell scripts:
 
 ```bash
-DARK_FACTORY_URL=https://pi-factory.techa.pro DARK_FACTORY_API_KEY=<key> dark-factory status
+dark-factory scenario my-app runtime --test && echo "scenario green — fire the lap"
+dark-factory --url <factory-url> --key <api-key> tick my-app
 ```
-
-`dark-factory where` shows what is in play (key material is always masked).
-The key is a factory edge API key — whoever holds it runs the factory; treat
-it like a password.
-
-## Verbs (mirror `factory-remote` on the VPS one-to-one)
-
-| read | drive |
-|---|---|
-| `health`, `doctor`, `models` | `onboard OWNER/NAME`, `tick SLUG`, `pause/unpause SLUG` |
-| `status [--repo SLUG] [--raw]` | `config SLUG [--json PATCH]` |
-| `logs [--repo SLUG] [--tail N]` | `scenario SLUG runtime\|holdout [--file F] [--lint] [--dump] [--test]` |
-| `session SLUG [--follow] [--think] [--issue N]` | `prove-gates SLUG`, `discoveries SLUG [--file]` |
-| | `backlog SLUG --prd-file F [--max N] [--create]` |
-| | `unblock SLUG ISSUE [--prune] [--force]`, `cleanup` |
-
-`session --follow` streams the live agent session and auto-reconnects (5s
-backoff) — Ctrl-C to stop. `scenario --test` and `prove-gates` exit non-zero
-on a failed verdict, so they script cleanly.
-
-## Ergonomics (mirroring the n8n CLI conventions)
-
-- **Connection resolution: inline flags > env > file** — per call:
-  `dark-factory status --url https://pi-factory.techa.pro --key <key>`,
-  or `DARK_FACTORY_URL`/`DARK_FACTORY_API_KEY` in the shell, or the stored
-  config from `setup`. `dark-factory where` shows which layer is in play
-  (key material always masked).
-- **Every verb takes `--help`**: `dark-factory unblock --help` explains the
-  flags, the gates and the gotchas of that verb.
-- **`--format json`** for machine-readable output on `status`, `logs`,
-  `models` and `doctor` (`--raw` on status is the same thing, kept for parity
-  with `factory-remote`).
-
-Exit codes: `0` success · `1` error or failed verdict · `2` usage.
 
 ## How it talks
 
-HTTPS to your factory URL (`/health` is open, every other call sends
-`X-Api-Key`) — the same endpoint the VPS's own `factory-remote` uses. All
-reads are GET; mutations are POST/PUT. Lap and backlog mutations spend real
-tokens and are confirmed like the skill teaches (`queued: <slug> #N` in the
-logs means a lap truly started).
+Plain HTTPS: `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one.
