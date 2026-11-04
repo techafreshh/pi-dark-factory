@@ -49,13 +49,28 @@ describe("collectSkillsB64 (factory skills channel)", () => {
   test("the shipped tree carries the ui router with all four libraries and real commands", () => {
     const skill = readFileSync(join(skillsSourceDir(), "ui", "SKILL.md"), "utf8");
     expect(skill).toContain("name: ui");
-    for (const lib of ["coss", "efferd", "Preline", "beUI"]) expect(skill).toContain(lib);
+    for (const lib of ["coss", "efferd", "Preline", "beUI", "transitions-dev", "web-design-guidelines"]) expect(skill).toContain(lib);
     // the install surface: registry JSON URLs, not MCP config
     expect(skill).toContain("npx shadcn@latest add");
     expect(skill).toContain("https://beui.dev/r");
     expect(skill).toContain("efferd.com/r/{style}/{name}.json");
     expect(skill).toContain("UI libraries: DISABLED for"); // names the runtime-context line it obeys
     expect(skill).toContain("ui.enabled=false");
+  });
+
+  test("the shipped tree carries the companion skills (audit, motion, readme)", () => {
+    const audit = readFileSync(join(skillsSourceDir(), "web-design-guidelines", "SKILL.md"), "utf8");
+    // the live-fetch rule is the skill's whole point — never audit from memory
+    expect(audit).toContain("web-interface-guidelines/main/command.md");
+    expect(audit).toContain("git diff --name-only"); // lap-diff default target
+    const t = readFileSync(join(skillsSourceDir(), "transitions-dev", "SKILL.md"), "utf8");
+    expect(t).toContain("transitions-dev");
+    expect(t).toContain("prefers-reduced-motion");
+    expect(existsSync(join(skillsSourceDir(), "transitions-dev", "12-error-state-shake.md"))).toBe(true);
+    expect(existsSync(join(skillsSourceDir(), "transitions-dev", "_root.css"))).toBe(true);
+    const readme = readFileSync(join(skillsSourceDir(), "create-readme", "SKILL.md"), "utf8");
+    expect(readme).toContain("README.md");
+    expect(readme).toContain("GFM");
   });
 });
 
