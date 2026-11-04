@@ -1,12 +1,12 @@
-# @techafreshh/dark-factory
+# @techafresh/dark-factory
 
 `dark-factory` — remote control for a [pi-dark-factory](https://github.com/techafreshh/pi-dark-factory)
 from any OS with **Node >= 18** (Windows, macOS, Linux — no WSL, no Python).
 Zero runtime dependencies; one file.
 
 ```bash
-npx @techafreshh/dark-factory doctor          # try it without installing
-npm i -g @techafreshh/dark-factory            # or install the command once
+npx @techafresh/dark-factory doctor          # try it without installing
+npm i -g @techafresh/dark-factory            # or install the command once
 dark-factory status
 ```
 

@@ -5,8 +5,8 @@
  * Python `factory-remote` (same verbs, same REST surface, same output
  * shapes), so the docs and muscle memory stay identical.
  *
- *   npx @techafreshh/dark-factory status
- *   npm i -g @techafreshh/dark-factory && dark-factory status
+ *   npx @techafresh/dark-factory status
+ *   npm i -g @techafresh/dark-factory && dark-factory status
  *
  * Config (first run):  dark-factory setup <url> <key>
  *   stores {url, key} in ~/.dark-factory/config.json.

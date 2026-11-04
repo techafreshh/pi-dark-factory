@@ -277,8 +277,8 @@ revocable per-client edge keys; `/health` stays open):
 
 ```sh
 # any OS with Node >= 18 — Windows-native, no WSL, zero deps:
-npx @techafreshh/dark-factory setup https://<your-domain> <edge-key>
-npx @techafreshh/dark-factory doctor
+npx @techafresh/dark-factory setup https://<your-domain> <edge-key>
+npx @techafresh/dark-factory doctor
 # the Python twin (stdlib), from any checkout of the factory repo:
 export FACTORY_URL=https://<your-domain> FACTORY_API_KEY=<key>
 python3 bin/factory-remote doctor
