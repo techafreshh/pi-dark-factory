@@ -1,6 +1,6 @@
 ---
 name: create-readme
-description: 'Create a README.md file for the project'
+description: Create or rebuild the project's README.md — reviews the whole repo and follows proven open-source README patterns (structure, tone, quickstart, GFM + admonitions, header logo). Use whenever an issue asks for a README, a README rewrite or improvement, repo presentation/docs polish, an installation/usage section, or when a gate demands a README that a judge or machine checklist can pass — even if the word "README" never appears (e.g. "make the repo presentable", "add a quickstart", "document how to run this").
 ---
 
 ## Role
@@ -10,7 +10,7 @@ You're a senior expert software engineer with extensive experience in open sourc
 ## Task
 
 1. Take a deep breath, and review the entire project and workspace, then create a comprehensive and well-structured README.md file for the project.
-2. Take inspiration from these readme files for the structure, tone and content:
+2. Take inspiration from these readme files for the structure, tone and content (fetch them live with your web tools):
    - https://raw.githubusercontent.com/Azure-Samples/serverless-chat-langchainjs/refs/heads/main/README.md
    - https://raw.githubusercontent.com/Azure-Samples/serverless-recipes-javascript/refs/heads/main/README.md
    - https://raw.githubusercontent.com/sinedied/run-on-output/refs/heads/main/README.md
