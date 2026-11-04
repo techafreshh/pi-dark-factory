@@ -121,3 +121,16 @@ describe("loadRepoConfig", () => {
     expect(() => loadRepoConfig(path)).toThrow(/owner\/name/);
   });
 });
+
+describe("loadRepoConfig ui key", () => {
+  test("ui.enabled defaults TRUE (the router ships fleet-wide) and validates the boolean", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfcfg-"));
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ repo: "acme/app", models: { default: { provider: "zai", model: "glm" } } }));
+    expect(loadRepoConfig(path).ui!.enabled).toBe(true);
+    writeFileSync(path, JSON.stringify({ repo: "acme/app", models: { default: { provider: "zai", model: "glm" } }, ui: { enabled: false } }));
+    expect(loadRepoConfig(path).ui!.enabled).toBe(false); // explicit opt-out still wins
+    writeFileSync(path, JSON.stringify({ repo: "acme/app", models: { default: { provider: "zai", model: "glm" } }, ui: { enabled: "no" } }));
+    expect(() => loadRepoConfig(path)).toThrow(/ui.enabled must be true or false/);
+  });
+});

@@ -57,6 +57,34 @@ describe("buildRuntimeContext (the where-am-I brief)", () => {
     expect(ctx).toContain("OUTSIDE this repo");
     expect(ctx).toContain("English only");
   });
+
+  test("the ui router stays silent unless disabled", () => {
+    expect(ctx).not.toContain("UI libraries");
+  });
+});
+
+describe("ui router suppression (config ui.enabled=false)", () => {
+  test("disabled repos are told to build from scratch and never install libraries", () => {
+    const off = buildRuntimeContext(cfg("compose"), {
+      repo: "acme/app",
+      slug: "app",
+      issue: 3,
+      issueTitle: "Inline rules: bold, italic",
+      stage: "implement",
+      attempt: 2,
+      attemptsMax: 3,
+      branch: "factory/issue-3",
+      base: "main",
+      mode: "compose",
+      where: "inside the product's own docker compose worker service",
+      cwd: "/home/factory/state/worktrees/app/issue-3",
+      toolchain: "the worker image provides the runtime",
+      uiLibraries: false,
+    });
+    expect(off).toContain("UI libraries: DISABLED for this repo");
+    expect(off).toContain("ignore the `ui` skill");
+    expect(off).toContain("never install component libraries");
+  });
 });
 
 describe("instabox mode plumbing", () => {

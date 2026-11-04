@@ -105,6 +105,10 @@ export interface RepoConfig {
    *  `[discovery]` issues straight after each review (title-deduped), so the
    *  factory works future-bug candidates like any backlog item. */
   discoveries?: { auto_file?: boolean };
+  /** ui.enabled=false suppresses the pi-skills/ui router for this repo: the
+   *  runtime context tells every stage to build frontend from scratch and
+   *  never install component libraries. */
+  ui?: { enabled?: boolean };
 }
 
 export interface IssueLite {

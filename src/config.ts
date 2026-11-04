@@ -12,6 +12,9 @@ const DEFAULTS = {
   // sidecars nobody filed). A repo that wants quiet discoveries opts OUT with
   // {"discoveries":{"auto_file":false}} — explicit beats absent.
   discoveries: { auto_file: true },
+  // the pi-skills/ui router ships to every lap for the same reason auto_file
+  // is ON — per-repo opt-out is an explicit {"ui":{"enabled":false}} patch
+  ui: { enabled: true },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -128,6 +131,7 @@ export function loadRepoConfig(path: string): RepoConfig {
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
     discoveries: { ...DEFAULTS.discoveries, ...(raw.discoveries ?? {}) },
+    ui: { ...DEFAULTS.ui, ...(raw.ui ?? {}) },
     pi: {
       ...DEFAULTS.pi,
       ...raw.pi,
@@ -146,6 +150,8 @@ export function loadRepoConfig(path: string): RepoConfig {
   // to close (same fail-fast rule as the roster checks: reject at write time)
   if (cfg.discoveries!.auto_file !== undefined && typeof cfg.discoveries!.auto_file !== "boolean")
     throw new Error(`config discoveries.auto_file must be true or false (got ${JSON.stringify(cfg.discoveries!.auto_file)})`);
+  if (cfg.ui!.enabled !== undefined && typeof cfg.ui!.enabled !== "boolean")
+    throw new Error(`config ui.enabled must be true or false (got ${JSON.stringify(cfg.ui!.enabled)})`);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")

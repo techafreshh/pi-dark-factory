@@ -361,6 +361,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
             ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
             : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
       webTools: webEnabled,
+      uiLibraries: cfg.ui?.enabled !== false,
     });
 
   try {
@@ -425,6 +426,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           cwd: join(stateDir, "repos", cfg.slug, "source"),
           toolchain: "factory user environment on the VPS: node, bun, git, gh all on PATH",
           webTools: webEnabled,
+          uiLibraries: cfg.ui?.enabled !== false,
         }),
       });
       recordStage("plan", attempt, models, res);

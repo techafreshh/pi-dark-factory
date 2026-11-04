@@ -45,6 +45,18 @@ describe("collectSkillsB64 (factory skills channel)", () => {
   test("the real checkout tree produces a payload — machines get the shipped skills", () => {
     expect(collectSkillsB64(skillsSourceDir())).not.toBeNull();
   });
+
+  test("the shipped tree carries the ui router with all four libraries and real commands", () => {
+    const skill = readFileSync(join(skillsSourceDir(), "ui", "SKILL.md"), "utf8");
+    expect(skill).toContain("name: ui");
+    for (const lib of ["coss", "efferd", "Preline", "beUI"]) expect(skill).toContain(lib);
+    // the install surface: registry JSON URLs, not MCP config
+    expect(skill).toContain("npx shadcn@latest add");
+    expect(skill).toContain("https://beui.dev/r");
+    expect(skill).toContain("efferd.com/r/{style}/{name}.json");
+    expect(skill).toContain("UI libraries: DISABLED for"); // names the runtime-context line it obeys
+    expect(skill).toContain("ui.enabled=false");
+  });
 });
 
 describe("syncHostSkills (host-side install)", () => {

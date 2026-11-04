@@ -151,7 +151,15 @@ every mode sees the same tree:
 Add a skill by dropping a directory in `pi-skills/` — the next stage carries it, no
 restart (the collector refuses payloads over 4 MiB of base64 rather than bloat every
 stage's ssh stdin, and loose `.md` files in the tree root load as skills too, so use
-directories). With `discoveries.auto_file: true` in a repo config (flipped on fleet-wide as of
+directories). The shipped skills today: `agent-browser` (visual/runtime UI verification)
+and `ui` — the frontend router: before any component/page/block work, a lap must consult
+it and install from the approved shadcn-registry family (coss primitives, efferd blocks,
+beUI motion) or Preline for plain-Tailwind/non-React repos — exact registry URLs and
+No-MCP HTTP access paths are in the skill, choices per project are recorded in the repo's
+`docs/UI_LIBRARY.md` ledger, and `ui.enabled: false` in a repo config voids it via a
+runtime-context line (build from scratch, never install libraries).
+
+With `discoveries.auto_file: true` in a repo config (flipped on fleet-wide as of
 2026-10-31), new discoveries are filed automatically right after each review — labeled
 `discovery`, title-deduped, and claimed by the next tick's intake; each issue body carries an
 acceptance nudge because a discovery arrives as a claim and the plan stage is what makes it
