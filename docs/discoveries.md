@@ -6,7 +6,7 @@ With `discoveries.auto_file: true` in a repo config (flipped on fleet-wide as of
 2026-10-31), new discoveries are filed automatically right after each review — labeled
 `discovery`, title-deduped, and claimed by the next tick's intake; each issue body carries an
 acceptance nudge because a discovery arrives as a claim and the plan stage is what makes it
-verifiable. Without the flag, filing stays behind `factory-remote discoveries <slug> --file`.
+verifiable. Without the flag, filing stays behind `dark-factory discoveries <slug> --file`.
 
 Two owner policies of 2026-11-02 bound the class (the first 36 hours measured 72–90% of all
 harvests filed by discovery-fix laps themselves, which pushed whole roadmaps — jetpack went

@@ -95,13 +95,12 @@ bun src/foreman.ts cleanup                      # dep caches, stale pi workers, 
 
 ## Remote clients
 
-Two clients speak the same HTTPS endpoint (`X-Api-Key`; `/health` stays open; per-client edge
-keys are independently revocable):
+The remote client speaks the same HTTPS endpoint the daemon serves (`X-Api-Key`; `/health`
+stays open; per-client edge keys are independently revocable):
 
 | client | platform | install |
 |---|---|---|
 | **`@techafresh/dark-factory`** (`dark-factory`) | any OS with Node ≥ 18, zero deps | `npm i -g @techafresh/dark-factory` or `npx @techafresh/dark-factory` |
-| **`bin/factory-remote`** (Python 3, stdlib) | anywhere Python runs | part of this repo |
 
 Full verb manuals: [cli/README.md](cli/README.md).
 

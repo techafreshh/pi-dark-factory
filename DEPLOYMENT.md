@@ -233,7 +233,7 @@ On this class of install (ufw + docker pools in 10.0.0.0/8):
 container: `docker run --rm --add-host host.docker.internal:host-gateway
 node:22 sh -c 'wget -qO- http://host.docker.internal:8099/health'`.
 
-## 8. Remote control (factoryd + factory-remote) — zero SSH from here on
+## 8. Remote control (factoryd + the dark-factory client) — remote from here on
 
 `pi-factory-setup` (`.agents/skills/pi-factory-setup/`, shipped in this repo) is the installer:
 clone this repo on the VPS, open an agent session in the checkout, and say "**set up the

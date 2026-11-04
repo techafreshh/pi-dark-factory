@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """factory-remote — drive a pi-dark-factory over HTTPS. Python 3 stdlib only.
 
+DEPRECATED (2026-11-04): the documented client is now the zero-dependency
+Node CLI @techafresh/dark-factory (cli/ in this repo; full verb parity, same
+REST surface). This script is kept as an offline fallback and is no longer
+taught by the skill or the docs — new automations should use dark-factory.
+
 Env:
   FACTORY_URL      e.g. https://pi-factory.techa.pro
   FACTORY_API_KEY  the key from the VPS (/home/factory/factoryd.env)
