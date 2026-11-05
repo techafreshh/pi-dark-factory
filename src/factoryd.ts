@@ -2,7 +2,7 @@
  * factoryd — the remote-control API over the foreman ops core.
  *
  * Bun-serve, zero deps. Reads are GET; every mutation is POST/PUT and gated
- * client-side by the pi-factory skill (laps and backlog slices spend real
+ * client-side by the dark-factory skill (laps and backlog slices spend real
  * tokens). `tick` is fired detached and returns immediately — the pidfile
  * arbitrates against the systemd timer's tick, so a manual or remote tick
  * can never double-run a lap.

@@ -27,6 +27,30 @@ const TIMEOUT_SLOW = 900_000; // backlog slicing runs an LLM server-side
 const STREAM_IDLE_MS = 120_000; // session follow: abort when no bytes land
 const RECONNECT_MS = 5_000;
 
+/* ANSI paint — colors only on a real terminal (NO_COLOR respected, and
+ * --format json/--raw paths stay untouched so scripts parse clean). Every
+ * formatter takes the painter as an optional argument; tests capture plain
+ * text because bun test pipes stdout. */
+const PAINT_CODES = {
+  bold: ["1", 22], dim: ["2", 22], cyan: ["36", 39], green: ["32", 39],
+  red: ["31", 39], yellow: ["33", 39], gray: ["90", 39], magenta: ["35", 39],
+};
+export function paint(on) {
+  const p = {};
+  for (const [k, [code, off]] of Object.entries(PAINT_CODES)) p[k] = (s) => (on ? `\x1b[${code}m${s}\x1b[0m` : s);
+  p.header = (s) => (on ? `\x1b[1;36m${s}\x1b[0m` : s);
+  p.on = on;
+  return p;
+}
+const NO_PAINT = paint(false);
+const colorWanted = () => process.stdout.isTTY && !process.env.NO_COLOR && process.env.FORCE_COLOR !== "0";
+
+const ISSUE_STATE_COLOR = {
+  merged: "green", delivered: "green", blocked: "red", "needs-info": "red",
+  in_progress: "yellow", claimed: "yellow", queued: "cyan", open: "cyan",
+};
+const section = (P, label) => `\n\n${P.header(`── ${label} ` + "─".repeat(Math.max(2, 46 - label.length)))}`;
+
 const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format"];
 const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--help", "-h"];
 
@@ -115,76 +139,102 @@ export function makeApi(cfg, fetchImpl = fetch) {
 
 /* ── output (pure formatters so tests assert strings, not stdio) ────────── */
 
-export function formatStatus(body) {
+export function formatStatus(body, P = NO_PAINT) {
   const L = [];
-  for (const r of body.repos ?? []) {
-    const chainS =
-      r.chain === -1
-        ? "unknown (GitHub probe >5s)"
-        : !r.chain
-          ? "none (all delivered/blocked)"
-          : String(r.chain);
-    L.push(`${r.slug} (${r.repo}) — claimable chain: ${chainS}, in flight: ${r.in_flight}`);
+  const repos = body.repos ?? [];
+  const issues = body.issues ?? [];
+  const busy = repos.filter((r) => r.in_flight > 0).length;
+  const blocked = issues.filter((i) => i.state === "blocked").length;
+  L.push(
+    P.bold(`${repos.length} repo${repos.length === 1 ? "" : "s"}`) +
+      ` · ${busy} in flight · ${blocked ? P.red(String(blocked) + " blocked") : "none blocked"}`
+  );
+  if (repos.length) {
+    L.push("");
+    for (const r of repos) {
+      const chainS =
+        r.chain === -1
+          ? P.dim("unknown (GitHub probe >5s)")
+          : !r.chain
+            ? "none (all delivered/blocked)"
+            : P.cyan(String(r.chain));
+      const flight = r.in_flight > 0 ? P.yellow(`in flight: ${r.in_flight}`) : `in flight: 0`;
+      L.push(`${P.bold(r.slug)} ${P.gray(`(${r.repo})`)} — chain: ${chainS} · ${flight}`);
+    }
   }
-  L.push("\n== ledger ==");
-  for (const i of body.issues ?? [])
-    L.push(`#${i.issue_number} ${i.repo} [${i.state}] attempts=${i.attempts}${i.pr ? " PR#" + i.pr : ""} — ${(i.last_error || "").slice(0, 120)}`);
-  L.push("\n== recent laps ==");
-  for (const l of body.laps ?? [])
-    L.push(`#${l.id} ${l.repo} issue=${l.issue_number ?? "-"} ${l.outcome ?? "…"} ${(l.detail || "").slice(0, 100)}`);
-  L.push("\n== recent stages ==");
-  for (const s of body.stages ?? [])
-    L.push(`#${s.id} ${s.stage} a${s.attempt} ${s.model} ${s.exit ?? "…"} tok=${s.input_tokens}/${s.output_tokens}`);
+  L.push(section(P, "ledger"));
+  for (const i of issues) {
+    const stateC = P[ISSUE_STATE_COLOR[i.state] ?? "dim"](P.bold(`[${i.state}]`));
+    L.push(
+      `${P.cyan(`#${i.issue_number}`)} ${i.repo} ${stateC} attempts=${i.attempts}${i.pr ? " PR#" + P.cyan(String(i.pr)) : ""} — ${(i.last_error || "").slice(0, 120)}`
+    );
+  }
+  L.push(section(P, "recent laps"));
+  for (const l of body.laps ?? []) {
+    const outcome = l.outcome ?? "…";
+    const oc = /merged|success|ok/.test(outcome) ? P.green(outcome) : /blocked|fail|reject/.test(outcome) ? P.red(outcome) : outcome;
+    L.push(`${P.dim(`#${l.id}`)} ${l.repo} issue=${l.issue_number ?? "-"} ${oc} ${(l.detail || "").slice(0, 100)}`);
+  }
+  L.push(section(P, "recent stages"));
+  for (const s of body.stages ?? []) {
+    const exit = s.exit ?? "…";
+    const ec = exit === "ok" ? P.green(exit) : /fail|error|timeout/.test(exit) ? P.red(exit) : exit;
+    L.push(`${P.dim(`#${s.id}`)} ${s.stage} a${s.attempt} ${s.model} ${ec} tok=${s.input_tokens}/${s.output_tokens}`);
+  }
   const wts = body.worktrees ?? [];
   if (wts.length) {
-    L.push("\n== worktrees ==");
+    L.push(section(P, "worktrees"));
     for (const w of wts) L.push(`  ${w}`);
   }
   return L.join("\n");
 }
 
-export function formatDoctor(health, status) {
-  const L = [`factoryd: ${health.service} v${health.version} — reachable`];
+export function formatDoctor(health, status, P = NO_PAINT) {
+  const L = [`${P.green("✔")} factoryd: ${P.bold(health.service)} v${health.version} — ${P.green("reachable")}`];
+  if (health.laptop_key_set === false) L.push(`${P.red("✘")} laptop key: NOT provisioned in factoryd.env — the dedicated second key is unset daemon-side`);
   const wt = health.web_tools ?? {};
-  if (health.laptop_key_set === false) L.push("laptop key: NOT provisioned in factoryd.env — the dedicated second key is unset daemon-side");
-  if (wt.extension_on_host && wt.key_set) L.push("web tools: OK — pi extension installed, TINYFISH_API_KEY set");
+  if (wt.extension_on_host && wt.key_set) L.push(`${P.green("✔")} web tools: OK — pi extension installed, TINYFISH_API_KEY set`);
   else {
     const missing = [];
     if (!wt.extension_on_host) missing.push("pi extension not synced to ~/.pi/agent/extensions (a lap will install it on first stage)");
     if (!wt.key_set) missing.push("TINYFISH_API_KEY unset in factoryd.env — web_search/web_fetch will error until it is");
-    L.push("web tools: " + missing.join("; "));
+    L.push(`${P.yellow("⚠")} web tools: ` + missing.join("; "));
   }
   const sb = health.shared_base ?? {};
   const bases = health.bases ?? (sb.snapshot ? { "shared-base": sb } : {});
   if (Object.keys(bases).length) {
     for (const [alias, info] of Object.entries(bases)) {
-      L.push(`base ${alias}: ${info.snapshot} — ${info.template ?? "template ?"}, baked ${(info.bakedAt ?? "?").slice(0, 10)}`);
-      if (info.contents) L.push(`  contents: ${info.contents}`);
+      L.push(``);
+      L.push(`${P.cyan(alias)} → ${P.bold(info.snapshot)} ${P.gray(`· template ${info.template ?? "?"} · baked ${(info.bakedAt ?? "?").slice(0, 10)}`)}`);
+      if (info.contents) L.push(P.gray(`  contents: ${info.contents}`));
     }
   } else {
-    L.push("shared base: UNMAPPED — write state/base-snapshot.json on the VPS (instabox repos naming 'shared-base' cannot boot until then)");
+    L.push(`${P.red("✘")} shared base: UNMAPPED — write state/base-snapshot.json on the VPS (instabox repos naming 'shared-base' cannot boot until then)`);
   }
-  L.push(`auth OK — ${(status.repos ?? []).length} repo(s) onboarded`);
-  if (status.repos?.length) L.push("repos: " + status.repos.map((r) => r.slug).join(", "));
+  const n = (status.repos ?? []).length;
+  L.push(``);
+  L.push(`${P.green("✔")} auth OK — ${P.bold(String(n))} repo(s) onboarded`);
+  if (n) L.push(P.gray("repos: " + status.repos.map((r) => r.slug).join(", ")));
   return L.join("\n");
 }
 
-export function formatModels(body) {
+export function formatModels(body, P = NO_PAINT) {
   const providers = body.providers ?? [];
   if (!providers.length) return body.note || "no providers configured";
-  const L = [];
+  const L = ["", ""];
   for (const p of providers) {
-    L.push(`${p.name} — ${p.api ?? ""} · ${p.baseUrl ?? ""}`);
+    L.push(`${P.bold(p.name)} ${P.gray(`· ${p.api ?? ""} · ${p.baseUrl ?? ""}`)}`);
     for (const m of p.models ?? []) {
       let t = "";
       if (m.thinking) {
         t = ` · thinking: ${m.thinking.supported.join(",")}`;
-        if (m.thinking.unsupported?.length) t += ` (NOT: ${m.thinking.unsupported.join(",")})`;
-      } else t = " · thinking: provider default";
-      L.push(`  ${m.id} — reasoning=${m.reasoning ? "yes" : "no"} · ctx=${m.contextWindow}${t}`);
+        if (m.thinking.unsupported?.length) t += ` ${P.red(`(NOT: ${m.thinking.unsupported.join(",")})`)}`;
+      } else t = ` · thinking: ${P.gray("provider default")}`;
+      L.push(`  ${P.cyan(m.id)} — reasoning=${m.reasoning ? "yes" : "no"} · ctx=${m.contextWindow}${t}`);
     }
+    L.push("");
   }
-  L.push("\n(config writes validate against this roster: unknown providers and unsupported thinking levels reject)");
+  L.push(P.gray("config writes validate against this roster: unknown providers and unsupported thinking levels reject"));
   return L.join("\n");
 }
 
@@ -225,7 +275,7 @@ async function cmdDoctor(a, ctx) {
     ctx.out(JSON.stringify({ health, status }, null, 2));
     return 0;
   }
-  ctx.out(formatDoctor(health, status));
+  ctx.out(formatDoctor(health, status, ctx.colors));
   return 0;
 }
 
@@ -235,7 +285,7 @@ async function cmdStatus(a, ctx) {
     ctx.out(JSON.stringify(body, null, 2));
     return 0;
   }
-  ctx.out(formatStatus(body));
+  ctx.out(formatStatus(body, ctx.colors));
   return 0;
 }
 
@@ -248,7 +298,17 @@ async function cmdLogs(a, ctx) {
     ctx.out(JSON.stringify(body, null, 2));
     return 0;
   }
-  for (const line of body.lines ?? []) ctx.out(line);
+  const P = ctx.colors;
+  for (const line of body.lines ?? []) {
+    if (!P.on) { ctx.out(line); continue; }
+    const m = /^(\[[^\]]+\])( \[([^\]]+)\])?(.*)$/.exec(line);
+    if (!m) { ctx.out(line); continue; }
+    const tag = m[2] ? " " + P.cyan(m[2]) : "";
+    const body = m[4].replace(/\b(merged|unblocked|updated|green)\b/g, P.green("$1"))
+                     .replace(/\b(blocked|failedpaused)\b/g, P.yellow("$1"))
+                     .replace(/\b(error|refused|cannot|died)\b/gi, P.red("$1"));
+    ctx.out(P.gray(m[1]) + tag + body);
+  }
   return 0;
 }
 
@@ -258,8 +318,18 @@ async function cmdModels(a, ctx) {
     ctx.out(JSON.stringify(body, null, 2));
     return 0;
   }
-  ctx.out(formatModels(body));
+  ctx.out(formatModels(body, ctx.colors));
   return 0;
+}
+
+function paintStreamLine(line, P) {
+  if (!P.on) return line;
+  if (line.startsWith("▶")) return P.cyan(line);
+  if (line.startsWith("⎸")) return P.gray(line);
+  if (line.startsWith("⋯")) return P.magenta(line);
+  if (line.startsWith("✔")) return P.green(line);
+  if (line.startsWith("·") || line.startsWith("──")) return P.gray(line);
+  return line;
 }
 
 async function streamOnce(a, ctx) {
@@ -295,21 +365,23 @@ async function streamOnce(a, ctx) {
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf("\n")) >= 0) {
-        ctx.out(buf.slice(0, i + 1).trimEnd());
+        ctx.out(paintStreamLine(buf.slice(0, i + 1).trimEnd(), P_));
         buf = buf.slice(i + 1);
       }
     }
-    if (buf) ctx.out(buf.trimEnd());
+    if (buf) ctx.out(paintStreamLine(buf.trimEnd(), P_));
   } finally {
     clearTimeout(idle);
   }
 }
 
 let cfg_; // streamOnce needs url/key without re-loading per reconnect
+let P_ = NO_PAINT; // stream painter, set by cmdSession from the run context
 
 async function cmdSession(a, ctx) {
   const cfg = loadConfig(ctx.home);
   cfg_ = cfg;
+  P_ = ctx.colors ?? NO_PAINT;
   for (;;) {
     try {
       await streamOnce(a, ctx);
@@ -561,7 +633,8 @@ export async function run(argv, ctx = {}) {
     }
   }
   const rawFetch = ctx.rawFetch ?? ctx.fetchImpl ?? fetch;
-  const runCtx = { out, err, home, api, rawFetch };
+  const colors = ctx.colors ?? paint(ctx.color === undefined ? colorWanted() : ctx.color);
+  const runCtx = { out, err, home, api, rawFetch, colors };
   try {
     return await def.fn(a, runCtx);
   } catch (e) {

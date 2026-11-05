@@ -29,7 +29,7 @@ Options:
   --state-dir <path>    default: $PI_FACTORY_STATE or ./state
 
 The same core is served remotely by factoryd (src/factoryd.ts) and driven by the
-factory-remote client + pi-factory skill — the CLI is just the local face.`;
+dark-factory client + dark-factory skill — the CLI is just the local face.`;
 
 function parseArgs(argv: string[]) {
   const pos: string[] = [];

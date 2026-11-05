@@ -238,7 +238,7 @@ describe("opsScenarioLint (dry-run gate)", () => {
 
   test("GOLDEN: the skill's shipped templates lint clean", () => {
     seedConfig();
-    const tplDir = join(import.meta.dir, "..", ".agents", "skills", "pi-factory", "templates");
+    const tplDir = join(import.meta.dir, "..", ".agents", "skills", "dark-factory", "templates");
     for (const kind of ["runtime", "holdout"] as const) {
       const content = readFileSync(join(tplDir, `scenario.${kind}.json`), "utf8");
       const r = opsScenarioLint(state, "demo", kind, content);

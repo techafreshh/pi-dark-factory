@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatModels, formatStatus, parseArgs, run } from "../cli/bin/dark-factory.js";
+import { formatDoctor, formatModels, formatStatus, paint, parseArgs, run } from "../cli/bin/dark-factory.js";
 
 const dirs: string[] = [];
 const tmp = () => {
@@ -284,6 +284,25 @@ describe("published-artifact traps (npm bin entry)", () => {
   });
 });
 
+describe("readability (TTY paint)", () => {
+  test("plain text carries no ANSI by default; painted output does", () => {
+    const body = { repos: [], issues: [{ issue_number: 7, repo: "o/app", state: "merged", attempts: 1 }], laps: [], stages: [] };
+    expect(formatStatus(body)).not.toContain("\x1b[");
+    const painted = formatStatus(body, paint(true));
+    expect(painted).toContain("\x1b[1;36m── ledger");
+    expect(painted).toContain("\x1b[32m"); // merged state green
+    expect(painted).toContain("none blocked");
+  });
+
+  test("doctor paints checkmarks and base lines stay greppable unpainted", () => {
+    const h = { service: "pi-dark-factory", version: "9", web_tools: { extension_on_host: true, key_set: true }, shared_base: {} };
+    const st = { repos: [] };
+    expect(formatDoctor(h, st, paint(true))).toContain("\x1b[32m✔");
+    expect(formatDoctor(h, st)).toContain("✔ factoryd: pi-dark-factory v9 — reachable");
+    expect(formatDoctor(h, st)).not.toContain("\x1b[");
+  });
+});
+
 describe("formatters", () => {
   test("status renders the ledger/laps/stages sections", () => {
     const s = formatStatus({
@@ -293,7 +312,7 @@ describe("formatters", () => {
       stages: [{ id: 11, stage: "implement", attempt: 1, model: "m", exit: "ok", input_tokens: 10, output_tokens: 5 }],
       worktrees: ["/wt"],
     });
-    expect(s).toContain("app (o/app) — claimable chain: unknown (GitHub probe >5s), in flight: 1");
+    expect(s).toContain("app (o/app) — chain: unknown (GitHub probe >5s) · in flight: 1");
     expect(s).toContain("#7 o/app [in_progress] attempts=2 PR#9 — boom");
     expect(s).toContain("#11 implement a1 m ok tok=10/5");
   });
@@ -302,7 +321,7 @@ describe("formatters", () => {
     const s = formatModels({
       providers: [{ name: "acme", api: "openai-completions", baseUrl: "https://x", models: [{ id: "m1", reasoning: true, contextWindow: 128000, thinking: { supported: ["low", "high"], unsupported: ["max"] } }] }],
     });
-    expect(s).toContain("acme — openai-completions · https://x");
+    expect(s).toContain("acme · openai-completions · https://x");
     expect(s).toContain("reasoning=yes · ctx=128000 · thinking: low,high (NOT: max)");
   });
 });

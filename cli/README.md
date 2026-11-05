@@ -76,6 +76,15 @@ dark-factory scenario my-app runtime --test && echo "scenario green — fire the
 dark-factory --url <factory-url> --key <api-key> tick my-app
 ```
 
+### Terminal ergonomics
+
+- **Color when it's a terminal, clean when it's a pipe** — human output gets section rules,
+  state colors and checkmarks; every piped invocation stays byte-plain for `grep`/`jq`.
+  Set `NO_COLOR=1` to force plain even on a TTY.
+- Inline `--url`/`--key` outrank the env vars, which outrank the stored config — one shell
+  can talk to two factories side by side.
+- Every verb documents itself: `dark-factory <verb> --help`.
+
 ## How it talks
 
 Plain HTTPS: `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one.

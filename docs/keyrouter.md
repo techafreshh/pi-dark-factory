@@ -16,6 +16,6 @@ live). Cooldowns persist across restarts. `curl :8099/health` / `/pool` shows th
 Wiring (one-time, on the VPS): merge `templates/pi-models.clinepass-router.json` into the
 factory user's `~/.pi/agent/models.json`, put your keys in `~/state/clinepass.keys`, and point
 repo configs at `provider: "clinepass-rotator"`. `host.docker.internal` resolves both on the
-host (the `pi-factory-setup` skill adds the `/etc/hosts` line) and inside containers (fallback
+host (the `dark-factory-setup` skill adds the `/etc/hosts` line) and inside containers (fallback
 mode adds it; compose mode uses `extra_hosts`). Remember: host-local, so instabox machines
 bypass it.

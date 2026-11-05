@@ -21,8 +21,8 @@ git clone https://github.com/you/pi-dark-factory.git ~/factory-checkout && cd ~/
 pi        # any coding agent session in the checkout works
 ```
 
-then tell the agent: **"Run the pi-factory-setup skill — set the factory up on this
-server."** The skill ships in this repo (`.agents/skills/pi-factory-setup/`) and turns the
+then tell the agent: **"Run the dark-factory-setup skill — set the factory up on this
+server."** The skill ships in this repo (`.agents/skills/dark-factory-setup/`) and turns the
 install into an agent walk-through instead of a script:
 
 - one **decision batch up front** (factory user name; GitHub auth style; the model lineup
@@ -55,7 +55,7 @@ npx @techafresh/dark-factory doctor
 (The deprecated Python client `bin/factory-remote` still speaks the same API
 as an offline fallback, but the CLI above is the documented surface.)
 
-Then run the sibling **`pi-factory` skill** and say "onboard <owner/name>": it PRD-checks
+Then run the sibling **`dark-factory` skill** and say "onboard <owner/name>": it PRD-checks
 the repo, writes the repo config (mode included) and real runtime/holdout scenarios with
 you, slices the PRD into the dependency-ordered backlog, and fires the first lap. From
 then on laps happen every 15 minutes without you; you read receipts in `laps.log` or on

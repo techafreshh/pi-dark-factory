@@ -1,5 +1,5 @@
 ---
-name: pi-factory
+
 description: >-
   Operate the pi-dark-factory (unattended build loop on the VPS) remotely —
   onboard a new project end-to-end (PRD check → config → scenarios → backlog
@@ -12,9 +12,9 @@ description: >-
   server-side operations are named for the operator, never improvised.
 ---
 
-# pi-factory (remote operator)
+# dark-factory (remote operator)
 
-> Source of truth lives in the factory repo (`.agents/skills/pi-factory/`);
+> Source of truth lives in the factory repo (`.agents/skills/dark-factory/`);
 > installed copies are re-synced from it. Deep dives: the repo's `docs/`.
 
 The factory is an unattended loop on the VPS: a systemd **timer fires a tick
@@ -76,7 +76,7 @@ verb takes `dark-factory <verb> --help`.
 
 If `doctor` cannot reach the factory at all (connection refused/timeout —
 not a 401), the factory is not provisioned: the operator clones this repo on
-the server and runs the in-repo `pi-factory-setup` skill there. Never
+the server and runs the in-repo `dark-factory-setup` skill there. Never
 improvise around a missing factory.
 
 ## Onboarding a new project (the wizard — gate every write)
@@ -138,7 +138,7 @@ known-good, adjust its `_readme` decision markers. Fill provider/model + env
 from what `models` showed, then:
 
 ```bash
-dark-factory config <slug> --json "$(cat .agents/skills/pi-factory/templates/config.skeleton.json)"
+dark-factory config <slug> --json "$(cat .agents/skills/dark-factory/templates/config.skeleton.json)"
 ```
 
 Decision points to walk with the user:

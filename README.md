@@ -62,8 +62,8 @@ cd ~/factory-checkout
 pi        # any coding agent session in the checkout works
 ```
 
-then tell the agent: **"Run the pi-factory-setup skill — set the factory up on this server."**
-The skill ships in this repo (`.agents/skills/pi-factory-setup/`) and walks the whole install —
+then tell the agent: **"Run the dark-factory-setup skill — set the factory up on this server."**
+The skill ships in this repo (`.agents/skills/dark-factory-setup/`) and walks the whole install —
 factory user, runtimes, auth, pi provisioning with every model string smoke-tested, systemd
 timer + daemon + Caddy — idempotently, with secrets going into 600-mode files and never into
 the transcript. The manual alternative is [`DEPLOYMENT.md`](DEPLOYMENT.md).
@@ -76,7 +76,7 @@ npx @techafresh/dark-factory setup https://<your-domain> <edge-key>
 npx @techafresh/dark-factory doctor
 ```
 
-and run the sibling **`pi-factory` skill**: it PRD-checks the repo, writes the config and real
+and run the sibling **`dark-factory` skill**: it PRD-checks the repo, writes the config and real
 runtime/holdout scenarios with you, slices the PRD into the backlog, and fires the first lap.
 From then on laps happen every 15 minutes without you.
 

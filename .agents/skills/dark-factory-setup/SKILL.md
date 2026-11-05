@@ -1,5 +1,5 @@
 ---
-name: pi-factory-setup
+-setup
 description: >-
   Install / provision pi-dark-factory ON ITS DEDICATED SERVER (VPS): the full
   first-time setup — factory user, runtimes (bun, pi, gh, optional docker +
@@ -11,14 +11,14 @@ description: >-
   factory on this server", "wire up factoryd", "get the factory running here",
   or is starting an agent session in a fresh clone of pi-dark-factory on a
   server. NOT for day-2 operation from the user's laptop (that is the
-  pi-factory skill, which talks over HTTPS and never SSHes) — this skill runs
+  dark-factory skill, which talks over HTTPS and never SSHes) — this skill runs
   direct commands on the box itself.
 ---
 
-# pi-factory-setup (server installer)
+# dark-factory-setup (server installer)
 
 > Runs ON THE FACTORY SERVER, inside the cloned repo checkout. The sibling
-> skill `pi-factory` is day-2 remote operation from the user's machine — this
+> skill `dark-factory` is day-2 remote operation from the user's machine — this
 > one produces the state that skill assumes. Replaces the old `bootstrap.sh`
 > (retired): the same steps, but per-step verification and judgment instead of
 > a one-shot script. `DEPLOYMENT.md` is the reference this skill executes —
@@ -110,7 +110,7 @@ plain "just set it up"):
    `web_search` smoke call (Phase 4 smoke step). If the user skips the key,
    the factory still works — stages just run without web grounding.
 9. **Smoke lap after install?** (recommended; spends a few cents of tokens on
-   a toy repo) — vs. going straight to a real project via the `pi-factory`
+   a toy repo) — vs. going straight to a real project via the `dark-factory`
    wizard.
 
 ## Phase 1 — factory user
@@ -493,7 +493,7 @@ GitHub comment with the receipt + its unblock command; never auto-retried.
 A full lap takes tens of minutes — report and stop polling after the first
 few status checks.
 
-## Phase 8 — handoff (day-2 = the pi-factory skill)
+## Phase 8 — handoff (day-2 = the dark-factory skill)
 
 Tell the user exactly this, in their own terminal (the agent never prints
 the key):
@@ -506,7 +506,7 @@ the key):
   python3 bin/factory-remote doctor     # from any checkout of the factory repo
   ```
 - Stored config: `~/.config/factory-remote/` (url + key files), used by the
-  `pi-factory` skill automatically.
+  `dark-factory` skill automatically.
 
 From now on everything (onboarding, backlog, laps, unblock, cleanup) is
 remote over HTTPS — **zero SSH**. Updating the factory later:

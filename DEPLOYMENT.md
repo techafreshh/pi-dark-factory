@@ -6,7 +6,7 @@ via `--concurrency N` / `PI_FACTORY_CONCURRENCY`). Optional per-repo container m
 stages root inside their own Docker environment (`env.mode: "compose"`) — install anything,
 host stays clean.
 
-**Install**: clone this repo on the server and run the in-repo `pi-factory-setup` skill in an
+**Install**: clone this repo on the server and run the in-repo `dark-factory-setup` skill in an
 agent session there — it walks this whole runbook (user, runtimes, auth, systemd units,
 factoryd, key router, Caddy, smoke lap), skipping what exists and verifying each step. The
 sections below remain the reference for what it does and why (the old one-shot `bootstrap.sh`
@@ -235,7 +235,7 @@ node:22 sh -c 'wget -qO- http://host.docker.internal:8099/health'`.
 
 ## 8. Remote control (factoryd + the dark-factory client) — remote from here on
 
-`pi-factory-setup` (`.agents/skills/pi-factory-setup/`, shipped in this repo) is the installer:
+`dark-factory-setup` (`.agents/skills/dark-factory-setup/`, shipped in this repo) is the installer:
 clone this repo on the VPS, open an agent session in the checkout, and say "**set up the
 factory**". It walks §1–8 in order — skipping what exists, verifying each step — and ends with
 the API key generated into `/home/factory/factoryd.env` (chmod 600) and `pi-factoryd.service`
@@ -284,7 +284,7 @@ re-checks `X-Api-Key` on every non-`/health` route (even a localhost hit
 needs the key). `/health` stays deliberately open.
 
 Rules: the key IS the factory — never commit it, never print it (DEPLOYMENT receipts redact
-nothing, so keep logs off the internet path). Mutations are confirm-gated by the `pi-factory`
+nothing, so keep logs off the internet path). Mutations are confirm-gated by the `dark-factory`
 skill; read-only verbs are friction-free. Zero SSH after setup — for code-level truth
 (diff/CI/files) query GitHub directly with a local `gh`.
 
