@@ -1,5 +1,5 @@
 ---
-
+name: dark-factory
 description: >-
   Operate the pi-dark-factory (unattended build loop on the VPS) remotely —
   onboard a new project end-to-end (PRD check → config → scenarios → backlog

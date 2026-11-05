@@ -103,3 +103,26 @@ describe("syncHostSkills (host-side install)", () => {
     expect(readFileSync(join(target, "demo", "SKILL.md")).equals(stamped)).toBe(true);
   });
 });
+
+describe("repo operator skills (.agents/skills — the installer reads these)", () => {
+  const fm = (file: string) => {
+    const text = readFileSync(file, "utf8");
+    const m = /^---\n([\s\S]*?)\n---/.exec(text);
+    if (!m) throw new Error(`no frontmatter block in ${file}`);
+    return m[1];
+  };
+
+  test("every operator skill has a valid frontmatter block with name matching its directory", () => {
+    // caught live 2026-11-05: a rename pass deleted the `name:` field and the
+    // skills.sh installer skipped both skills ("missing required frontmatter
+    // field(s): name" / YAML parse error on a mangled first line)
+    const base = join(import.meta.dir, "..", ".agents", "skills");
+    for (const dir of ["dark-factory", "dark-factory-setup", "create-readme"]) {
+      const block = fm(join(base, dir, "SKILL.md"));
+      const name = /(?:^|\n)name:\s*(\S+)/.exec(block)?.[1];
+      expect(name, `[${dir}] name`).toBe(dir);
+      const desc = /(?:^|\n)description:\s*\S/.test(block);
+      expect(desc, `[${dir}] description`).toBe(true);
+    }
+  });
+});

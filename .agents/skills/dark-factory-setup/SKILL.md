@@ -1,5 +1,5 @@
 ---
--setup
+name: dark-factory-setup
 description: >-
   Install / provision pi-dark-factory ON ITS DEDICATED SERVER (VPS): the full
   first-time setup — factory user, runtimes (bun, pi, gh, optional docker +
