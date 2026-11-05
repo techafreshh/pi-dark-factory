@@ -420,6 +420,76 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     }
   }, 60000);
 
+  test("infra: machine transport down (publickey) → lap DEFERRED, budget preserved, machine torn down", async () => {
+    const w = makeWorld();
+    w.ledger.claim(w.cfg.repo, 1);
+    const deleted: string[] = [];
+    const machines: Record<string, any> = {};
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        const url = new URL(req.url);
+        const p = url.pathname;
+        if (req.method === "POST" && p === "/v1/machines") {
+          const body = await req.json();
+          machines[p + "/" + body.name] = { id: "m_1", name: body.name, state: "running" };
+          return Response.json({ id: "op1", state: "pending", machine: machines[p + "/" + body.name] }, { status: 202 });
+        }
+        if (req.method === "GET" && p.startsWith("/v1/operations/")) {
+          return Response.json({ id: p.split("/").pop(), state: "succeeded", machine: machines["/v1/machines/pdf-toy-i1-g1"] });
+        }
+        if (req.method === "GET" && p.startsWith("/v1/machines/")) {
+          const hit = machines[p];
+          return hit ? Response.json(hit) : new Response("nf", { status: 404 });
+        }
+        if (req.method === "POST" && p.endsWith("/ssh-tokens")) {
+          return Response.json({ id: "cn1", host: "127.0.0.1", port: 2222, token: "ibssh_fake", expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+        }
+        if (req.method === "DELETE" && p.startsWith("/v1/machines/")) {
+          deleted.push(p);
+          return Response.json({ id: "opd", state: "pending" }, { status: 202 });
+        }
+        if (req.method === "GET" && p === "/v1/snapshots") return Response.json({ snapshots: [] });
+        return new Response("nf", { status: 404 });
+      },
+    });
+
+    // the SAME fake-ssh shape as the green machine lap, except the gateway
+    // rejects the transport exactly like the 2026-11-05 InstaBox incident
+    const sshPath = join(w.stateDir, "broken-ssh");
+    writeFileSync(sshPath, '#!/usr/bin/env bash\necho "ibssh_fake@ssh.instabox.sh: Permission denied (publickey)." >&2\nexit 255\n');
+    chmodSync(sshPath, 0o755);
+    const piPath = join(w.stateDir, "fake-pi");
+    writeFileSync(
+      piPath,
+      `echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"plan ok"}]}}'\n`
+    );
+    chmodSync(piPath, 0o755);
+
+    w.cfg.env.mode = "instabox";
+    w.cfg.env.instabox.api_base = `http://127.0.0.1:${server.port}`;
+    w.cfg.env.instabox.api_key_env = "INSTABOX_API_KEY";
+    w.cfg.env.instabox.repo_dir = join(w.stateDir, "machine-repo");
+    w.cfg.pi.binary = piPath;
+    process.env.PDF_SSH_BIN = sshPath;
+    process.env.INSTABOX_API_KEY = "test";
+    try {
+      const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+      expect(outcome).toBe("infra_deferred");
+      // the claim is DROPPED — no blocked row, no burned attempts; the next
+      // tick re-claims fresh with the full attempt budget
+      expect(w.ledger.getIssue(w.cfg.repo, 1) ?? null).toBeNull();
+      // GitHub was never touched with a failure (no block comment/close)
+      expect(w.gh.states[1] ?? "open").toBe("open");
+      // the half-booted box was torn down (bootstrap destroy + finally destroy)
+      expect(deleted.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      delete process.env.PDF_SSH_BIN;
+      delete process.env.INSTABOX_API_KEY;
+      server.stop(true);
+    }
+  }, 60000);
+
   test("reconcile: crashed lap whose delivery already merged → books closed, issue closed, no re-work", async () => {
     const w = makeWorld();
     w.ledger.claim(w.cfg.repo, 1);

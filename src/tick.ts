@@ -6,7 +6,7 @@ import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { machineNameFor } from "./instabox";
-import { openLapMachine, type LapMachine } from "./machine";
+import { InfraUnavailableError, openLapMachine, type LapMachine } from "./machine";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
@@ -473,15 +473,35 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     let implRes: PiStageResult;
     if (cfg.env.mode === "instabox") {
       machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
-      const machRes = await machine.callStage("implement", {
-        models: implModels,
-        prompt:
-          contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
-        systemPrompt: IMPLEMENTER_SYSTEM,
-        tools: stageTools(cfg, "implement", extensionPresent()),
-        extraArgs: cfg.pi.extra_args,
-        timeoutMs: stageMinutes(cfg, "implement") * 60_000,
-      });
+      let machRes: PiStageResult;
+      try {
+        machRes = await machine.callStage("implement", {
+          models: implModels,
+          prompt:
+            contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
+          systemPrompt: IMPLEMENTER_SYSTEM,
+          tools: stageTools(cfg, "implement", extensionPresent()),
+          extraArgs: cfg.pi.extra_args,
+          timeoutMs: stageMinutes(cfg, "implement") * 60_000,
+        });
+      } catch (e) {
+        // platform unavailable (ssh transport down / machine cap): the
+        // implementer never ran, so burning attempts and blocking the issue —
+        // which then chained re-boots of boxes into a dead platform (reins
+        // 2026-11-05: three laps, three machines, three minutes) — is pure
+        // churn. Defer instead: drop the claim, keep the attempt budget, let
+        // the next tick re-claim fresh. Self-heals when the platform does.
+        if (e instanceof InfraUnavailableError) {
+          lastError = `platform unavailable: ${e.message}`;
+          deps.ledger.endLap(lapId, "infra_deferred", lastError);
+          deps.ledger.dropIssue(cfg.repo, n);
+          repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
+          outcome = "infra_deferred";
+          break outer;
+        }
+        throw e;
+      }
+      machRes = machRes as PiStageResult;
       if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
       implRes = machRes;
     } else {
@@ -747,8 +767,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   }
   } finally {
     // booked laps destroy their machine; a crashed lap leaves it parked for
-    // reclaim (paused — storage only) and the cleanup janitor to reap
-    if (machine && outcome !== null) await machine.destroy();
+    // reclaim (paused — storage only) and the cleanup janitor to reap. The
+    // destroy itself never overrides the lap's outcome: a platform outage
+    // must not out-throw a MERGED verdict.
+    if (machine && outcome !== null) await machine.destroy().catch(() => {});
   }
   return outcome;
 }
@@ -1052,12 +1074,20 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
               Object.assign(cfg, loadRepoConfig(join(opts.stateDir, "repos", cfg.slug, "config.json")));
             } catch {}
             laps++;
+            let lapOutcome: string | null = null;
             try {
-              await runLap(cfg, opts.stateDir, deps, issue);
+              lapOutcome = await runLap(cfg, opts.stateDir, deps, issue);
             } catch (e: any) {
               // infra failure (git/gh/network) — receipt and move on; the
               // in_progress row is reconciled next tick, never lost
               repoReceipt(cfg.slug, opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+            }
+            if (lapOutcome === "infra_deferred") {
+              // the platform is down — a chained lap would queue-wait inside
+              // the same dead window. Defer the WHOLE repo chain to the next
+              // tick (15 min of natural backoff; attempts were preserved).
+              repoReceipt(cfg.slug, opts.stateDir, `platform unavailable — deferring the rest of ${cfg.slug}'s chain to the next tick`);
+              break;
             }
             // fresh dependsCache per intake: issues closed by the merge just
             // completed unblock their dependent here

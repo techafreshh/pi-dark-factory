@@ -499,6 +499,20 @@ export class PortForwarder {
  * use, kept across repair rounds (its clone IS the worktree), deleted when
  * the lap books out.
  */
+/**
+ * The PLATFORM failed (ssh transport down, org machine cap) — never the
+ * implementer's work. callStage surfaces it so the lap can be DEFERRED:
+ * attempt budget preserved, claim dropped, next tick re-claims fresh.
+ */
+export class InfraUnavailableError extends Error {
+  constructor(message: string, public readonly kind: "ssh" | "quota") {
+    super(message);
+  }
+}
+
+const isInfraTransportText = (t: string): boolean =>
+  /permission denied \(publickey\)|machine unreachable|connect failed|connection (refused|timed out|closed)|broken pipe|kex_exchange/i.test(t);
+
 export class LapMachine {
   readonly name: string;
   private machine: InstaMachine | null = null;
@@ -529,15 +543,38 @@ export class LapMachine {
 
   async ensure(): Promise<InstaMachine> {
     const ibx = this.ibx();
-    this.machine = await this.ib.ensureRunning({
+    const spec = {
       name: this.name,
       templateId: ibx.snapshot ? undefined : ibx.template,
       snapshotId: ibx.snapshot
         ? await this.snapshotIdByName(this.stateDir ? resolveSnapshotName(this.stateDir, ibx.snapshot) : ibx.snapshot)
         : undefined,
       metadata: { factory: "1", repo: this.cfg.repo, issue: String(this.issue) },
-    });
-    return this.machine;
+    };
+    // the SLOT QUEUE: the org machine cap is a shared resource (5 boxes on the
+    // entry tier, multiple repos competing). A cap-reject is NOT an attempt
+    // burn and NEVER a block — the lap waits here, receipted, until a slot
+    // frees (a bookout elsewhere destroys its box) or the window closes. The
+    // window also bounds chain stalls: one queued lap per repo per tick.
+    const deadline = Date.now() + Number(process.env.PDF_SLOT_QUEUE_DEADLINE_MS ?? 10 * 60_000);
+    const delay = Number(process.env.PDF_SLOT_QUEUE_DELAY_MS ?? 60_000);
+    let waits = 0;
+    for (;;) {
+      try {
+        this.machine = await this.ib.ensureRunning(spec);
+        if (waits > 0) this.log(`machine-slot queue: slot freed after ${waits} wait(s) — booting ${this.name}`);
+        return this.machine;
+      } catch (e: any) {
+        const quota = e?.status === 429 || /quota|machine limit|too many machines/i.test(String(e?.message));
+        if (!quota) throw new InfraUnavailableError(`machine create failed: ${e?.message ?? e}`, "ssh");
+        if (Date.now() + delay > deadline) {
+          throw new InfraUnavailableError(`machine-slot queue exhausted after ${waits} wait(s): ${e?.message ?? e}`, "quota");
+        }
+        waits++;
+        this.log(`machine-slot queue: org at its machine cap — waiting ${delay / 1000}s for a slot (wait ${waits}, attempt budget preserved)`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
   }
 
   /** SSH target against the machine's gateway, with a cached live token. */
@@ -567,7 +604,20 @@ export class LapMachine {
     });
     const res = await this.bash(env + "\n" + bootstrapScriptFor(this.cfg, branchName(this.issue)), { timeoutMs: 10 * 60_000 });
     if (res.code !== 0 || !res.stdout.includes("BOOTSTRAP_OK")) {
-      throw new Error(`machine bootstrap failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300) || res.stdout.trim().slice(0, 300)}`);
+      const detail = (res.stderr.trim() || res.stdout.trim()).slice(0, 300);
+      // ssh-transport failures (gateway auth denied, box unreachable) are the
+      // PLATFORM's failure — burning the implementer's attempts and blocking
+      // the issue just churns parked boxes (reins 2026-11-05: three laps, three
+      // machines, three minutes, all transport). Tear the half-booted box down
+      // (its clone holds no recoverable work) and surface the typed error so
+      // the lap defers with its attempt budget intact. Non-transport bootstrap
+      // failures (clone refused, bad snapshot script) keep the old behavior.
+      if (res.code === 255 || isInfraTransportText(detail)) {
+        await this.destroy().catch(() => {});
+        this.machine = null;
+        throw new InfraUnavailableError(`machine ssh transport unavailable (exit ${res.code}): ${detail}`, "ssh");
+      }
+      throw new Error(`machine bootstrap failed (exit ${res.code}): ${detail}`);
     }
   }
 
