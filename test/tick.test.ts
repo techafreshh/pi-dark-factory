@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi, CheckState } from "../src/gh";
 import type { CallStageFn } from "../src/tick";
-import { runWithConcurrency, tickRepo } from "../src/tick";
+import { runWithConcurrency, runChain, prepareRepo, tickRepo } from "../src/tick";
+import { listClaimable, prioritizeDiscoveries } from "../src/stages/intake";
 import { issueDir } from "../src/gitws";
 import { Ledger } from "../src/ledger";
 import type { IssueLite, PrLite, RepoConfig, StageModels } from "../src/types";
@@ -519,6 +520,29 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(w.ledger.getIssue(w.cfg.repo, 1)!.state).toBe("blocked");
     expect(w.gh.comments.join("\n")).toContain("BLOCKED");
     expect(w.calls.length).toBe(0);
+  }, 60000);
+
+  test("chain budget: a deep queue hands remaining work to the next tick instead of monopolizing it", async () => {
+    const w = makeWorld();
+    w.gh.issues.push({ number: 2, title: "Add bye file", body: "create bye.txt containing 'bye'", labels: [] });
+    process.env.PDF_CHAIN_BUDGET_MS = "50"; // trips right after the first lap
+    const deps = { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) };
+    try {
+      // the same preamble tickBody runs before handing off to the chain
+      await prepareRepo(w.cfg, w.stateDir, deps);
+      const claimable = await prioritizeDiscoveries(w.cfg, await listClaimable(w.cfg, w.ledger, w.gh), w.ledger, w.gh);
+      await runChain(w.cfg, w.stateDir, deps, claimable);
+      // the first lap ran to completion...
+      expect(w.ledger.getIssue(w.cfg.repo, 1)!.state).toBe("merged");
+      expect(w.gh.merged).toEqual([101]);
+      // ...and the second lap did NOT run this tick: it resumes next tick
+      expect(w.ledger.getIssue(w.cfg.repo, 2) ?? null).toBeNull();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("chain budget (0 min) spent");
+      expect(log).toContain("remaining work (from #2)");
+    } finally {
+      delete process.env.PDF_CHAIN_BUDGET_MS;
+    }
   }, 60000);
 });
 

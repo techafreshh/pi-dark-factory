@@ -1013,6 +1013,100 @@ export async function runTick(opts: { stateDir: string; repoSlug?: string; concu
   await b.run;
 }
 
+/** The chained-lap engine both the fleet tick and scoped ticks run: a merge
+ *  (or block/idle) re-intakes immediately, so one tick drains the dependency
+ *  chain instead of doling out one issue per manual tick. Strictly ordered
+ *  one-lap-at-a-time still holds inside a repo (that ordering is what keeps
+ *  main conflict-free), and MAX_LAPS + the chain budget bound a pathological
+ *  loop — the chain continues next tick. */
+export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps, claimable: IssueLite[]): Promise<void> {
+  const MAX_LAPS_PER_TICK_PER_REPO = 6;
+  // Per-repo chain budget: once the window is spent the chain hands remaining
+  // work to the next tick (the in-flight lap always completes). Load-bearing
+  // because the timer's re-arm waits for the whole service to deactivate — a
+  // deep queue used to stretch one tick for an hour+, and every other repo's
+  // fresh intake waited it out.
+  const CHAIN_BUDGET_MS = +(process.env.PDF_CHAIN_BUDGET_MS ?? 12 * 60_000);
+  const chainStart = Date.now();
+  let laps = 0;
+  let issue = claimable[0];
+  repoReceipt(cfg.slug, stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
+  let revivedInTick = false;
+  const REVIVE_COOLDOWN_MS = 10 * 60_000;
+  while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO && Date.now() - chainStart < CHAIN_BUDGET_MS) {
+    // mid-chain pause: the in-flight lap finished; nothing NEW after
+    // this point (kintsugi 2026-10-26: a pause receipt landed and the
+    // already-running task still chained two more laps into the wall)
+    if (existsSync(join(stateDir, "repos", cfg.slug, "paused"))) {
+      repoReceipt(cfg.slug, stateDir, `paused mid-chain — stopping before #${issue.number} (unpause to resume; the timer picks the chain up)`);
+      break;
+    }
+    // mid-tick config reload: a chained tick holds configs in memory
+    // for HOURS — a config write (snapshot swap, model change) must
+    // reach the NEXT lap, not the next tick. Mutate in place so every
+    // closure holding cfg (callStage, machine creation) sees it.
+    // (kintsugi 2026-10-26: the factory-base→r2 repoint was invisible
+    // to the running tick; its laps kept resolving the deleted
+    // snapshot name and burned attempt budgets for 20 minutes)
+    try {
+      Object.assign(cfg, loadRepoConfig(join(stateDir, "repos", cfg.slug, "config.json")));
+    } catch {}
+    laps++;
+    let lapOutcome: string | null = null;
+    try {
+      lapOutcome = await runLap(cfg, stateDir, deps, issue);
+    } catch (e: any) {
+      // infra failure (git/gh/network) — receipt and move on; the
+      // in_progress row is reconciled next tick, never lost
+      repoReceipt(cfg.slug, stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+    }
+    if (lapOutcome === "infra_deferred") {
+      // the platform is down — a chained lap would queue-wait inside
+      // the same dead window. Defer the WHOLE repo chain to the next
+      // tick (15 min of natural backoff; attempts were preserved).
+      repoReceipt(cfg.slug, stateDir, `platform unavailable — deferring the rest of ${cfg.slug}'s chain to the next tick`);
+      break;
+    }
+    // fresh dependsCache per intake: issues closed by the merge just
+    // completed unblock their dependent here
+    const finished = issue.number;
+    let next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+    if (next.length === 0 && !revivedInTick) {
+      // the chain just stalled (likely: this lap burned its attempts
+      // and blocked). A blocked row only ever revives on a tick — and
+      // with no timer armed that means sitting idle until a human
+      // arrives. Pace ONE in-tick revive instead: cool down, retry the
+      // revive (the daily cap and stagnation breaker still bind), and
+      // re-intake once. Bounded: at most one cooldown per repo/tick.
+      revivedInTick = true;
+      repoReceipt(cfg.slug, stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
+      await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
+      await autoReviveBlocked(cfg, stateDir, deps.ledger, deps.gh);
+      next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+    }
+    issue = (await prioritizeDiscoveries(cfg, next, deps.ledger, deps.gh).catch(() => next))[0];
+    if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO && Date.now() - chainStart < CHAIN_BUDGET_MS) {
+      repoReceipt(cfg.slug, stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
+    }
+  }
+  const budgetSpent = Date.now() - chainStart >= CHAIN_BUDGET_MS;
+  if (laps >= MAX_LAPS_PER_TICK_PER_REPO || budgetSpent) {
+    const remaining = await prioritizeDiscoveries(
+      cfg,
+      await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []),
+      deps.ledger,
+      deps.gh
+    ).catch(() => []);
+    if (remaining.length > 0) {
+      const why =
+        laps >= MAX_LAPS_PER_TICK_PER_REPO
+          ? `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached`
+          : `chain budget (${Math.round(CHAIN_BUDGET_MS / 60_000)} min) spent`;
+      repoReceipt(cfg.slug, stateDir, `${why} for ${cfg.slug} this tick — remaining work (from #${remaining[0].number}) resumes on the next tick`);
+    }
+  }
+}
+
 async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency?: number }, scoped: boolean) {
   const ledger = new Ledger(join(opts.stateDir, "factory.db"));
   try {
@@ -1049,79 +1143,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // repo (that ordering is what keeps main conflict-free), and
           // MAX_LAPS bounds a pathological loop — the chain continues next tick.
           if (claimable.length === 0) return;
-          const MAX_LAPS_PER_TICK_PER_REPO = 6;
-          let laps = 0;
-          let issue = claimable[0];
-          repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
-          let revivedInTick = false;
-          const REVIVE_COOLDOWN_MS = 10 * 60_000;
-          while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
-            // mid-chain pause: the in-flight lap finished; nothing NEW after
-            // this point (kintsugi 2026-10-26: a pause receipt landed and the
-            // already-running task still chained two more laps into the wall)
-            if (existsSync(join(opts.stateDir, "repos", cfg.slug, "paused"))) {
-              repoReceipt(cfg.slug, opts.stateDir, `paused mid-chain — stopping before #${issue.number} (unpause to resume; the timer picks the chain up)`);
-              break;
-            }
-            // mid-tick config reload: a chained tick holds configs in memory
-            // for HOURS — a config write (snapshot swap, model change) must
-            // reach the NEXT lap, not the next tick. Mutate in place so every
-            // closure holding cfg (callStage, machine creation) sees it.
-            // (kintsugi 2026-10-26: the factory-base→r2 repoint was invisible
-            // to the running tick; its laps kept resolving the deleted
-            // snapshot name and burned attempt budgets for 20 minutes)
-            try {
-              Object.assign(cfg, loadRepoConfig(join(opts.stateDir, "repos", cfg.slug, "config.json")));
-            } catch {}
-            laps++;
-            let lapOutcome: string | null = null;
-            try {
-              lapOutcome = await runLap(cfg, opts.stateDir, deps, issue);
-            } catch (e: any) {
-              // infra failure (git/gh/network) — receipt and move on; the
-              // in_progress row is reconciled next tick, never lost
-              repoReceipt(cfg.slug, opts.stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
-            }
-            if (lapOutcome === "infra_deferred") {
-              // the platform is down — a chained lap would queue-wait inside
-              // the same dead window. Defer the WHOLE repo chain to the next
-              // tick (15 min of natural backoff; attempts were preserved).
-              repoReceipt(cfg.slug, opts.stateDir, `platform unavailable — deferring the rest of ${cfg.slug}'s chain to the next tick`);
-              break;
-            }
-            // fresh dependsCache per intake: issues closed by the merge just
-            // completed unblock their dependent here
-            const finished = issue.number;
-            let next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
-            if (next.length === 0 && !revivedInTick) {
-              // the chain just stalled (likely: this lap burned its attempts
-              // and blocked). A blocked row only ever revives on a tick — and
-              // with no timer armed that means sitting idle until a human
-              // arrives. Pace ONE in-tick revive instead: cool down, retry the
-              // revive (the daily cap and stagnation breaker still bind), and
-              // re-intake once. Bounded: at most one cooldown per repo/tick.
-              revivedInTick = true;
-              repoReceipt(cfg.slug, opts.stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
-              await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
-              await autoReviveBlocked(cfg, opts.stateDir, deps.ledger, deps.gh);
-              next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
-            }
-            issue = (await prioritizeDiscoveries(cfg, next, deps.ledger, deps.gh).catch(() => next))[0];
-            if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO) {
-              repoReceipt(cfg.slug, opts.stateDir, `queued: ${cfg.slug} #${issue.number} (${next.length - 1} behind it) — chained after #${finished}`);
-            }
-          }
-          if (laps >= MAX_LAPS_PER_TICK_PER_REPO) {
-            const remaining = await prioritizeDiscoveries(
-              cfg,
-              await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []),
-              deps.ledger,
-              deps.gh
-            ).catch(() => []);
-            if (remaining.length > 0) {
-              repoReceipt(cfg.slug, opts.stateDir, `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached for ${cfg.slug} this tick — remaining chain (from #${remaining[0].number}) resumes on the next tick`);
-            }
-          }
+          await runChain(cfg, opts.stateDir, deps, claimable);
         } catch (e: any) {
           repoReceipt(cfg.slug, opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
         } finally {
