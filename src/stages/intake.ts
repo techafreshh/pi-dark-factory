@@ -59,19 +59,54 @@ export async function listClaimable(
   gh: GhApi,
   dependsCache: Map<number, boolean> = new Map()
 ): Promise<IssueLite[]> {
+  return (await listClaimableDetailed(cfg, ledger, gh, dependsCache)).claimable;
+}
+
+export interface IntakeSkips {
+  /** the factory closed these (merged / no_action / blocked / cap-reached) */
+  ledgerClosed: number[];
+  /** an open PR claims the issue — deliberate foreign claim or stray */
+  prClaimed: number[];
+  /** operator skip-label or factory:needs-info parked */
+  labelSkipped: number[];
+  /** open but its `Depends on:` issues are still open (fail-closed on unreadable) */
+  depGated: number[];
+  /** open issues on GitHub, claimable or not */
+  openCount: number;
+}
+
+/** Same intake walk as listClaimable, but it remembers WHY each non-claimable
+ *  open issue was skipped — an idle repo must be able to say where its
+ *  backlog went, or a starved repo is indistinguishable from a drained one. */
+export async function listClaimableDetailed(
+  cfg: RepoConfig,
+  ledger: Ledger,
+  gh: GhApi,
+  dependsCache: Map<number, boolean> = new Map()
+): Promise<{ claimable: IssueLite[]; skips: IntakeSkips }> {
   const issues = (await gh.issueList("open", 100)).slice().sort((a, b) => a.number - b.number);
   const prs = await gh.prListOpen();
-  const out: IssueLite[] = [];
+  const claimable: IssueLite[] = [];
+  const skips: IntakeSkips = { ledgerClosed: [], prClaimed: [], labelSkipped: [], depGated: [], openCount: issues.length };
 
   for (const issue of issues) {
     const labels = issue.labels ?? [];
-    if (labels.some((l) => cfg.skip_labels.includes(l) || l === NEEDS_INFO_LABEL)) continue;
+    if (labels.some((l) => cfg.skip_labels.includes(l) || l === NEEDS_INFO_LABEL)) {
+      skips.labelSkipped.push(issue.number);
+      continue;
+    }
     // No row = never touched. in_progress + attempts < cap = a lap that was
     // interrupted (crash/restart) — reclaimable with attempts carried over.
     // Anything else (merged / no_action / blocked / cap-reached) is closed.
     const row = ledger.getIssue(cfg.repo, issue.number);
-    if (row && (row.state !== "in_progress" || row.attempts >= cfg.attempts)) continue;
-    if (prs.some((p) => prClaimsIssue(p.body ?? "", p.headRefName, issue.number))) continue;
+    if (row && (row.state !== "in_progress" || row.attempts >= cfg.attempts)) {
+      skips.ledgerClosed.push(issue.number);
+      continue;
+    }
+    if (prs.some((p) => prClaimsIssue(p.body ?? "", p.headRefName, issue.number))) {
+      skips.prClaimed.push(issue.number);
+      continue;
+    }
 
     const deps = parseDepends(issue.body ?? "");
     const openDeps: number[] = [];
@@ -88,11 +123,26 @@ export async function listClaimable(
       }
       if (dependsCache.get(dep)) openDeps.push(dep);
     }
-    if (openDeps.length > 0) continue;
+    if (openDeps.length > 0) {
+      skips.depGated.push(issue.number);
+      continue;
+    }
 
-    out.push(issue);
+    claimable.push(issue);
   }
-  return out;
+  return { claimable, skips };
+}
+
+/** One-line human answer to "why is nothing ticking on this repo" — numbers
+ *  capped per bucket so a hundred-issue backlog still reads as a receipt. */
+export function describeIntakeSkips(skips: IntakeSkips): string {
+  const nums = (a: number[]) => (a.length > 8 ? `#${a.slice(0, 8).join(" #")} +${a.length - 8} more` : a.map((n) => `#${n}`).join(" "));
+  const parts: string[] = [];
+  if (skips.ledgerClosed.length) parts.push(`factory-closed ${skips.ledgerClosed.length}`);
+  if (skips.labelSkipped.length) parts.push(`skip-labeled ${nums(skips.labelSkipped)}`);
+  if (skips.prClaimed.length) parts.push(`pr-claimed ${nums(skips.prClaimed)}`);
+  if (skips.depGated.length) parts.push(`dep-gated ${nums(skips.depGated)}`);
+  return parts.join("; ") || "no open issues";
 }
 
 export async function pickClaimable(

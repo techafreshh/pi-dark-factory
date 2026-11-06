@@ -544,6 +544,29 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
       delete process.env.PDF_CHAIN_BUDGET_MS;
     }
   }, 60000);
+
+  test("intake explains an idle chain — the dep-gated backlog is named, never silent", async () => {
+    const w = makeWorld();
+    w.gh.issues.push({
+      number: 2,
+      title: "Add wave rows",
+      body: "create waves.txt\n\nDepends on: #3", // #3 does not exist → fail-closed unmet
+      labels: [],
+    });
+    process.env.PDF_REVIVE_COOLDOWN_MS = "5"; // the stall path still sleeps; just briefly
+    const deps = { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) };
+    try {
+      await prepareRepo(w.cfg, w.stateDir, deps);
+      const claimable = await prioritizeDiscoveries(w.cfg, await listClaimable(w.cfg, w.ledger, w.gh), w.ledger, w.gh);
+      expect(claimable.map((i) => i.number)).toEqual([1]); // #2 is dep-gated
+      await runChain(w.cfg, w.stateDir, deps, claimable);
+      expect(w.ledger.getIssue(w.cfg.repo, 1)!.state).toBe("merged");
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("idle after #1: 1 open, none claimable — dep-gated #2");
+    } finally {
+      delete process.env.PDF_REVIVE_COOLDOWN_MS;
+    }
+  }, 60000);
 });
 
 describe("runWithConcurrency (unabated-by-default dispatcher)", () => {

@@ -12,7 +12,7 @@ import { blockedComment, mergedComment, needsContextComment, noActionComment, st
 import { callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
-import { DISCOVERY_LABEL, listClaimable, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
+import { DISCOVERY_LABEL, describeIntakeSkips, listClaimable, listClaimableDetailed, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
 import { buildReviewPrompt, parseDiscoveries, parseVerdict, REVIEWER_SYSTEM } from "./stages/review";
@@ -786,7 +786,9 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   if (claimable.length === 0) {
     const lapId = deps.ledger.startLap(cfg.repo, null);
     deps.ledger.endLap(lapId, "idle", "no claimable issue (all claimed, labeled, PR'd, or dependency-blocked)");
-    repoReceipt(cfg.slug, stateDir, "idle: no claimable issue");
+    const detail = await listClaimableDetailed(cfg, deps.ledger, deps.gh).catch(() => null);
+    const extra = detail && detail.skips.openCount > 0 ? ` — ${describeIntakeSkips(detail.skips)}` : "";
+    repoReceipt(cfg.slug, stateDir, `idle: no claimable issue${extra}`);
     return "idle";
   }
   return runLap(cfg, stateDir, deps, claimable[0]);
@@ -1030,15 +1032,18 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
   const chainStart = Date.now();
   let laps = 0;
   let issue = claimable[0];
+  let lastFinished: number | null = null;
+  let endedQuietly = false; // a break path that already receipted its own reason
   repoReceipt(cfg.slug, stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
   let revivedInTick = false;
-  const REVIVE_COOLDOWN_MS = 10 * 60_000;
+  const REVIVE_COOLDOWN_MS = +(process.env.PDF_REVIVE_COOLDOWN_MS ?? 10 * 60_000);
   while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO && Date.now() - chainStart < CHAIN_BUDGET_MS) {
     // mid-chain pause: the in-flight lap finished; nothing NEW after
     // this point (kintsugi 2026-10-26: a pause receipt landed and the
     // already-running task still chained two more laps into the wall)
     if (existsSync(join(stateDir, "repos", cfg.slug, "paused"))) {
       repoReceipt(cfg.slug, stateDir, `paused mid-chain — stopping before #${issue.number} (unpause to resume; the timer picks the chain up)`);
+      endedQuietly = true;
       break;
     }
     // mid-tick config reload: a chained tick holds configs in memory
@@ -1065,11 +1070,13 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
       // the same dead window. Defer the WHOLE repo chain to the next
       // tick (15 min of natural backoff; attempts were preserved).
       repoReceipt(cfg.slug, stateDir, `platform unavailable — deferring the rest of ${cfg.slug}'s chain to the next tick`);
+      endedQuietly = true;
       break;
     }
     // fresh dependsCache per intake: issues closed by the merge just
     // completed unblock their dependent here
     const finished = issue.number;
+    lastFinished = finished;
     let next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
     if (next.length === 0 && !revivedInTick) {
       // the chain just stalled (likely: this lap burned its attempts
@@ -1103,6 +1110,15 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
           ? `lap cap (${MAX_LAPS_PER_TICK_PER_REPO}) reached`
           : `chain budget (${Math.round(CHAIN_BUDGET_MS / 60_000)} min) spent`;
       repoReceipt(cfg.slug, stateDir, `${why} for ${cfg.slug} this tick — remaining work (from #${remaining[0].number}) resumes on the next tick`);
+    }
+  } else if (laps > 0 && !endedQuietly) {
+    // the chain drained its intake — never let that be silent: name the
+    // open-but-unclaimable backlog, or a starved repo is indistinguishable
+    // from a finished one (cluckstorm 2026-11-06: fresh issues sat unread
+    // for an hour behind exactly this silence)
+    const detail = await listClaimableDetailed(cfg, deps.ledger, deps.gh).catch(() => null);
+    if (detail && detail.skips.openCount > 0) {
+      repoReceipt(cfg.slug, stateDir, `idle after #${lastFinished}: ${detail.skips.openCount} open, none claimable — ${describeIntakeSkips(detail.skips)}`);
     }
   }
 }
