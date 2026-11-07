@@ -22,7 +22,7 @@ export interface RuntimeContextInfo {
   attemptsMax: number;
   branch: string;
   base: string;
-  mode: "host" | "compose" | "instabox";
+  mode: "host" | "compose" | "instabox" | "boxd";
   /** mode-specific identity: worktree path / image+service / machine+template */
   where: string;
   /** where the agent's file edits must happen */

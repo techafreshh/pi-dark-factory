@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "bun-types": "latest"
+  },
+  "dependencies": {
+    "@boxd-sh/sdk": "0.3.0"
   }
 }

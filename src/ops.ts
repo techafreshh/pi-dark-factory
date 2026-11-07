@@ -727,7 +727,7 @@ export async function opsScenarioTest(
       }
       result = await runScenarioInMachine(
         spec,
-        { ssh: async () => conn, repoDir: cfg.env.instabox!.repo_dir },
+        { bash: (script, timeoutMs) => machineBash(conn, script, { timeoutMs: timeoutMs ?? 600000 }), repoDir: cfg.env.instabox!.repo_dir },
         {
           readinessSeconds: cfg.timeouts.readiness_seconds,
           defaultProbeMs: cfg.timeouts.probe_ms,

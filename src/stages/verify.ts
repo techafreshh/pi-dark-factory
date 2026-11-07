@@ -7,7 +7,7 @@ import { sh } from "../sh";
 import { branchName } from "./intake";
 import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir } from "../gitws";
 import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
-import type { SshTarget } from "../machine";
+import { repoDirFor } from "../machine";
 import type { RepoConfig } from "../types";
 
 export interface GateFailure {
@@ -100,8 +100,8 @@ export async function runVerify(
     issue: number;
     /** host/compose mode: the local worktree the change lives in */
     worktree?: string;
-    /** instabox machine mode: scenario setup/start run inside this machine */
-    machine?: { ssh(): Promise<SshTarget> };
+    /** instabox/boxd machine mode: scenario setup/start run inside this machine */
+    machine?: { bash(script: string, opts?: { timeoutMs?: number }): Promise<import("../machine").ShRes> };
     pr: number | null;
     attempt?: number;
   }
@@ -168,13 +168,17 @@ export async function runVerify(
     const scratch = join(issueDir(opts.stateDir, cfg.slug, opts.issue), key === "runtime" ? "verify" : "holdout");
     mkdirSync(join(scratch, ".."), { recursive: true });
     let result: ScenarioResult;
-    if (opts.machine && cfg.env.mode === "instabox") {
-      // setup + start run inside the machine; probes stay host-side behind an
-      // ssh -L forward of the scenario port. $WORKTREE is the machine's copy
+    if (opts.machine && (cfg.env.mode === "instabox" || cfg.env.mode === "boxd")) {
+      // setup + start run inside the machine; every probe judges the box's OWN
+      // loopback over the machine's exec/bash primitive (instabox: ssh gateway
+      // channel; boxd: hardened exec wrapper). $WORKTREE is the machine's copy
       // of the product — the same contract compose mode forwards over.
       // preClean's container analogue is the runner's own pidfile kill: a
       // previous run's server group dies before the next start.
-      result = await runScenarioInMachine(spec, { ssh: () => opts.machine!.ssh(), repoDir: cfg.env.instabox.repo_dir }, {
+      result = await runScenarioInMachine(spec, {
+        bash: (script, timeoutMs) => opts.machine!.bash(script, { timeoutMs: timeoutMs ?? 600000 }),
+        repoDir: repoDirFor(cfg),
+      }, {
         readinessSeconds: cfg.timeouts.readiness_seconds,
         defaultProbeMs: cfg.timeouts.probe_ms,
         key: `${cfg.slug}-${opts.issue}-${key}`,

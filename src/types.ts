@@ -59,7 +59,7 @@ export interface RepoConfig {
    * port forwards. The host needs no Docker at all.
    */
   env: {
-    mode: "host" | "compose" | "instabox";
+    mode: "host" | "compose" | "instabox" | "boxd";
     /** repo-relative path of the product-owned compose file */
     compose_file: string;
     /** service in that compose file the factory runs stages in */
@@ -81,6 +81,21 @@ export interface RepoConfig {
       repo_dir: string;
       /** shell run on the bake machine after clone; empty = clone-only snapshot */
       bake: string;
+    };
+    /**
+     * boxd-mode settings (https://boxd.sh — SDK-driven microVMs, gRPC control
+     * plane, exec transport; no ssh anywhere). Machine lifecycle rides the
+     * official SDK; in-box scripts ride a hardened exec wrapper that enforces
+     * its deadline in-box (setsid process group, TERM→KILL) because the
+     * platform's server-side exec timeout never surfaces under Bun.
+     */
+    boxd?: {
+      /** in-machine path the repo is cloned to */
+      repo_dir: string;
+      /** snapshot machines boot from; default factory-base-boxd-r1 */
+      snapshot?: string;
+      /** boxd region; default = the org's default region */
+      region?: string;
     };
   };
   skip_labels: string[];

@@ -39,6 +39,10 @@ const DEFAULTS = {
       repo_dir: "/data/repo",
       bake: "",
     },
+    boxd: {
+      repo_dir: "/home/boxd/repo",
+      snapshot: "factory-base-boxd-r1",
+    },
   },
   pi: {
     binary: "pi",
@@ -143,8 +147,12 @@ export function loadRepoConfig(path: string): RepoConfig {
       ...DEFAULTS.env,
       ...raw.env,
       instabox: { ...DEFAULTS.env.instabox, ...(raw.env?.instabox ?? {}) },
+      // boxd block is optional; merge so a mode flip needs only mode + repo_dir
+      boxd: { ...DEFAULTS.env.boxd!, ...(raw.env?.boxd ?? {}) },
     },
   };
+  if (cfg.env.mode === "boxd" && !cfg.env.boxd?.repo_dir)
+    throw new Error(`config env.mode "boxd" requires env.boxd.repo_dir (the in-machine clone path)`);
   // web flags must be booleans — a string "false" from a bad remote patch
   // would otherwise truthy through and flip the toggle the operator meant
   // to close (same fail-fast rule as the roster checks: reject at write time)

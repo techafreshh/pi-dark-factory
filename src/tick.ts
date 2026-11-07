@@ -6,7 +6,8 @@ import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
 import { machineNameFor } from "./instabox";
-import { InfraUnavailableError, openLapMachine, type LapMachine } from "./machine";
+import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachine } from "./machine";
+import { openBoxdLapMachine, type BoxdLapMachine } from "./machine-boxd";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { callPiWithFallback, type PiStageResult } from "./pi";
@@ -82,7 +83,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
     // Machine-mode stages (implement/review in-box) get it prompt-only; the
     // box clone holds no host-side file.
     if (a.runtimeContext) {
-      if (cfg.env?.mode !== "instabox") {
+      if (cfg.env?.mode !== "instabox" && cfg.env?.mode !== "boxd") {
         try {
           writeFileSync(a.cwd + "/.factory-context.md", a.runtimeContext + "\n");
         } catch {}
@@ -300,7 +301,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // instabox machine mode: one machine per issue's lap, created lazily at the
   // first implement attempt and kept across repairs; destroyed when the lap
   // books out (a crashed lap leaves it parked for reclaim + the janitor)
-  let machine: LapMachine | null = null;
+  let machine: LapMachine | BoxdLapMachine | null = null;
 
   const recordStage = (
     stage: StageName,
@@ -327,7 +328,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // host/compose stages load it from the synced ~/.pi/agent/extensions copy
   const webEnabled =
     (webToggle(cfg).search || webToggle(cfg).fetch) &&
-    (cfg.env.mode === "instabox" ? extensionPresent() : ensureHostExtension());
+    (cfg.env.mode === "instabox" || cfg.env.mode === "boxd" ? extensionPresent() : ensureHostExtension());
 
   // "where am I" brief builder — the per-stage runtime context every agent
   // gets (prompt preamble; host/compose modes also write it to disk beside
@@ -350,14 +351,20 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           ? stage === "plan"
             ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
             : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n, lapId)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
-          : cfg.env.mode === "compose"
+          : cfg.env.mode === "boxd"
+            ? stage === "plan"
+              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's boxd machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
+              : `your own ephemeral boxd microVM "${machineNameFor(cfg.slug, n, lapId)}" — hardware-isolated, its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.boxd?.repo_dir}; git, gh, bun and the toolchain are preinstalled`
+            : cfg.env.mode === "compose"
             ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
             : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
       cwd,
       toolchain:
         cfg.env.mode === "instabox"
           ? `whatever the machine snapshot ships — node, git, gh (signed in), curl; network egress allowed`
-          : cfg.env.mode === "compose"
+          : cfg.env.mode === "boxd"
+            ? `whatever the snapshot ships — bun, git, gh (token via env), python3, curl; network egress allowed`
+            : cfg.env.mode === "compose"
             ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
             : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
       webTools: webEnabled,
@@ -471,14 +478,16 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
     let worktree: string | null = null;
     let implRes: PiStageResult;
-    if (cfg.env.mode === "instabox") {
-      machine ??= openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
+    if (cfg.env.mode === "instabox" || cfg.env.mode === "boxd") {
+      machine ??= cfg.env.mode === "boxd"
+        ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
+        : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
       let machRes: PiStageResult;
       try {
         machRes = await machine.callStage("implement", {
           models: implModels,
           prompt:
-            contextFor("implement", attempt, cfg.env.instabox.repo_dir) + "\n\n---\n\n" + implPrompt,
+            contextFor("implement", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + implPrompt,
           systemPrompt: IMPLEMENTER_SYSTEM,
           tools: stageTools(cfg, "implement", extensionPresent()),
           extraArgs: cfg.pi.extra_args,
@@ -601,7 +610,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     const revModels = resolveModels(cfg, "review");
     const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
-    const reviewContext = contextFor("review", attempt, machine ? cfg.env.instabox.repo_dir : worktree!);
+    const reviewContext = contextFor("review", attempt, machine ? repoDirFor(cfg) : worktree!);
   const callReview = () =>
     machine
       ? machine.callStage("review", {

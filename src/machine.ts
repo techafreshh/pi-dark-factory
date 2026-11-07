@@ -57,6 +57,14 @@ export function escapeSh(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** The in-machine clone path for the repo's mode — instabox clones to
+ *  cfg.env.instabox.repo_dir, boxd to cfg.env.boxd.repo_dir. Everything that
+ *  materializes a worktree in a machine (env.sh, bootstrap, scenario target)
+ *  resolves through this so a mode flip touches nothing else. */
+export function repoDirFor(cfg: RepoConfig): string {
+  return cfg.env.mode === "boxd" ? cfg.env.boxd?.repo_dir ?? "" : cfg.env.instabox.repo_dir;
+}
+
 /** Test seam: tests point PDF_SSH_BIN at a fake gateway (and custom ssh paths can too). */
 const sshBin = () => process.env.PDF_SSH_BIN || "ssh";
 
@@ -167,7 +175,7 @@ export function buildMachineEnvFile(
 ): string {
   const lines = [
     `export PI_BIN=${escapeSh(cfg.pi.binary)}`,
-    `export REPO_DIR=${escapeSh(cfg.env.instabox.repo_dir)}`,
+    `export REPO_DIR=${escapeSh(repoDirFor(cfg))}`,
     `export PDF_GATES=${stage.gates ? "1" : "0"}`,
     `export PDF_BRANCH=${escapeSh(stage.branch)}`,
     `export PDF_BASE=${escapeSh(stage.base)}`,
@@ -252,7 +260,7 @@ export function originUrlFor(cfg: RepoConfig): string {
  *  default: a new issue's branch starts at the base branch, and the
  *  implementer commits on top. */
 export function bootstrapScriptFor(cfg: RepoConfig, branch: string, opts: { from?: "base" | "branch" } = {}): string {
-  const ibx = cfg.env.instabox;
+  const rd = repoDirFor(cfg);
   const b = (s: string) => escapeSh(s);
   const startRef = opts.from === "branch" ? `origin/${b(branch)}` : `"origin/${cfg.default_branch}"`;
   return [
@@ -263,13 +271,13 @@ export function bootstrapScriptFor(cfg: RepoConfig, branch: string, opts: { from
     // before git can create the work tree. sudo -n is baked into the factory
     // snapshots (used at bake time for the global pi install); best-effort,
     // so a sudo-less snapshot still fails at the clone with git's own message.
-    `P=$(dirname ${b(ibx.repo_dir)}); sudo -n mkdir -p "$P" 2>/dev/null || true; sudo -n chown -R "$(id -u):$(id -g)" "$P" 2>/dev/null || true`,
-    `if [ ! -d ${b(ibx.repo_dir)}/.git ]; then`,
-    `  git clone --no-checkout ${b(originUrlFor(cfg))} ${b(ibx.repo_dir)} || git clone ${b(originUrlFor(cfg))} ${b(ibx.repo_dir)}`,
+    `P=$(dirname ${b(rd)}); sudo -n mkdir -p "$P" 2>/dev/null || true; sudo -n chown -R "$(id -u):$(id -g)" "$P" 2>/dev/null || true`,
+    `if [ ! -d ${b(rd)}/.git ]; then`,
+    `  git clone --no-checkout ${b(originUrlFor(cfg))} ${b(rd)} || git clone ${b(originUrlFor(cfg))} ${b(rd)}`,
     `else`,
-    `  git -C ${b(ibx.repo_dir)} fetch origin --prune || true`,
+    `  git -C ${b(rd)} fetch origin --prune || true`,
     `fi`,
-    `cd ${b(ibx.repo_dir)}`,
+    `cd ${b(rd)}`,
     `if git show-ref --verify -q refs/heads/${b(branch)}; then`,
     `  git checkout -q ${b(branch)}`,
     `else`,
@@ -510,7 +518,8 @@ export class InfraUnavailableError extends Error {
   }
 }
 
-const isInfraTransportText = (t: string): boolean =>
+/** exported: the boxd driver reuses the same transport-failure classification */
+export const isInfraTransportText = (t: string): boolean =>
   /permission denied \(publickey\)|machine unreachable|connect failed|connection (refused|timed out|closed)|broken pipe|kex_exchange/i.test(t);
 
 export class LapMachine {

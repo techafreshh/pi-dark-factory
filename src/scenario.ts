@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sh } from "./sh";
-import { escapeSh, machineBash, type SshTarget } from "./machine";
+import { escapeSh, type ShRes } from "./machine";
 
 export interface Probe {
   id: string;
@@ -349,9 +349,14 @@ export async function runScenario(
   }
 }
 
-/** Anything with an SSH target + the in-machine repo path (LapMachine). */
+/**
+ * Anything that can run a script inside a machine + the in-machine repo path.
+ * instabox machines provide ssh-transport bash (machineBash over the gateway);
+ * boxd machines provide the hardened exec wrapper — the scenario judges both
+ * identically: commands run verbatim in the box, against its own loopback.
+ */
 export interface MachineScenarioTarget {
-  ssh(): Promise<SshTarget>;
+  bash(script: string, timeoutMs?: number): Promise<ShRes>;
   repoDir: string;
 }
 
@@ -387,25 +392,23 @@ export async function runScenarioInMachine(
   // commands and expectations execute verbatim, and the product never sees
   // them — only the transport moved.
   const port = resolveScenarioPort(spec, opts.reservedPorts);
-  const conn = await target.ssh();
   const key = opts.key.replace(/[^a-z0-9-]/gi, "");
   const pidFile = `/tmp/pdf-scen-${key}.pid`;
   const dirFile = `/tmp/pdf-scen-${key}.dir`;
   const goto = `cd ${escapeSh(target.repoDir)} || exit 95\nexport PORT=${port}\nexport WORKTREE=${escapeSh(target.repoDir)}\n`;
-  const runIn = (cmd: string, timeoutMs = 600000) => machineBash(conn, goto + cmd, { timeoutMs });
+  const runIn = (cmd: string, timeoutMs = 600000) => target.bash(goto + cmd, timeoutMs);
 
   // readiness poll — the machine's own loopback, curl with a node fallback
   // (the factory-base snapshot's bare ssh bash session has proved to lack
   // tools the agent's interactive shell has). ALWAYS emits a code.
   const probeReady = async (): Promise<string> => {
-    const r = await machineBash(
-      conn,
+    const r = await target.bash(
       [
         `command -v curl >/dev/null 2>&1 && { curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:${port}${spec.readiness_path || "/"} 2>/dev/null; exit 0; }`,
         `command -v node >/dev/null 2>&1 && { node -e "const u='http://127.0.0.1:${port}${spec.readiness_path || "/"}';require('http').get(u,r=>{console.log(r.statusCode);process.exit(0)}).on('error',()=>{console.log('000');process.exit(0)})" 2>/dev/null; exit 0; }`,
         `echo 000`,
       ].join("\n"),
-      { timeoutMs: 12000 }
+      12000
     );
     return ((r.stdout || "").trim().split("\n").filter(Boolean).pop() ?? "000").trim();
   };
@@ -432,7 +435,7 @@ export async function runScenarioInMachine(
       `echo "$M" > ${dirFile}`,
       `echo STARTED`,
     ].join("\n");
-    const started = await machineBash(conn, startScript, { timeoutMs: 60000 });
+    const started = await target.bash(startScript, 60000);
     if (started.timedOut || !started.stdout.includes("STARTED")) {
       return mkResults(false, `scenario start failed in machine: ${(started.stderr.trim() || started.stdout.trim()).slice(0, 300)}`);
     }
@@ -444,16 +447,15 @@ export async function runScenarioInMachine(
       code = await probeReady();
     }
     if (!/^[1-5]\d\d$/.test(code)) {
-      const logTail = await machineBash(conn, `tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, { timeoutMs: 15000 });
+      const logTail = await target.bash(`tail -c 1200 "$(cat ${dirFile})/log" 2>/dev/null || true`, 15000);
       // kernel-level evidence: WHO holds the port, and is the accept backlog
       // full — a server that binds but never accepts fills its backlog and
       // every connection attempt times out (bi-ai-ui #1, 2026-10-26: the
       // supervisor held 0.0.0.0:8120 with backlog 6/5 for the entire window
       // while its heartbeat claimed "alive")
-      const sockState = await machineBash(
-        conn,
+      const sockState = await target.bash(
         `ss -tlnp 2>/dev/null | grep -E ":${port} " || netstat -tlnp 2>/dev/null | grep -E ":${port} " || echo "nothing listening on ${port}"`,
-        { timeoutMs: 15000 }
+        15000
       );
       const detail = logTail.stdout.trim().slice(-500);
       const sockets = sockState.stdout.trim().slice(0, 400);
@@ -482,14 +484,13 @@ export async function runScenarioInMachine(
     // remote kill first (needs the gateway reachable), then teardown —
     // cancellation never skips it
     try {
-      await machineBash(
-        conn,
+      await target.bash(
         [
           `if [ -f ${pidFile} ]; then P=$(cat ${pidFile}); { kill -- -"$P" 2>/dev/null || kill "$P" 2>/dev/null || true; }; fi`,
           `if [ -f ${dirFile} ]; then D=$(cat ${dirFile}); rm -rf "$D"; fi`,
           `rm -f ${pidFile} ${dirFile}`,
         ].join("\n"),
-        { timeoutMs: 30000 }
+        30000
       );
       if (spec.teardown) await runIn(spec.teardown);
     } catch {}
