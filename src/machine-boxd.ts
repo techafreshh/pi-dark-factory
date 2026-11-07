@@ -43,6 +43,10 @@ export function execWrapper(payloadB64: string, timeoutMs: number, nonce: string
   const deadline = Date.now() + timeoutMs; // box clocks are NTP'd real time
   return `
 set -u
+# exec hands the box a minimal env — no login shell, so ~/.bun/bin (pi) is
+# missing and every stage died 127 "pi: command not found" on the first lap.
+# Export the standard PATH before the payload; the inner bash inherits it.
+export PATH="$HOME/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 U=/tmp/.pdf-${nonce}-$$
 printf %s '${payloadB64}' > $U.b64
 setsid bash -c "base64 -d $U.b64 | bash > $U.out 2> $U.err; echo \\$? > $U.rc" &
