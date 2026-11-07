@@ -160,9 +160,25 @@ Decision points to walk with the user:
   environment; offer when the repo has a `docker-compose.yml` or the PRD
   ships one — fallback `env.image` must carry the toolchain, e.g. full
   `node:22`, until lap 1 lands the compose file), `instabox` (disposable
-  Firecracker machines; see below).
+  Firecracker machines; see below), `boxd` (disposable hardware-isolated
+  microVMs over the boxd.sh gRPC SDK — see below).
 - **instabox prerequisite**: the golden snapshot is baked SERVER-SIDE before
   the first lap; onboarding reminds you when.
+
+**boxd mode essentials** — `env.mode: "boxd"` + `env.boxd.repo_dir` (fail-fast
+if missing); machines boot from the org snapshot `factory-base-boxd-r1` by
+default (pi, bun, gh, git, python3 baked; NO node/Chrome yet — curl-only
+scenarios until an r2 bake adds them). Needs only `BOXD_API_KEY` in
+`factoryd.env` — the official SDK (`@boxd-sh/sdk`, the checkout's one contained
+dependency) owns machine lifecycle, everything in-box rides the hardened exec
+wrapper (in-box TERM→KILL deadline, frames, PATH). No ssh, no tunnels, no
+owner key-link step (account ops like linkSshKey are fenced to interactive
+logins and the dashboard has no key UI — the exec transport is why none is
+needed). Lap rhythm measured on the smoke repos: machine ready ~0.6 s, PR
+~25 s, full claim→merge→post-merge-regression ~5 min. Probes judge the box's
+OWN loopback over the same exec channel (identical to instabox's in-box
+scenario lane). Known gap: no janitor sweep for daemon-crash-orphans (see
+failure-signatures).
 
 **Instabox snapshot essentials** — diff the PRD's runtime needs against what
 `doctor` prints for the base (`contents: …`) and SPEAK UP before the first
@@ -319,6 +335,9 @@ Every row was paid for in real laps. Match the receipt, don't re-derive.
 | river/connector `provider_error` bursts | upstream flakiness; the fallback chain advances on its own | watch; worry when fallbacks also fail |
 | receipt `lap #N DEFERRED — platform unavailable: machine ssh transport unavailable (publickey/unreachable)` or `machine-slot queue …waiting for a slot` | The InstaBox transport/machine API is degraded or the org is at its box cap. These laps are DEFERRED by design: no attempt burned, the claim is dropped, the next tick re-claims fresh, and a deferred chain pauses itself instead of booting boxes into a dead platform (pre-2026-11-05 the failure burned 3 attempts in 3 minutes and parked 3 machines — reins #1) | nothing factory-side to fix — check the platform's status; laps self-heal on recovery. `pause <slug>` only if you want the wheel fully quiet meanwhile. If it persists >1h, ping the provider |
 | a fresh GitHub issue doesn't tick while other repos run laps | `chain budget (N min) spent for <slug> — remaining work (from #M) resumes on the next tick` = the repo's chain hit its 12-min-per-tick window and handed off by design (the in-flight lap always completes; bounded because the timer's re-arm waits for the whole tick to end); `idle after #N: K open, none claimable — dep-gated …` = the body's own `Depends on: #…` gate holds until its parents merge | read the receipts first: a budget handoff needs nothing; `Depends on:` gates resolve themselves as parents merge; to drain one repo NOW, `tick <slug>` fires a scoped tick (pidfile-arbitrated, never double-runs) |
+| boxd lap: `pi: command not found` (exit 127) in-box | the SDK exec transport starts NO login shell, so `~/.bun/bin` (where `bun i -g` put pi) is off PATH — instabox's sshd never had this because sshd sources the profile | fixed in the exec wrapper (exports the standard PATH before the payload); recurs → the snapshot lost the binary (`bun i -g @earendil-works/pi-coding-agent` on a bake box, re-snapshot) |
+| boxd verify: `server never became ready … (last code 000)` while the box answers fine out-of-band | fixed frame-parsing artifact (2026-11-07, both smoke repos, 9 attempts): `curl -w '%{http_code}'` emits NO trailing newline, the old capture frames fused the last output line with the END marker and the regex silently dropped it — the probes were answering 200 all along | fixed (wrapper emits a newline before each END marker; parser strips exactly one). Should not recur — if 000s appear again, FIRST probe the box directly through the SDK before blaming the server |
+| boxd: a parked `pdf-*` machine outlives its lap (daemon restart mid-lap) | the boxd lane has NO janitor sweep yet — normal bookout/defer paths destroy their own boxes, but a crashed daemon leaves the box running | `boxd machines list` (labels `factory=1`) → delete by id; janitor sweep for label-tagged boxes older than N hours is the standing follow-up |
 
 
 Operator discipline paid for twice: after a server-side infra fix, wait for a
