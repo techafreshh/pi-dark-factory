@@ -61,9 +61,15 @@ RC=$(cat $U.rc 2>/dev/null || echo 125)
 echo "PDFRC-${nonce}:$RC"
 echo "PDFO-${nonce}-START"
 head -c ${STDOUT_CAP} $U.out 2>/dev/null
+# guarantee a newline BEFORE the END marker: a payload whose last output line
+# lacks one (curl -w '%{http_code}' never emits a trailing newline) would fuse
+# with the marker and the frame regex would silently drop the whole capture —
+# this ate every readiness probe on the first smoke laps (the probes said 200)
+echo
 echo "PDFO-${nonce}-END"
 echo "PDFE-${nonce}-START"
 head -c ${STDERR_CAP} $U.err 2>/dev/null
+echo
 echo "PDFE-${nonce}-END"
 rm -f $U.b64 $U.out $U.err $U.rc
 `;
@@ -71,8 +77,10 @@ rm -f $U.b64 $U.out $U.err $U.rc
 
 export function parseWrap(stdout: string, nonce: string): { rc: number; out: string; err: string } {
   const rcM = stdout.match(new RegExp(`PDFRC-${nonce}:(\\d+)`));
-  const out = stdout.match(new RegExp(`PDFO-${nonce}-START\\n([\\s\\S]*?)\\nPDFO-${nonce}-END`))?.[1] ?? "";
-  const err = stdout.match(new RegExp(`PDFE-${nonce}-START\\n([\\s\\S]*?)\\nPDFE-${nonce}-END`))?.[1] ?? "";
+  // the wrapper guarantees exactly one newline before each END marker; strip
+  // it so the capture stays byte-identical to the payload's own stdout
+  const out = stdout.match(new RegExp(`PDFO-${nonce}-START\\n([\\s\\S]*?)\\nPDFO-${nonce}-END`))?.[1]?.replace(/\n$/, "") ?? "";
+  const err = stdout.match(new RegExp(`PDFE-${nonce}-START\\n([\\s\\S]*?)\\nPDFE-${nonce}-END`))?.[1]?.replace(/\n$/, "") ?? "";
   return { rc: rcM ? Number(rcM[1]) : 125, out, err };
 }
 

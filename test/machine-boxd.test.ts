@@ -40,6 +40,14 @@ describe("parseWrap", () => {
     expect(p.rc).toBe(0);
     expect(p.out).toBe("PDFO-zz9pass-START");
   });
+  test("a payload whose last line has no trailing newline survives the frame (curl -w class)", () => {
+    // the first smoke-lap killer: curl -w '%{http_code}' emits "200" with NO
+    // trailing newline — unfused capture must round-trip byte-exactly
+    const framed = `PDFRC-${N}:0\nPDFO-${N}-START\n200\nPDFO-${N}-END\nPDFE-${N}-START\n\nPDFE-${N}-END`;
+    expect(parseWrap(framed, N).out).toBe("200");
+    const fused = `PDFRC-${N}:0\nPDFO-${N}-START\n200\nPDFO-${N}-END`;
+    expect(parseWrap(fused, N).out).toBe("200");
+  });
 });
 
 const boxdCfg = (): any => {
