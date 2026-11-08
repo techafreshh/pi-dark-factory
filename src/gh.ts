@@ -3,8 +3,46 @@ import type { IssueLite, PrLite } from "./types";
 
 export interface CheckState {
   name: string;
-  state: string; // SUCCESS | FAILURE | PENDING | ...
+  state: string; // SUCCESS | FAILURE | PENDING | ... (CheckRuns normalized by checkStates)
 }
+
+/**
+ * `gh pr view --json statusCheckRollup` mixes two item shapes (recorded
+ * 2026-11-08 from cli/cli, microsoft/vscode and kubernetes/kubernetes PRs):
+ *  - StatusContext (commit-status API): {__typename: "StatusContext", context,
+ *    state: SUCCESS|PENDING|FAILURE|ERROR|EXPECTED}
+ *  - CheckRun (GitHub Actions and every Checks-API app): {__typename:
+ *    "CheckRun", name, workflowName, status, conclusion} — NO `state` field
+ * The old parse kept only items with a `state`, so every Actions check was
+ * dropped: ["*"] read an Actions PR as "no CI" and merged after the grace
+ * window whatever its checks said. CheckRuns map onto the StatusContext
+ * vocabulary waitChecks judges; an item it cannot read waits (fail closed).
+ */
+export function checkStates(rollup: unknown): CheckState[] {
+  if (!Array.isArray(rollup)) return [];
+  return rollup
+    .filter((c: any) => c && typeof c === "object")
+    .map((c: any) => ({
+      name: String(c.name ?? c.workflowName ?? c.context ?? "check"),
+      state: typeof c.state === "string" && c.state ? c.state : checkRunState(c.status, c.conclusion),
+    }));
+}
+
+function checkRunState(status: unknown, conclusion: unknown): string {
+  // QUEUED / IN_PROGRESS / WAITING / REQUESTED / PENDING: still running
+  if (String(status ?? "").toUpperCase() !== "COMPLETED") return "PENDING";
+  const c = String(conclusion ?? "").toUpperCase();
+  if (c === "SUCCESS" || c === "NEUTRAL" || c === "SKIPPED") return "SUCCESS";
+  // waiting on a human (e.g. a deployment approval): waits like a pending check
+  if (c === "ACTION_REQUIRED") return "ACTION_REQUIRED";
+  // FAILURE, TIMED_OUT, CANCELLED, STARTUP_FAILURE, STALE, or a conclusion
+  // GitHub adds later — TIMED_OUT and STALE match no failure word, so map
+  // them explicitly instead of letting them read as settled-and-green
+  return "FAILURE";
+}
+
+const CHECK_FAILED = /FAIL|ERROR|CANCEL/i;
+const CHECK_PENDING = /PENDING|QUEUED|IN_PROGRESS|EXPECTED|ACTION_REQUIRED|WAITING/i;
 
 /** The surface tick needs from GitHub — real Gh or a test fake. */
 export interface GhApi {
@@ -137,10 +175,7 @@ export class Gh implements GhApi {
     const raw = await ghJson<any>(this.repo, [
       "pr", "view", String(n), "--json", "statusCheckRollup",
     ]);
-    const rollup = raw.statusCheckRollup ?? [];
-    return rollup
-      .filter((c: any) => c && c.state)
-      .map((c: any) => ({ name: c.name ?? c.workflowName ?? c.context ?? "check", state: String(c.state) }));
+    return checkStates(raw.statusCheckRollup);
   }
 
   /** The PR's head commit sha — the provenance anchor: what verify probed and
@@ -169,7 +204,7 @@ export async function repoDefaultBranch(repo: string): Promise<string> {
 /**
  * CI gate: poll the PR's checks until every required check is present and
  * non-PENDING. Any required FAILURE fails fast. A required check that never
- * reports fails after the timeout — fail closed.
+ * reports or never settles fails after the timeout — fail closed.
  */
 export const CI_AUTODETECT = "*";
 const CI_GRACE_MS = 240_000; // window for Actions to report at least one check before "no CI" is concluded
@@ -187,7 +222,6 @@ export async function waitChecks(
   const grace = Date.now() + CI_GRACE_MS;
   for (;;) {
     const checks = await gh.prChecks(pr);
-    const states = new Map(checks.map((c) => [c.name, c.state]));
     if (auto) {
       // ["*"]: whatever CI the product ships gates the merge — and a repo
       // with no workflows stays ungated. The grace window absorbs Actions'
@@ -199,11 +233,11 @@ export async function waitChecks(
         }
         return { pass: true, detail: "no CI on the PR — nothing to gate on" };
       }
-      const failed = checks.filter((c) => /FAIL|ERROR|CANCEL/i.test(c.state));
+      const failed = checks.filter((c) => CHECK_FAILED.test(c.state));
       if (failed.length > 0) {
         return { pass: false, detail: `CI checks failed: ${failed.map((c) => c.name).join(", ")}` };
       }
-      const done = checks.filter((c) => !/PENDING|QUEUED|IN_PROGRESS|EXPECTED|ACTION_REQUIRED|WAITING/i.test(c.state));
+      const done = checks.filter((c) => !CHECK_PENDING.test(c.state));
       if (done.length === checks.length) return { pass: true, detail: "CI checks green" };
       if (Date.now() >= deadline) {
         return {
@@ -214,16 +248,27 @@ export async function waitChecks(
       await new Promise((r) => setTimeout(r, 15000));
       continue;
     }
-    const missing = names.filter((r) => !states.has(r));
-    const failed = names.filter((r) => /FAIL|ERROR|CANCEL/i.test(states.get(r) ?? ""));
+    // one name can carry several runs (the rollup listed three "VS Code PR
+    // Check" runs on one vscode PR): judge them all, like the ["*"] path does
+    const runs = (r: string) => checks.filter((c) => c.name === r);
+    const missing = names.filter((r) => runs(r).length === 0);
+    const failed = names.filter((r) => runs(r).some((c) => CHECK_FAILED.test(c.state)));
     if (failed.length > 0) {
       return { pass: false, detail: `required checks failed: ${failed.join(", ")}` };
     }
-    if (missing.length === 0) return { pass: true, detail: "required checks green" };
+    // present is not finished: a queued or running required check used to
+    // pass here the moment it appeared (harmless only while the rollup
+    // parse dropped every Actions check, so named checks never appeared)
+    const pending = names.filter((r) => runs(r).some((c) => CHECK_PENDING.test(c.state)));
+    if (missing.length === 0 && pending.length === 0) return { pass: true, detail: "required checks green" };
     if (Date.now() >= deadline) {
+      const why = [
+        missing.length ? `never reported: ${missing.join(", ")}` : "",
+        pending.length ? `never settled: ${pending.join(", ")}` : "",
+      ].filter(Boolean).join("; ");
       return {
         pass: false,
-        detail: `required checks never reported within ${Math.round(timeoutMs / 60000)}m: ${missing.join(", ")}`,
+        detail: `required checks not green within ${Math.round(timeoutMs / 60000)}m — ${why}`,
       };
     }
     await new Promise((r) => setTimeout(r, 15000));
