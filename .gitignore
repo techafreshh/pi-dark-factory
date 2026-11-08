@@ -2,4 +2,12 @@ node_modules/
 state/
 *.log
 .DS_Store
-dashboard-ui/node_modules/\ndashboard-ui/dist/
+__pycache__/
+# local tool state: another agent tool's plan scratch, and the skills.sh
+# installer's lock (its hash is upstream's, while .agents/skills/create-readme
+# is the adapted copy — an update from the lock would overwrite it)
+.zcode/
+skills-lock.json
+# dashboard-ui/dist/ is committed ON PURPOSE: bin/dashboard.ts serves it straight
+# from the checkout and deploys have no build step. After changing
+# dashboard-ui/src, rebuild (cd dashboard-ui && bun run build) and commit dist too.
