@@ -273,7 +273,7 @@ export function startFactoryd(opts: FactorydOpts) {
         // config/scenario VALIDATION rejections are client errors (422),
         // never server faults — same postmortem's "read as a server fault"
         if (
-          /outside the allowlist|must be an object|must set both provider and model|must be the bare model id|fallback (entries )?must be|is not a supported level|is not in the factory's models|rejected (runtime|holdout)\.json|^probe [^\s:]+:/i.test(
+          /config patch rejected|outside the allowlist|must be an object|must set both provider and model|must be the bare model id|fallback (entries )?must be|is not a supported level|is not in the factory's models|rejected (runtime|holdout)\.json|^probe [^\s:]+:/i.test(
             msg
           )
         )

@@ -7,7 +7,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadRepoConfig, parseModelString, resolveModels } from "./config";
+import { loadRepoConfig, parseModelString, parseRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch, type GhApi } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
@@ -1031,8 +1031,24 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
   const path = join(repoCfgDir(stateDir, slug), "config.json");
   if (!existsSync(path)) throw new Error("repo " + slug + " is not onboarded");
   const merged = deepMerge(JSON.parse(readFileSync(path, "utf8")), patch);
-  writeFileSync(path, JSON.stringify(merged, null, 2) + "\n");
-  loadRepoConfig(path); // re-validate shape
+  // validate the merged result BEFORE it lands: the old write-then-validate
+  // order answered the client with an error while the rejected value stayed
+  // on disk — and the next fleet tick, which loads every repo's config,
+  // crashed for every repo (a quoted "false" in pi.web was enough)
+  try {
+    parseRepoConfig(structuredClone(merged), path);
+  } catch (e: any) {
+    throw new Error(`config patch rejected, nothing written: ${e.message}`);
+  }
+  // write-then-rename: a tick re-reading configs mid-chain never sees a torn file
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n");
+    mvSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
   // config writes (models, env, timeouts) change lap inputs — blocked
   // issues get a fresh revive budget, same as scenario writes
   bumpInputsEpoch(stateDir, slug);

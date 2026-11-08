@@ -948,10 +948,20 @@ export function discoverConfigs(stateDir: string, slug?: string): RepoConfig[] {
     throw new Error(`no repos configured — nothing at ${reposDir}. Run: foreman onboard <owner/name>`);
   }
   if (slug) return [loadRepoConfig(join(reposDir, slug, "config.json"))];
-  return entries
-    .filter((e) => e !== "source")
-    .map((e) => loadRepoConfig(join(reposDir, e, "config.json")))
-    .sort((a, b) => a.slug.localeCompare(b.slug));
+  // one unreadable config costs only its own repo: this used to throw out of
+  // the fleet tick, so a single bad file stopped every repo until someone
+  // fixed it by hand. The skip is receipted every tick until it is fixed.
+  const cfgs: RepoConfig[] = [];
+  for (const e of entries) {
+    if (e === "source") continue;
+    try {
+      if (!statSync(join(reposDir, e)).isDirectory()) continue; // stray file, not a repo
+      cfgs.push(loadRepoConfig(join(reposDir, e, "config.json")));
+    } catch (err: any) {
+      repoReceipt(e, stateDir, `skipping ${e}: its config.json does not load — ${String(err?.message ?? err).slice(0, 300)} (fix the file; the rest of the fleet runs)`);
+    }
+  }
+  return cfgs.sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
 /**

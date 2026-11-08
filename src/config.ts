@@ -115,9 +115,15 @@ export function resolveModels(cfg: RepoConfig, stage: string): StageModels {
 }
 
 export function loadRepoConfig(path: string): RepoConfig {
-  const raw: any = JSON.parse(readFileSync(path, "utf8"));
+  return parseRepoConfig(JSON.parse(readFileSync(path, "utf8")), path);
+}
+
+/** Defaults + validation over a raw config object — the exact checks
+ *  loadRepoConfig runs on a file, callable BEFORE anything is written (the
+ *  config patch path validates its merged result here first). */
+export function parseRepoConfig(raw: any, where: string): RepoConfig {
   if (!raw.repo || !/^[^/\s]+\/[^/\s]+$/.test(raw.repo)) {
-    throw new Error(`config at ${path}: "repo" must be owner/name`);
+    throw new Error(`config at ${where}: "repo" must be owner/name`);
   }
   const cfg: RepoConfig = {
     repo: raw.repo,
