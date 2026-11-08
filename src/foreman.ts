@@ -23,7 +23,8 @@ Commands:
                                          [--prune] also close PR + delete branch + worktree
                                          [--force] override the in-progress guard (verify dead first)
   cleanup                             prune blocked worktrees' dep caches, kill stale pi,
-                                       reap leftover pdf-* instabox machines, report disk
+                                       reap leftover pdf-* lap machines (instabox + boxd),
+                                       report disk
 
 Options:
   --state-dir <path>    default: $PI_FACTORY_STATE or ./state

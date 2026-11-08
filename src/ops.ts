@@ -13,6 +13,7 @@ import { Gh, repoDefaultBranch, type GhApi } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
 import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
+import { boxdClientFromEnv } from "./machine-boxd";
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
 import { acquireRepoLock, releaseRepoLock } from "./lock";
@@ -1249,14 +1250,14 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
     }
   } catch {}
 
-  // instabox janitor — guarded: a LIVE lap's machine must never be reaped
-  // (its clone is the worktree), so only machines whose issue has no
-  // in_progress ledger row are deleted
+  // machine janitor (instabox + boxd) — guarded: a LIVE lap's machine must
+  // never be reaped (its clone is the worktree), so only machines whose issue
+  // has no in_progress ledger row are deleted
   try {
     const reaped = await reapOrphanMachines(stateDir, ledger, (m) => log.push(m));
-    if (reaped === 0) log.push("no orphaned instabox machines");
+    if (reaped === 0) log.push("no orphaned lap machines");
   } catch (e: any) {
-    log.push(`instabox cleanup skipped: ${e.message?.slice(0, 150)}`);
+    log.push(`machine cleanup skipped: ${e.message?.slice(0, 150)}`);
   }
   log.push("cleanup pass complete");
   receipt(stateDir, "cleanup pass complete");
@@ -1264,29 +1265,101 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
 }
 
 /**
- * InstaBox janitor: pdf-* machines are per-lap disposables, but a live lap's
- * machine must survive (its /data clone IS the worktree). A machine is an
- * orphan unless its issue's ledger row is in_progress — merged/blocked/no-row
- * machines (crashed laps, phantom platform records, de-onboarded repos) get
- * deleted. Runs at every tick's tail and inside `cleanup`.
+ * Lap-machine janitor, both machine lanes: pdf-* machines are per-lap
+ * disposables, but a live lap's machine must survive (its clone IS the
+ * worktree). A machine is an orphan unless its issue's ledger row is
+ * in_progress — merged/blocked/no-row machines (crashed laps, phantom
+ * platform records, de-onboarded repos) get deleted. Runs at every tick's
+ * tail and inside `cleanup`. `boxdClient` is a test seam.
  */
 export async function reapOrphanMachines(
   stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
-  log: (m: string) => void
+  log: (m: string) => void,
+  opts: { boxdClient?: any } = {}
 ): Promise<number> {
   const reposDir = join(stateDir, "repos");
   if (!existsSync(reposDir)) return 0;
   const instaboxBySlug = new Map<string, RepoConfig>();
+  const boxdBySlug = new Map<string, RepoConfig>();
   for (const slug of readdirSync(reposDir)) {
     const cfgPath = join(reposDir, slug, "config.json");
     if (!existsSync(cfgPath)) continue;
     try {
       const cfg = loadRepoConfig(cfgPath);
-      if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxBySlug.set(slug, cfg);
+      // keyed by the SANITIZED slug, the form machineNameFor writes into
+      // every machine name: a raw key would miss a slug that sanitizes
+      // differently and file its live machines under "unknown repo"
+      const key = sanitizeMachinePart(cfg.slug);
+      if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxBySlug.set(key, cfg);
+      if (cfg.env.mode === "boxd") boxdBySlug.set(key, cfg);
     } catch {}
   }
-  if (instaboxBySlug.size === 0) return 0;
+  let reaped = 0;
+  if (instaboxBySlug.size > 0) reaped += await reapInstaboxMachines(stateDir, ledger, log, instaboxBySlug);
+  if (boxdBySlug.size > 0) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
+  return reaped;
+}
+
+/**
+ * boxd lane of the janitor (the lane shipped without one, so a lap killed
+ * mid-flight left its box running until someone deleted it by hand). Only
+ * machines carrying the factory=1 label every lap machine is created with are
+ * considered — nothing else in the org is ever touched — and the live-lap
+ * guard reads the box's own repo label too, so a repo whose config is
+ * unreadable right now still keeps its in-flight box.
+ */
+async function reapBoxdMachines(
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void,
+  boxdBySlug: Map<string, RepoConfig>,
+  client?: any
+): Promise<number> {
+  let c = client;
+  if (!c) {
+    try {
+      c = boxdClientFromEnv();
+    } catch (e: any) {
+      log(`boxd janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+      return 0;
+    }
+  }
+  let reaped = 0;
+  try {
+    let machines: any[];
+    try {
+      const list = await c.machines.list({ region: "all", labels: { factory: "1" } });
+      machines = Array.isArray(list) ? list : (list?.machines ?? []);
+    } catch (e: any) {
+      log(`boxd janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+      return 0;
+    }
+    for (const m of machines) {
+      const hit = MACHINE_NAME_RE.exec(m.name ?? "");
+      if (!hit || m.labels?.factory !== "1") continue;
+      const repo = boxdBySlug.get(hit[1])?.repo ?? m.labels?.repo;
+      const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
+      if (row && row.state === "in_progress") continue; // a lap is live in it
+      try {
+        await c.machines.delete(m.id, m.region ? { region: m.region } : undefined);
+        reaped++;
+        log(`janitor deleted boxd machine ${m.name} (${row?.state ?? (repo ? "no ledger row" : "unknown repo")})`);
+      } catch (e: any) {
+        log(`janitor could not delete boxd machine ${m.name}: ${String(e?.message ?? e).slice(0, 120)}`);
+      }
+    }
+  } finally {
+    if (!client) await c.close?.().catch(() => {}); // only the client this pass opened
+  }
+  return reaped;
+}
+
+async function reapInstaboxMachines(
+  stateDir: string,
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void,
+  instaboxBySlug: Map<string, RepoConfig>
+): Promise<number> {
   const ib = InstaBox.fromEnv(instaboxBySlug.values().next().value!.env.instabox!);
   let machines;
   try {

@@ -298,9 +298,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   let pr: number | null = priorRow?.pr ?? null;
   let findings: string | null = null;
   let lastError = "attempts exhausted";
-  // instabox machine mode: one machine per issue's lap, created lazily at the
-  // first implement attempt and kept across repairs; destroyed when the lap
-  // books out (a crashed lap leaves it parked for reclaim + the janitor)
+  // machine modes (instabox/boxd): one machine per lap, created lazily at the
+  // first implement attempt and kept across this lap's repair rounds; the
+  // finally below destroys it however the lap ends (a reclaimed lap boots a
+  // fresh -g<lapId> machine, so nothing is ever parked for reuse)
   let machine: LapMachine | BoxdLapMachine | null = null;
 
   const recordStage = (
@@ -482,35 +483,18 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       machine ??= cfg.env.mode === "boxd"
         ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
         : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
-      let machRes: PiStageResult;
-      try {
-        machRes = await machine.callStage("implement", {
-          models: implModels,
-          prompt:
-            contextFor("implement", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + implPrompt,
-          systemPrompt: IMPLEMENTER_SYSTEM,
-          tools: stageTools(cfg, "implement", extensionPresent()),
-          extraArgs: cfg.pi.extra_args,
-          timeoutMs: stageMinutes(cfg, "implement") * 60_000,
-        });
-      } catch (e) {
-        // platform unavailable (ssh transport down / machine cap): the
-        // implementer never ran, so burning attempts and blocking the issue —
-        // which then chained re-boots of boxes into a dead platform (reins
-        // 2026-11-05: three laps, three machines, three minutes) — is pure
-        // churn. Defer instead: drop the claim, keep the attempt budget, let
-        // the next tick re-claim fresh. Self-heals when the platform does.
-        if (e instanceof InfraUnavailableError) {
-          lastError = `platform unavailable: ${e.message}`;
-          deps.ledger.endLap(lapId, "infra_deferred", lastError);
-          deps.ledger.dropIssue(cfg.repo, n);
-          repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
-          outcome = "infra_deferred";
-          break outer;
-        }
-        throw e;
-      }
-      machRes = machRes as PiStageResult;
+      // a platform failure (transport down, machine cap) throws
+      // InfraUnavailableError — the lap-level catch defers it, wherever the
+      // lap meets it (here, verify's in-box scenario, or review)
+      const machRes = (await machine.callStage("implement", {
+        models: implModels,
+        prompt:
+          contextFor("implement", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + implPrompt,
+        systemPrompt: IMPLEMENTER_SYSTEM,
+        tools: stageTools(cfg, "implement", extensionPresent()),
+        extraArgs: cfg.pi.extra_args,
+        timeoutMs: stageMinutes(cfg, "implement") * 60_000,
+      })) as PiStageResult & { raw?: string };
       if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
       implRes = machRes;
     } else {
@@ -547,7 +531,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const ahead = await commitsAheadRef(src, cfg.default_branch, branchName(n));
       if (ahead === 0) {
         lastError = "machine pushed no commits ahead of base — nothing was implemented";
-        findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + cfg.env.instabox.repo_dir + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
+        findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + repoDirFor(cfg) + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
         repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
@@ -751,7 +735,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // post-merge regression pass (archon-steal #1, report-only): re-probe the
     // merged main — the one tree no gate has seen when humans push between
     // laps. A failure files one deduped evidence issue; the chain moves on.
-    if (cfg.env.mode !== "instabox" && (cfg.scenario.runtime || cfg.scenario.holdout)) {
+    // Host/compose only: machine-mode repos already verify each lap inside
+    // their own box, and running their scenario here would put product code
+    // on the VPS (and file false regressions wherever the VPS lacks the box's
+    // toolchain — boxd repos used to slip through an instabox-only exclusion)
+    if ((cfg.env.mode === "host" || cfg.env.mode === "compose") && (cfg.scenario.runtime || cfg.scenario.holdout)) {
       try {
         const reg = await runPostMergeRegression(cfg, deps.gh, { stateDir, pr });
         const line = reg.pass
@@ -767,7 +755,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   }
 
   if (outcome === null) {
-    // attempts exhausted — blocked, notified, and never auto-re-picked
+    // attempts exhausted — blocked and notified; auto-revive (later ticks,
+    // daily cap + stagnation breaker) decides whether it gets a new budget
     deps.ledger.setIssue(cfg.repo, n, { state: "blocked", last_error: lastError });
     try {
       await deps.gh.issueComment(n, blockedComment(cfg, n, cfg.attempts, lastError, []));
@@ -776,12 +765,28 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     repoReceipt(cfg.slug, stateDir, `lap #${n} BLOCKED after ${cfg.attempts} attempts: ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
     outcome = "blocked";
   }
+  } catch (e) {
+    // the PLATFORM failed (exec/ssh transport down, org machine cap), not the
+    // work — at implement, in verify's in-box scenario, or at review (only
+    // implement used to be covered; a review-time transport error threw out
+    // of the lap, burned the attempt and re-booted a box into the same dead
+    // platform). Burning attempts there is pure churn (reins 2026-11-05:
+    // three laps, three machines, three minutes), so defer: drop the claim,
+    // keep the attempt budget, let the next tick re-claim fresh.
+    if (!(e instanceof InfraUnavailableError)) throw e;
+    lastError = `platform unavailable: ${e.message}`;
+    deps.ledger.endLap(lapId, "infra_deferred", lastError);
+    deps.ledger.dropIssue(cfg.repo, n);
+    repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
+    outcome = "infra_deferred";
   } finally {
-    // booked laps destroy their machine; a crashed lap leaves it parked for
-    // reclaim (paused — storage only) and the cleanup janitor to reap. The
-    // destroy itself never overrides the lap's outcome: a platform outage
-    // must not out-throw a MERGED verdict.
-    if (machine && outcome !== null) await machine.destroy().catch(() => {});
+    // every lap that ends in this process destroys its machine — one that
+    // threw included: a reclaimed lap boots a fresh -g<lapId> machine, so a
+    // parked box was never reused, only leaked (and boxd had no janitor to
+    // catch it). Only a killed process leaves a box behind, for the janitor.
+    // The destroy never overrides the lap's outcome: a platform outage must
+    // not out-throw a MERGED verdict.
+    if (machine) await machine.destroy().catch(() => {});
   }
   return outcome;
 }
