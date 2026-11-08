@@ -21,5 +21,7 @@ max_ms:3000                probe timeout for the runner
 Unknown tokens fail closed. A busy port (any listener, factory or not) fails the scenario before
 anything runs. Ports are reserved per-config at onboard time (config inventory + live probe).
 The same contract runs in every mode: host and compose execute it on the VPS (container mode
-inside the worker, ports published on `127.0.0.1`); instabox runs setup/start/teardown inside
-the machine with probes still host-side, through forwarded 127.0.0.1 ports.
+inside the worker, ports published on `127.0.0.1`); the machine modes (instabox, boxd) run every
+step (setup, start, readiness, probes, teardown) inside the machine over its exec channel,
+against the machine's own `127.0.0.1`. The scenario files stay in factory state either way;
+only their commands travel to the machine, per run.

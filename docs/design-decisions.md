@@ -18,14 +18,19 @@ era is answered here structurally — by mechanism, not by prompt:
 | Crash mid-lap = lost issue forever | **Reconciliation pass** every tick: a delivered-but-unbooked merge is detected from merged PRs and closed out; a crashed lap at the attempt cap is marked blocked and notified; a crashed lap below cap is resumable with its persisted `plan.md`. |
 
 Blocked issues (attempt cap exhausted, default 3) get a GitHub comment with the failure receipt,
-the last error, and the exact unblock command — and are **never** auto-retried, same for
-`factory:needs-info` parks.
+the last error, and the exact unblock command. Later ticks auto-revive a blocked issue with a
+fresh attempt budget, bounded by two fuses: at most 3 revives per issue per day, and none once
+the same failure signature has blocked 3 rounds in a row (a summary comment then asks for a
+human). A config or scenario write resets both fuses. `factory:needs-info` parks are never
+retried: a human answers in the issue body and removes the label.
 
 ## Ordering & concurrency (by design)
 
 A repo's backlog is a dependency chain: the slicer writes `Depends on: #n`, and a lap takes the
-repo's **oldest claimable issue** — one whose deps are all closed by merged PRs. One lap per repo
-per tick; the next tick (15 min later) takes the next link. Repos run concurrently with each
+repo's **oldest claimable issue** — one whose deps are all closed by merged PRs. Laps inside a
+repo run strictly one at a time: a merge re-intakes at once, so a tick chains up to 6 laps per
+repo inside a 12-minute budget (`PDF_CHAIN_BUDGET_MS`), re-syncing main before each, and the
+next tick takes the rest. Repos run concurrently with each
 other (`--concurrency N` / `PI_FACTORY_CONCURRENCY` caps cross-repo parallelism; default
 unlimited). The previous factory's runs supplied the evidence for this shape: serial delivery
 shipped 11 of 12 issues in perfect order with zero conflicts, while concurrent branches produced

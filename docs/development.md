@@ -1,14 +1,15 @@
 # Development — tests and the boundary rule
 
-`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, and full tick integration.
+`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, the boxd lane through a stubbed SDK client, and full tick integration.
 
 ## Development
 
 ```
 bun install
-bun test          # 210 tests: lenient parsers, ledger, probes, spawner (fake pi binary),
+bun test          # 322 tests: lenient parsers, ledger, probes, spawner (fake pi binary),
                   # scenario harness (real python3 server), instabox client (fake API),
                   # machine stages through a fake ssh gateway (real git), full machine-mode lap,
+                  # boxd exec wrapper + lap machine (stubbed SDK client),
                   # tick integration (real git, fake gh), parallel dispatcher,
                   # TinyFish web-tools client (stubbed API) + stage-tool wiring
 ```
@@ -34,7 +35,9 @@ Practice: when touching a boundary, paste the actual CLI/HTTP response into the 
 real python3). When a production failure contradicts a stub, the recorded shape gets fixed
 FIRST — the stub was the lie.
 
-No external runtime dependencies — `bun:sqlite` and the Bun standard library only. The only
-subprocesses the factory expects on its host: `git`, `gh`, `ssh` (instabox mode), optional
+One runtime dependency: `@boxd-sh/sdk` (boxd mode's machine lifecycle). `src/tick.ts` imports
+it statically, so every factory process needs it installed: a deploy that changes
+`package.json` runs `bun install`. Everything else is `bun:sqlite` and the Bun standard
+library. The only subprocesses the factory expects on its host: `git`, `gh`, `ssh` (instabox mode), optional
 `docker` (compose mode), and `pi` itself. Web grounding uses the TinyFish HTTP APIs from
 the bundled pi extension (network calls from stage agents only).

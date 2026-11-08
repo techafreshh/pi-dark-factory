@@ -1,8 +1,13 @@
-# Lap lifecycle — one lap per tick
+# Lap lifecycle
 
-Every tick, each repo runs at most one lap: the oldest claimable issue through six deterministic stages.
+Each repo works its claimable issues one lap at a time, oldest first, through six deterministic stages.
 
-## Lifecycle (one lap, per tick)
+A merge (or a block) re-intakes at once, so one tick chains up to 6 laps per repo inside a
+12-minute budget (`PDF_CHAIN_BUDGET_MS`), re-syncing the source checkout to main before each
+chained lap; whatever remains resumes on the next tick. Strict one-at-a-time order inside a
+repo is what keeps main conflict-free.
+
+## Lifecycle (one lap)
 
 1. **Intake** — deterministic: oldest open issue with no ledger row, no foreign PR claiming it,
    no unmet `Depends on: #n`, none of `skip_labels` (or the factory's `needs-info` label).

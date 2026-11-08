@@ -1,8 +1,8 @@
 # Execution modes — where the work runs
 
-Each repo picks one via `env.mode` in its config: host, compose, or instabox (disposable Firecracker machines).
+Each repo picks one via `env.mode` in its config: host, compose, instabox (disposable Firecracker machines) or boxd (disposable microVMs over the boxd SDK).
 
-## Where the work runs — three execution modes
+## Where the work runs — four execution modes
 
 Each repo picks one via `env.mode` in its config:
 
@@ -49,13 +49,39 @@ perfect reproducibility instead of shared caches:
   the foreman fetches the pushed branch and re-judges it from its own git truth. Plan stays
   host-side (read-only — no machine spend on `NO_ACTION`/failed-plan laps); merge and
   receipts stay host-side.
-- **Scenarios stay black-box**: setup and the foreground server run inside the machine;
-  probes run from the VPS against `ssh -L`-forwarded `127.0.0.1` ports. The scenario files
-  never exist inside the machine.
-- **Lifetimes**: one machine per issue's lap, reused across repair rounds and reclaimed
-  laps, destroyed when the lap books out; `foreman cleanup` reaps leftovers.
+- **Scenarios stay black-box**: setup, the foreground server, readiness, probes and teardown
+  all run inside the machine over its exec channel, against the machine's own `127.0.0.1`
+  (`ssh -L` forwards black-holed readiness polls in October 2026, so nothing is forwarded any
+  more). The scenario files stay in factory state; only their commands travel, per run.
+- **Lifetimes**: one machine per lap, kept across that lap's repair rounds and destroyed when
+  the lap ends (a reclaimed lap boots a fresh `-g<lapId>` machine). The janitor (every tick's
+  tail and `foreman cleanup`) reaps any `pdf-*` machine whose issue has no live lap.
 - **Env**: `INSTABOX_API_KEY` (or your `api_key_env`) in the service unit; model keys and
   `GITHUB_TOKEN` ride into each stage via `pass_env`. Concurrency is capped by your
   account (5 machines on the entry tier ≈ 5 concurrent laps). Docker is **not** needed
   on the VPS for machine-mode repos. The ClinePass router is a host-local service —
   machines cannot reach it, so machine-mode stages point their provider directly.
+
+### `"boxd"` — disposable microVMs over the boxd SDK
+
+[boxd](https://boxd.sh) machines run the same lap shape as instabox (plan host-side;
+implement, review and scenarios in a per-lap box), driven differently:
+
+- **Lifecycle** rides the official SDK (`@boxd-sh/sdk`): create from a snapshot, wait until
+  ready, delete. Config: `env.boxd.repo_dir` (the in-box clone, default `/home/boxd/repo`)
+  and `env.boxd.snapshot` (default `factory-base-boxd-r1`; aliases in
+  `state/base-snapshot.json` resolve as they do for instabox). The only secret is
+  `BOXD_API_KEY` in `factoryd.env`.
+- **Everything in-box rides one exec wrapper**, with no ssh and no tunnels. The payload runs
+  in its own `setsid` process group, the wrapper enforces the deadline inside the box (TERM,
+  then KILL) and frames stdout/stderr with a per-call nonce, because the SDK's server-side
+  exec timeout never surfaces under Bun. A hung transport throws a typed infra error.
+- **Platform failures defer the lap** (transport down, or the org machine cap still full after
+  the slot queue's 10-minute wait): the claim drops with the attempt budget intact and the
+  next tick re-claims. Same rule as instabox.
+- **Lifetimes**: as instabox, one box per lap, destroyed when the lap ends. The janitor
+  (every tick's tail and `foreman cleanup`) deletes `factory=1`-labelled boxes whose issue
+  has no live lap.
+- **No post-merge regression pass**: as with instabox, each lap's in-box verify is the
+  contract check, so a merge never runs product code on the VPS. (`scenario --test` still
+  benches boxd repos on the host; there is no boxd bench machine yet.)

@@ -10,8 +10,8 @@ Everything an operator touches day to day: the guided install, the remote client
 - A **GitHub account** — it hosts the product repos, issues and PRs the factory works on.
 - One or more **LLM provider API keys** (the stages' fuel; per-stage models and fallbacks
   are configured per repo).
-- Optional: **Docker** on the VPS for compose-mode repos; an **InstaBox API key** for
-  machine-mode repos; a **DNS domain** if you want remote control over HTTPS.
+- Optional: **Docker** on the VPS for compose-mode repos; an **InstaBox** or **boxd API key**
+  for machine-mode repos; a **DNS domain** if you want remote control over HTTPS.
 
 ### The guided install (on the server)
 
@@ -39,7 +39,7 @@ install into an agent walk-through instead of a script:
 **Done means**: `pi-factory.timer` armed (fires every 15 minutes), `pi-factoryd` green
 behind Caddy with its API key in `factoryd.env` (600), every model string proven by a live
 smoke call, the laptop able to `doctor` in over HTTPS — and, if you opted in, Docker or
-the InstaBox key wired into the service environment.
+the InstaBox / boxd key wired into the service environment.
 
 ### Day 2 — onboarding a project (back on your laptop)
 
@@ -96,8 +96,9 @@ bun src/foreman.ts cleanup                      # dep caches, stale pi workers, 
   worktrees/<slug>/issue-<n>/ # the only place agents ever work (host + compose modes)
 ```
 
-instabox machines are remote: the only local trace of a lap machine is its stage JSONLs in
-`issues/<n>/` — clones, sessions and the machine itself live and die on InstaBox's side.
+Machine-mode lap machines (instabox, boxd) are remote: the only local trace of one is its stage
+JSONLs in `issues/<n>/` — clones, sessions and the machine itself live and die on the
+platform's side.
 
 ## Models
 

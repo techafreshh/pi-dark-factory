@@ -4,7 +4,7 @@
 
 *An unattended software factory for the Pi coding agent — hand it a PRD, it builds the backlog*
 
-**TypeScript on Bun · zero external dependencies · `bun:sqlite` + the standard library only**
+**TypeScript on Bun · `bun:sqlite` + the standard library, plus one SDK for boxd mode**
 
 [What it is](#what-it-is) • [Safety model](#safety-model) • [Quickstart](#quickstart) • [Clients](#remote-clients) • [Docs](#docs)
 
@@ -21,9 +21,10 @@ intake → plan → implement → verify → review → squash-merge → close
 ```
 
 Every gate between stages is **deterministic** — git truth, GitHub checks, black-box HTTP
-probes — so the LLM is never trusted and an agent can never declare its own work done. One lap
-per repo per tick by design (dependency chains want strictly ordered delivery); repos fan out
-in parallel.
+probes — so the LLM is never trusted and an agent can never declare its own work done. Laps
+run strictly one at a time per repo, in dependency order: a merge re-intakes at once, so a
+tick chains up to 6 laps per repo inside a 12-minute budget and the next tick takes the rest.
+Repos fan out in parallel.
 
 From your **laptop** everything is remote: the factory exposes an HTTPS API (`factoryd`) —
 onboard repos, slice PRDs, watch laps, unblock, clean up — **no SSH after install day**.
@@ -38,9 +39,11 @@ The engine is built so that autonomy can only deliver what deterministic checks 
   from factory state — the agent can never tune against its own acceptance tests.
 - **The agent commits and pushes; the foreman opens the PR** and re-judges the pushed branch
   from its own git truth.
-- **Attempt caps and human parks.** A failed lap retries within the cap, then a GitHub
-  comment carries the failure receipt and the exact unblock command — never an auto-retry.
-  Missing product decisions escape as `factory:needs-info` questions for a human.
+- **Attempt caps and human parks.** A failed lap retries within the cap, then blocks with a
+  GitHub comment carrying the failure receipt and the exact unblock command. Later ticks
+  auto-revive a blocked issue at most 3 times a day, and stop for a human once the same
+  failure repeats 3 rounds in a row. Missing product decisions escape as `factory:needs-info`
+  questions for a human.
 - **Web grounding is untrusted data**, never instructions: lap agents verify external
   API/endpoint claims against live docs by default (`web_search` + `web_fetch`, per-repo
   toggleable).
@@ -52,7 +55,7 @@ evidence that shaped ordering and concurrency rules — is in
 ## Quickstart
 
 You need a VPS (Ubuntu + systemd is the tested shape), a GitHub account for the product repos,
-and LLM provider API keys. Optional: Docker (compose-mode repos), an InstaBox API key
+and LLM provider API keys. Optional: Docker (compose-mode repos), an InstaBox or boxd API key
 (machine-mode repos), a DNS domain (remote control over HTTPS).
 
 ```sh
@@ -107,12 +110,12 @@ Full verb manuals: [cli/README.md](cli/README.md).
 ## Repo map
 
 ```
-src/                 the engine: ledger, tick, stages, gates, instabox + compose drivers, factoryd
+src/                 the engine: ledger, tick, stages, gates, instabox + boxd + compose drivers, factoryd
 pi-skills/           skill content shipped into every lap agent (ui router, agent-browser, …)
 cli/                 the @techafresh/dark-factory npm client
-bin/factory-remote   the Python client
+bin/factory-remote   the Python client (deprecated)
 templates/           repo config + scenario templates
-test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps (300 tests)
+test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps (322 tests)
 docs/                deep dives (below)
 ```
 
@@ -122,7 +125,7 @@ docs/                deep dives (below)
 |---|---|
 | [Design decisions](docs/design-decisions.md) | every failure class of the previous engine, answered structurally |
 | [Lap lifecycle](docs/lap-lifecycle.md) | the six stages of one lap, in detail |
-| [Execution modes](docs/execution-modes.md) | host · compose · instabox (Firecracker machines) |
+| [Execution modes](docs/execution-modes.md) | host · compose · instabox · boxd (disposable microVMs) |
 | [Operations](docs/operations.md) | guided install, remote clients, commands, state layout, models, safe deploys |
 | [Scenarios](docs/scenarios.md) | the black-box probe contract and its grammar |
 | [Web & skills](docs/web-and-skills.md) | TinyFish grounding and the factory skill channel |
@@ -137,6 +140,7 @@ docs/                deep dives (below)
 - GitHub-centric by design: issues, PRs, checks and labels are the protocol.
 - Runtime verification assumes products that can serve HTTP on reserved local ports (the
   scenario contract).
-- Machine mode is bounded by your InstaBox account (entry tier ≈ 5 concurrent machines).
+- Machine modes are bounded by your platform's machine cap (InstaBox entry tier ≈ 5
+  concurrent machines; boxd: your org's limit).
 - Lap and backlog mutations spend real provider tokens; budgets are per-stage timeouts and
   attempt caps, not dollar meters.

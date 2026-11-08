@@ -55,8 +55,10 @@ export interface RepoConfig {
    * anything freely; the host stays clean.
    * "instabox" = implement+review run inside a disposable InstaBox microVM
    * (https://instabox.sh) booted from the repo's golden snapshot; the plan
-   * stage stays host-side (read-only), probes stay host-side through SSH
-   * port forwards. The host needs no Docker at all.
+   * stage stays host-side (read-only), and every scenario step runs in the
+   * box against its own loopback. The host needs no Docker at all.
+   * "boxd" = the same lap shape on boxd.sh microVMs (SDK lifecycle, exec
+   * transport; see env.boxd below).
    */
   env: {
     mode: "host" | "compose" | "instabox" | "boxd";
