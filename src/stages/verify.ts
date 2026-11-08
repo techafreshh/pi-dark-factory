@@ -298,11 +298,17 @@ export async function runPostMergeRegression(
       "This issue is evidence, not a repair order — the next lap or a human decides.",
     ].join("\n");
     let issue: number | null = null;
+    let notFiled = "";
     try {
-      const open = await gh.issueListOpen(100);
+      const open = await gh.issueList("open", 100);
       if (!open.some((i) => i.title === title)) issue = await gh.issueCreate(title, body);
-    } catch {}
-    return { pass: false, summary, issue };
+    } catch (e) {
+      // still never fatal to the chain, but no longer silent: a bare catch
+      // here hid a call to issueListOpen — a method GhApi never had — so not
+      // one regression issue was ever filed
+      notFiled = `\n(regression issue NOT filed: ${e instanceof Error ? e.message : String(e)})`;
+    }
+    return { pass: false, summary: summary + notFiled, issue };
   } finally {
     await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
     rmSync(tmpRoot, { recursive: true, force: true });

@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 /** Minimal GhApi stub recording calls — fileDiscoveries only touches
- *  issueListOpen / issueCreate / issueAddLabels. */
+ *  issueList("open") / issueCreate / issueAddLabels. */
 function stubGh(opts: { openTitles?: string[] } = {}) {
   const calls: { created: [string, string][]; labeled: [number, string[]][] } = { created: [], labeled: [] };
   const open: IssueLite[] = (opts.openTitles ?? []).map((title, i) => ({ number: 55 + i, title, body: "", headRefName: "", labels: [] }));
