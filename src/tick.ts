@@ -702,19 +702,23 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- MERGE (all gates green + APPROVE)
-    // TOCTOU guard: re-read the PR head and refuse on anything but the exact
-    // sha verify probed — missing or inconclusive evidence holds the merge
-    // (archon-steal #6; a gh blip here costs one attempt, not a wrong merge)
-    if (v.provenance?.prHead) {
-      const nowHead = await deps.gh.prHeadSha(pr).catch(() => null);
-      if (nowHead !== v.provenance.prHead) {
-        lastError = `merge refused: PR #${pr} head moved after verify (${v.provenance.prHead.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`;
-        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
-        continue outer;
-      }
+    // TOCTOU guard: merge exactly the sha verify probed. No anchor (verify
+    // could not read the PR head) now holds the merge — it used to skip the
+    // check and merge whatever the head was — and GitHub enforces the sha
+    // itself (--match-head-commit), closing the window between this re-read
+    // and the merge call. (archon-steal #6; a gh blip here costs one
+    // attempt, not a wrong merge)
+    const probedHead = v.provenance?.prHead ?? null;
+    const nowHead = probedHead ? await deps.gh.prHeadSha(pr).catch(() => null) : null;
+    if (!probedHead || nowHead !== probedHead) {
+      lastError = probedHead
+        ? `merge refused: PR #${pr} head moved after verify (${probedHead.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`
+        : `merge refused: verify could not read PR #${pr}'s head sha, so there is no anchor to merge against`;
+      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
+      continue outer;
     }
-    await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch);
+    await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, probedHead);
     try {
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);

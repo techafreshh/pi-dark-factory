@@ -2,6 +2,8 @@ import type { GhApi } from "../gh";
 import type { Ledger } from "../ledger";
 import type { IssueLite, RepoConfig } from "../types";
 
+const INTAKE_ISSUE_LIMIT = 1000;
+
 export function branchName(n: number) {
   return `factory/issue-${n}`;
 }
@@ -84,7 +86,10 @@ export async function listClaimableDetailed(
   gh: GhApi,
   dependsCache: Map<number, boolean> = new Map()
 ): Promise<{ claimable: IssueLite[]; skips: IntakeSkips }> {
-  const issues = (await gh.issueList("open", 100)).slice().sort((a, b) => a.number - b.number);
+  // gh lists newest first, so a cap of 100 hid a big backlog's OLDEST issues
+  // — the very ones intake must take first. 1000 costs nothing below 100 open
+  // (gh stops paging when a page comes back short).
+  const issues = (await gh.issueList("open", INTAKE_ISSUE_LIMIT)).slice().sort((a, b) => a.number - b.number);
   const prs = await gh.prListOpen();
   const claimable: IssueLite[] = [];
   const skips: IntakeSkips = { ledgerClosed: [], prClaimed: [], labelSkipped: [], depGated: [], openCount: issues.length };

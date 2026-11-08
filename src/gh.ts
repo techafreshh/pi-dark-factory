@@ -58,7 +58,7 @@ export interface GhApi {
   prClose(n: number): Promise<void>;
   prChecks(n: number): Promise<CheckState[]>;
   prHeadSha(n: number): Promise<string | null>;
-  prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<void>;
+  prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean, matchHeadCommit?: string): Promise<void>;
 }
 
 async function ghJson<T>(repo: string, args: string[]): Promise<T> {
@@ -185,9 +185,12 @@ export class Gh implements GhApi {
     return typeof raw?.headRefOid === "string" && raw.headRefOid ? raw.headRefOid : null;
   }
 
-  async prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<void> {
+  async prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean, matchHeadCommit?: string): Promise<void> {
     const args = ["gh", "pr", "merge", String(n), "--repo", this.repo, `--${method}`];
     if (deleteBranch) args.push("--delete-branch");
+    // GitHub refuses the merge unless the head is still this sha — the
+    // TOCTOU guard enforced server-side, atomically with the merge
+    if (matchHeadCommit) args.push("--match-head-commit", matchHeadCommit);
     await shOk(await sh(args), "gh pr merge");
   }
 }

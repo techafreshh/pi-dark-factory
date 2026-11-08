@@ -67,6 +67,10 @@ class FakeGh implements GhApi {
   prChecks(n: number): Promise<CheckState[]> {
     return Promise.resolve([]);
   }
+  // merges anchor on the head sha verify read (TOCTOU guard): no sha, no merge
+  prHeadSha(n: number): Promise<string | null> {
+    return Promise.resolve("f".repeat(40));
+  }
   prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean): Promise<void> {
     this.merged.push(n);
     return Promise.resolve();
