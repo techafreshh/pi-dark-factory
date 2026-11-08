@@ -1067,6 +1067,21 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
     try {
       Object.assign(cfg, loadRepoConfig(join(stateDir, "repos", cfg.slug, "config.json")));
     } catch {}
+    // chained laps re-sync main first: prepareRepo's fetch + hard reset runs
+    // once per tick, so laps 2..N used to plan in a checkout missing the
+    // merges made earlier in the SAME chain — exactly the dependent issues a
+    // chain unblocks (and machine mode's host-side gates diffed against that
+    // stale origin/main). A failed refresh stops the chain instead of
+    // planning on stale code; the next tick resumes it.
+    if (laps > 0) {
+      try {
+        await withSourceLock(cfg.slug, () => ensureSource(stateDir, cfg));
+      } catch (e: any) {
+        repoReceipt(cfg.slug, stateDir, `could not refresh the source checkout before #${issue.number}: ${e.message?.slice(0, 200)} — stopping ${cfg.slug}'s chain; the next tick resumes it`);
+        endedQuietly = true;
+        break;
+      }
+    }
     laps++;
     let lapOutcome: string | null = null;
     try {
