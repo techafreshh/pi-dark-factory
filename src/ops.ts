@@ -29,6 +29,12 @@ import type { RepoConfig } from "./types";
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
 const wtRoot = (stateDir: string, slug: string) => join(stateDir, "worktrees", slug);
 
+/** A repo slug is a GitHub repo name, and it becomes a path segment under
+ *  state/repos — so anything else ("..", "a/b", a NUL) is refused at the
+ *  boundary: an encoded %2F in an API path once decoded to "../../x" and
+ *  read a config.json from outside state/repos. */
+export const SAFE_SLUG = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
+
 // ── reads ────────────────────────────────────────────────────────────────────
 
 export interface OpsStatus {
@@ -162,6 +168,7 @@ export async function opsOnboard(
 > {
   if (!/^[^/\s]+\/[^/\s]+$/.test(target)) throw new Error(`expected owner/name, got "${target}"`);
   const slug = target.split("/")[1];
+  if (!SAFE_SLUG.test(slug)) throw new Error(`bad repo name "${slug}": expected a GitHub repo name (letters, digits, ".", "_", "-")`);
   if (existsSync(join(repoCfgDir(stateDir, slug), "config.json"))) {
     return { already: true, slug, config_path: join(repoCfgDir(stateDir, slug), "config.json") };
   }

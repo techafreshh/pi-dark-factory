@@ -11,7 +11,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readBases, readSharedBase } from "./sharedbase";
-import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig } from "./ops";
+import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
 import { beginTick } from "./tick";
 import {
   newRenderState,
@@ -80,7 +80,20 @@ export function startFactoryd(opts: FactorydOpts) {
       const key = req.headers.get("x-api-key");
       if (acceptedKeys.length === 0 || !key || !acceptedKeys.includes(key))
         return fail(401, "bad or missing X-Api-Key");
-      const slug = decodeURIComponent(/^\/repos\/([^/]+)/.exec(path)?.[1] ?? "");
+      // the slug becomes a path segment under state/repos (and the session
+      // lookup's issues dir): decode it, then refuse anything that is not a
+      // GitHub repo name — "..%2F..%2Fx" used to decode into a path that
+      // read a config.json from outside state/repos
+      const slugSeg = /^\/(?:repos|session)\/([^/]+)/.exec(path)?.[1];
+      let slug = "";
+      if (slugSeg !== undefined) {
+        try {
+          slug = decodeURIComponent(slugSeg);
+        } catch {
+          return fail(400, "bad repo slug: malformed percent-encoding");
+        }
+        if (!SAFE_SLUG.test(slug)) return fail(400, `bad repo slug ${JSON.stringify(slug.slice(0, 80))}: expected a GitHub repo name`);
+      }
       const tickEnd = /^\/repos\/[^/]+\/(tick|backlog|unblock)$/.exec(path)?.[1];
 
       try {
@@ -96,7 +109,8 @@ export function startFactoryd(opts: FactorydOpts) {
           );
         }
         if (req.method === "GET" && /^\/session\//.test(path)) {
-          const sslug = decodeURIComponent(/^\/session\/([^/]+)/.exec(path)![1]);
+          if (!slug) return fail(400, "usage: GET /session/<slug>[?issue=N&think=1&follow=1]");
+          const sslug = slug;
           const issueParam = url.searchParams.get("issue");
           const file = newestSessionFileForSlug(opts.stateDir, sslug, issueParam ? Number(issueParam) : undefined);
           if (!file) return fail(404, `no session file for repo ${sslug} — has any lap run yet?`);
@@ -273,7 +287,7 @@ export function startFactoryd(opts: FactorydOpts) {
         // config/scenario VALIDATION rejections are client errors (422),
         // never server faults — same postmortem's "read as a server fault"
         if (
-          /config patch rejected|outside the allowlist|must be an object|must set both provider and model|must be the bare model id|fallback (entries )?must be|is not a supported level|is not in the factory's models|rejected (runtime|holdout)\.json|^probe [^\s:]+:/i.test(
+          /config patch rejected|bad repo name|outside the allowlist|must be an object|must set both provider and model|must be the bare model id|fallback (entries )?must be|is not a supported level|is not in the factory's models|rejected (runtime|holdout)\.json|^probe [^\s:]+:/i.test(
             msg
           )
         )

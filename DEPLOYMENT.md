@@ -49,6 +49,9 @@ gh auth login        # or export GH_TOKEN in the service unit
 # ClinePass multi-key router: the setup skill installs pi-keyrouter.service (port 8099);
 # keys go in /home/factory/state/clinepass.keys (one per line, 600 — live-reloaded).
 # Provider wiring: templates/pi-models.clinepass-router.json -> ~/.pi/agent/models.json.
+# Access token: set CRPASS_ROUTER_TOKEN on the unit (EnvironmentFile, 600) and the same value
+# as the clinepass-rotator apiKey in models.json — without it the router is open to every
+# container on the docker networks (docs/keyrouter.md).
 ```
 
 ## 3. Factory code + state

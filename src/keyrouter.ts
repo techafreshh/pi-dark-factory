@@ -9,7 +9,14 @@
  * reset window from ClinePass's own error text ("The limit resets in 4d 5h")
  * and cool that key exactly that long; other keys keep serving. SSE streams
  * pass straight through.
+ *
+ * Access: with CRPASS_ROUTER_TOKEN set, every proxied call and /pool must
+ * carry `Authorization: Bearer <token>` — pi sends its provider apiKey that
+ * way, so the router provider's apiKey in models.json IS the token. /health
+ * stays open (pool counts only). Unset = the old open router, for installs
+ * that have not provisioned a token yet.
  */
+import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 const VERSION = "0.1.0";
@@ -129,6 +136,17 @@ export class KeyPool {
 
 const FORWARD_HEADERS = ["content-type", "accept", "user-agent"];
 
+/** The router's own access check (never an upstream key): a constant-time
+ *  compare of the caller's bearer token. Every container on the host's docker
+ *  networks can reach :8099 through the firewall, so without this any of
+ *  them could spend the pool. */
+function bearerOk(req: Request, token: string): boolean {
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("authorization") ?? "");
+  if (!m) return false;
+  const digest = (s: string) => createHash("sha256").update(s).digest();
+  return timingSafeEqual(digest(m[1]), digest(token));
+}
+
 const hopByHop = (h: Headers) => {
   const out: Record<string, string> = {};
   h.forEach((v, k) => {
@@ -144,6 +162,8 @@ export function startKeyrouter(opts: {
   upstream: string;
   stateFile?: string;
   defaultCoolMs?: number;
+  /** when set, proxied calls and /pool require `Authorization: Bearer <token>` */
+  token?: string;
 }) {
   const pool = new KeyPool([], { stateFile: opts.stateFile, defaultCoolMs: opts.defaultCoolMs });
   pool.reload(opts.keysFile);
@@ -237,6 +257,12 @@ export function startKeyrouter(opts: {
       if (url.pathname === "/health") {
         return Response.json({ ok: true, service: "clinepass-keyrouter", version: VERSION, pool: pool.stats() });
       }
+      if (opts.token && !bearerOk(req, opts.token)) {
+        return Response.json(
+          { error: { message: "keyrouter: missing or wrong router token (Authorization: Bearer <CRPASS_ROUTER_TOKEN>)" } },
+          { status: 401 }
+        );
+      }
       if (url.pathname === "/pool") {
         pool.reload(opts.keysFile);
         return Response.json({ ...pool.stats(), pins: pool.pinCount(), detail: stats_detail(pool) });
@@ -262,6 +288,7 @@ if (import.meta.main) {
   const port = Number(process.env.CRPASS_PORT ?? 8099);
   const upstream = process.env.CRPASS_UPSTREAM ?? "https://api.cline.bot/api";
   const stateFile = process.env.CRPASS_STATE_FILE ?? `${keysFile}.state.json`;
-  startKeyrouter({ port, keysFile, upstream, stateFile });
-  console.log(`clinepass keyrouter v${VERSION} on :${port} -> ${upstream} (keys: ${keysFile})`);
+  const token = process.env.CRPASS_ROUTER_TOKEN?.trim() || undefined;
+  startKeyrouter({ port, keysFile, upstream, stateFile, token });
+  console.log(`clinepass keyrouter v${VERSION} on :${port} -> ${upstream} (keys: ${keysFile}; ${token ? "router token required" : "OPEN: no CRPASS_ROUTER_TOKEN"})`);
 }

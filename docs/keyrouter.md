@@ -13,6 +13,13 @@ ClinePass's own text ("The limit resets in 4d 5h") and cools that key **exactly*
 SSE streams pass through untouched. All keys cooling → a plain 429 (add a key, it's picked up
 live). Cooldowns persist across restarts. `curl :8099/health` / `/pool` shows the damage.
 
+**Access token.** ufw lets every container on the host's docker networks (10.0.0.0/8) reach
+:8099, so an open router lets any of them spend the pool. Set `CRPASS_ROUTER_TOKEN` on the
+`pi-keyrouter` unit (an `EnvironmentFile`, mode 600) and every proxied call and `/pool` then
+require `Authorization: Bearer <token>`; `/health` stays open with pool counts only. pi sends
+a provider's `apiKey` exactly that way, so set the `clinepass-rotator` entry's `apiKey` in
+`models.json` to the same token. Unset, the router stays open (it logs `OPEN` at start).
+
 Wiring (one-time, on the VPS): merge `templates/pi-models.clinepass-router.json` into the
 factory user's `~/.pi/agent/models.json`, put your keys in `~/state/clinepass.keys`, and point
 repo configs at `provider: "clinepass-rotator"`. `host.docker.internal` resolves both on the
