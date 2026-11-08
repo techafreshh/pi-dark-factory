@@ -45,7 +45,11 @@ export function parseVerdict(text: string): { verdict: Verdict; findings: string
   let verdict: Verdict | null = m ? m[1].toLowerCase() as Verdict : null;
   if (!verdict) {
     const first = (text.trim().split("\n").find((l) => l.trim()) ?? "").trim();
-    if (/^(approve|reject)\b/i.test(first)) verdict = first.toLowerCase() as Verdict;
+    // keep only the matched word: storing the whole line ("reject: missing
+    // tests") produced a verdict that equalled neither "approve" nor
+    // "reject", and the lap's reject check let it through to the merge
+    const word = /^(approve|reject)\b/i.exec(first);
+    if (word) verdict = word[1].toLowerCase() as Verdict;
   }
   if (!verdict) return { verdict: "unparseable", findings: text };
   // findings = everything except the verdict line

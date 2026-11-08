@@ -707,7 +707,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           repoReceipt(cfg.slug, stateDir, `discoveries auto-file errored (harvest preserved): ${e instanceof Error ? e.message : e}`);
         }
     }
-    if (verdict.verdict === "reject") {
+    // merge only on an explicit APPROVE — anything else is a reject, so a
+    // verdict value this code never anticipated fails closed, not open
+    if (verdict.verdict !== "approve") {
       findings = verdict.findings;
       lastError = `review rejected:\n${findings}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
