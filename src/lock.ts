@@ -81,3 +81,15 @@ export function acquireRepoLock(stateDir: string, slug: string): boolean {
 export function releaseRepoLock(stateDir: string, slug: string) {
   lockRelease(join(stateDir, repoLockName(slug)));
 }
+
+/** Read-only: is a live factory process holding this repo's tick lock? The
+ *  scheduler asks before it spawns a tick process, and never writes the lock
+ *  itself (the child acquires it). */
+export function repoLockHeld(stateDir: string, slug: string): boolean {
+  try {
+    const pid = parseInt(readFileSync(join(stateDir, repoLockName(slug)), "utf8").trim(), 10);
+    return Number.isFinite(pid) && isAlive(pid) && looksLikeFactory(pid);
+  } catch {
+    return false; // no lock file
+  }
+}

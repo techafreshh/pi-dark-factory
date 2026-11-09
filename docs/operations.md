@@ -121,11 +121,37 @@ Two code surfaces load differently — a `git pull` reaches only one of them:
 
 - **Timer ticks** (pi-factory.service, every 15 min) spawn a fresh process from the checkout
   per firing — a pull lands at the next tick, safe mid-lap.
-- **The daemon** (pi-factoryd, :8077) dispatches slug-scoped ticks (`dark-factory tick SLUG`)
-  **in-process** (`factoryd.ts` → `beginTick`), so it runs its START-TIME code forever. A pull
-  without a restart leaves every daemon-dispatched tick on the old behavior — observed
-  2026-11-01: the discovery drain-first policy was on disk but scoped ticks kept alternating
-  until the restart. Any change to tick behavior (intake, stages, gates, merge) therefore ends
-  with `sudo systemctl restart pi-factoryd` — safe anytime EXCEPT while laps are in flight
-  (they run inside the daemon; restarting kills them mid-stage). Wait for the per-repo tick
-  locks to release first, restart, then resume.
+- **The daemon** (pi-factoryd, :8077) serves the API. Since the scheduler change, a
+  slug-scoped tick (`dark-factory tick SLUG`) runs as its own `foreman tick --repo SLUG`
+  process, so it loads the code on disk at start like a timer tick does. The daemon itself
+  keeps its start-time code (API routes, the scheduler loop) until it restarts, so a change
+  to `factoryd.ts`, `ops.ts` or `scheduler.ts` still ends with
+  `sudo systemctl restart pi-factoryd`. Under the default `KillMode=control-group`, that
+  restart kills every tick process the daemon started; with the scheduler setup below it
+  leaves them running.
+
+### Daemon scheduler (replaces the timer)
+
+The timer runs the whole fleet as one oneshot service, and systemd cannot start that service
+again while it runs: one repo with a long lap delays every other repo's next tick (33 of 311
+ticks overran their slot in the week to 2026-11-09, the longest by 111 minutes). The daemon
+can schedule instead, starting one tick process per idle repo on the quarter hour:
+
+```sh
+sudo mkdir -p /etc/systemd/system/pi-factoryd.service.d
+sudo tee /etc/systemd/system/pi-factoryd.service.d/scheduler.conf >/dev/null <<'EOF'
+[Service]
+Environment=PDF_SCHEDULER_MINUTES=15
+# a restart stops only the daemon; the tick processes it started run their
+# laps to the end (each holds its repo's pidfile, so nothing double-runs)
+KillMode=process
+EOF
+sudo systemctl daemon-reload
+sudo systemctl disable --now pi-factory.timer   # one scheduler, not two
+sudo systemctl restart pi-factoryd              # this one restart still needs idle laps
+curl -s localhost:8077/health | grep scheduler_minutes   # 15
+```
+
+From then on a deploy is `git pull` (plus `bun install` when `package.json` changed) and
+`sudo systemctl restart pi-factoryd`, at any time. `PI_FACTORY_CONCURRENCY` caps how many
+repo ticks run at once. To go back: remove the drop-in, `daemon-reload`, re-enable the timer.

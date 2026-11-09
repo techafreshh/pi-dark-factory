@@ -147,6 +147,10 @@ systemctl list-timers pi-factory.timer
 systemd never overlaps the same service, and the foreman's pidfile additionally guards a manual
 `tick` against the scheduled one.
 
+The timer is the simple setup. The daemon can schedule instead (one tick process per repo, so
+a long lap no longer delays the other repos, and daemon restarts stop killing laps): see
+"Daemon scheduler" in `docs/operations.md`.
+
 ## 5. First project (greenfield)
 
 ```sh

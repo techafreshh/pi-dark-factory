@@ -79,6 +79,16 @@ describe("factoryd (remote-control API)", () => {
     expect(body.queued).toBe(true);
   });
 
+  test("tick answers 409 while the repo's tick lock is held by a live factory process", async () => {
+    // the test runner works from the checkout, so its own pid reads as a factory holder
+    writeFileSync(join(dir, "tick-busy.lock"), `${process.pid}\n`);
+    const r = await fetch(base + "repos/busy/tick", { method: "POST", headers: { "x-api-key": "test-key" }, body: "{}" });
+    expect(r.status).toBe(409);
+    const body = (await r.json()) as any;
+    expect(body.queued).toBe(false);
+    expect(body.skipped).toContain("already live");
+  });
+
   test("models serves the live provider roster without keys", async () => {
     const r = await fetch(base + "models", { headers: { "x-api-key": "test-key" } });
     expect(r.status).toBe(200);

@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { readBases, readSharedBase } from "./sharedbase";
 import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
-import { beginTick } from "./tick";
+import { repoLockHeld } from "./lock";
+import { spawnRepoTick, startScheduler } from "./scheduler";
 import {
   newRenderState,
   newestSessionFileForSlug,
@@ -66,6 +67,8 @@ export function startFactoryd(opts: FactorydOpts) {
           // skills say the token and NEVER a version; this answer is the truth
           shared_base: readSharedBase(opts.stateDir),
           bases: readBases(opts.stateDir),
+          // null = the systemd timer schedules ticks; a number = this daemon does
+          scheduler_minutes: Number(process.env.PDF_SCHEDULER_MINUTES ?? 0) > 0 ? Number(process.env.PDF_SCHEDULER_MINUTES) : null,
         });
       }
 
@@ -251,14 +254,15 @@ export function startFactoryd(opts: FactorydOpts) {
           );
         }
         if (req.method === "POST" && tickEnd === "tick") {
-          // lock acquisition is synchronous — the reply is TRUE, not hopeful:
-          // a skipped tick answers 409 with the reason (a slug-scoped tick
-          // only waits on its OWN repo's lock, never a neighbor's churn)
-          const b = beginTick({ stateDir: opts.stateDir, repoSlug: slug });
-          if (!b.started) {
-            return respond({ queued: false, skipped: b.reason, hint: "retry when the running tick settles — logs --tail shows the live activity" }, 409);
+          // a tick is its own `foreman tick --repo` process (src/scheduler.ts):
+          // fresh code from disk every time, and a daemon restart no longer
+          // takes the lap down with it. The child takes the repo lock itself;
+          // a lock already held answers 409 now, so the reply stays honest
+          // (a slug-scoped tick only waits on its OWN repo's lock)
+          if (repoLockHeld(opts.stateDir, slug)) {
+            return respond({ queued: false, skipped: `a tick for ${slug} is already live (per-repo pidfile)`, hint: "retry when the running tick settles — logs --tail shows the live activity" }, 409);
           }
-          void b.run.catch(() => {});
+          spawnRepoTick(opts.stateDir, slug);
           return respond({ queued: true, slug, note: "lap dispatched — watch GET /status (per-repo pidfile arbitrates with the systemd timer)" });
         }
         if (req.method === "POST" && tickEnd === undefined && path.endsWith("/pause")) {
@@ -308,4 +312,13 @@ if (import.meta.main) {
   const port = Number(process.env.FACTORYD_PORT ?? 8077);
   startFactoryd({ stateDir, port, key });
   console.log(`factoryd v${VERSION} listening on :${port} (state: ${stateDir})`);
+  // opt-in scheduler: with PDF_SCHEDULER_MINUTES=15 the daemon replaces the
+  // systemd timer, starting one tick process per idle repo on the quarter
+  // hour (disable pi-factory.timer when this is on; docs/operations.md)
+  const every = Number(process.env.PDF_SCHEDULER_MINUTES ?? 0);
+  if (Number.isFinite(every) && every > 0) {
+    const cap = Number(process.env.PI_FACTORY_CONCURRENCY ?? 0);
+    startScheduler(stateDir, every * 60_000, Number.isFinite(cap) ? cap : 0);
+    console.log(`scheduler on: a tick process per idle repo every ${every} min${cap > 0 ? `, at most ${cap} at once` : ""}`);
+  }
 }
