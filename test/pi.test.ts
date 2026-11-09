@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildPiArgs, callPi, callPiWithFallback } from "../src/pi";
+import { billingFailure, buildPiArgs, callPi, callPiWithFallback } from "../src/pi";
 import type { ModelSpec, StageModels } from "../src/types";
 
 let fixtureDir: string;
@@ -212,4 +212,27 @@ describe("callPiWithFallback (hot model failover)", () => {  const models = (bas
       delete process.env.FAKE_MODE;
     }
   }, 10000);
+});
+
+describe("billingFailure (errors no retry can fix)", () => {
+  const pe = (error: string) => ({ kind: "provider_error" as const, error });
+
+  test("the recorded out-of-credit shape is a billing failure", () => {
+    // verbatim prefix from the ledger (machine-mode implement, kvstore #19, 2026-11-09)
+    const real =
+      'machine model produced no final text: 402: {"message":"Insufficient Balance (request_id: 282682a1-cec5-4782-a3a6-ab53835170d3)","type":"insufficient_balance_error"}';
+    expect(billingFailure(pe(real))).toContain("out of credit (402)");
+  });
+
+  test("a rejected key is a billing failure too", () => {
+    expect(billingFailure(pe("pi exited 1: 401 Unauthorized: invalid api key"))).toContain("rejected the API key (401)");
+  });
+
+  test("rate limits, outages, dead streams and non-provider outcomes are not", () => {
+    for (const e of ["pi exited 1: Error 429: rate limit", "HTTP 500 upstream", "terminated", "model produced no final text: stream cut"]) {
+      expect(billingFailure(pe(e))).toBeNull();
+    }
+    expect(billingFailure({ kind: "timeout" })).toBeNull();
+    expect(billingFailure({ kind: "ok", text: "the docs mention 402 Payment Required", usage: null })).toBeNull();
+  });
 });

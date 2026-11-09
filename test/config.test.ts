@@ -150,3 +150,19 @@ describe("loadRepoConfig trusted_authors", () => {
     }
   });
 });
+
+describe("loadRepoConfig limits", () => {
+  test("daily_attempts defaults to 60, 0 turns the ceiling off, anything else is rejected", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfcfg-"));
+    const path = join(dir, "config.json");
+    const base = { repo: "acme/app", models: { default: { provider: "zai", model: "glm" } } };
+    writeFileSync(path, JSON.stringify(base));
+    expect(loadRepoConfig(path).limits!.daily_attempts).toBe(60);
+    writeFileSync(path, JSON.stringify({ ...base, limits: { daily_attempts: 0 } }));
+    expect(loadRepoConfig(path).limits!.daily_attempts).toBe(0);
+    for (const bad of [-1, 2.5, "10", null]) {
+      writeFileSync(path, JSON.stringify({ ...base, limits: { daily_attempts: bad } }));
+      expect(() => loadRepoConfig(path)).toThrow(/limits.daily_attempts must be a whole number/);
+    }
+  });
+});

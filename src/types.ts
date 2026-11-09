@@ -133,6 +133,10 @@ export interface RepoConfig {
    *  runtime context tells every stage to build frontend from scratch and
    *  never install component libraries. */
   ui?: { enabled?: boolean };
+  /** spend ceiling: daily_attempts caps implement attempts per repo per UTC
+   *  day (default 60; 0 = no ceiling). It counts the ledger's implement
+   *  stage runs, so revives, unblocks and infra deferrals cannot reset it. */
+  limits?: { daily_attempts?: number };
 }
 
 export interface IssueLite {

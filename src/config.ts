@@ -15,6 +15,10 @@ const DEFAULTS = {
   // the pi-skills/ui router ships to every lap for the same reason auto_file
   // is ON — per-repo opt-out is an explicit {"ui":{"enabled":false}} patch
   ui: { enabled: true },
+  // implement attempts per repo per UTC day. 60 sits above every repo-day of
+  // the three weeks to 2026-11-09 (median 12, p90 34) except the three of the
+  // 2026-11-02 discovery storm (67-73), which the owner later reined in
+  limits: { daily_attempts: 60 },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -143,6 +147,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
     trusted_authors: raw.trusted_authors ?? [],
     discoveries: { ...DEFAULTS.discoveries, ...(raw.discoveries ?? {}) },
     ui: { ...DEFAULTS.ui, ...(raw.ui ?? {}) },
+    limits: { ...DEFAULTS.limits, ...(raw.limits ?? {}) },
     pi: {
       ...DEFAULTS.pi,
       ...raw.pi,
@@ -171,6 +176,9 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
   // fails fast like the boolean flags above
   if (!Array.isArray(cfg.trusted_authors) || cfg.trusted_authors.some((a) => typeof a !== "string" || !/^[^\s]+$/.test(a)))
     throw new Error(`config trusted_authors must be an array of GitHub logins (got ${JSON.stringify(cfg.trusted_authors)})`);
+  const daily = cfg.limits!.daily_attempts;
+  if (daily !== undefined && (!Number.isInteger(daily) || daily < 0))
+    throw new Error(`config limits.daily_attempts must be a whole number, 0 for no ceiling (got ${JSON.stringify(daily)})`);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")

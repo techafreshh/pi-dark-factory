@@ -176,7 +176,7 @@ export async function opsOnboard(
   const ports = await pickPorts(stateDir);
   const cfg = {
     _readme:
-      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. trusted_authors: GitHub logins (besides the repo owner and the factory's own gh account, always trusted) whose issues intake may claim — anyone else's issue is skipped, because its text becomes agent prompts. env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
+      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. trusted_authors: GitHub logins (besides the repo owner and the factory's own gh account, always trusted) whose issues intake may claim — anyone else's issue is skipped, because its text becomes agent prompts. limits.daily_attempts: implement attempts per repo per UTC day before the chain stops until tomorrow (0 = no ceiling). env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
     repo: target,
     slug,
     default_branch: branch,
@@ -187,6 +187,7 @@ export async function opsOnboard(
     scenario: { ports, runtime: "runtime.json", holdout: "holdout.json" },
     skip_labels: [] as string[],
     trusted_authors: [] as string[],
+    limits: { daily_attempts: 60 },
     env: {
       mode: "host",
       compose_file: "docker-compose.yml",
@@ -876,7 +877,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
 }
 
 const CONFIG_PATCH_ALLOW = [
-  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "trusted_authors", "pi", "discoveries",
+  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "trusted_authors", "pi", "discoveries", "limits",
 ];
 
 function deepMerge(base: any, patch: any): any {

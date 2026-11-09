@@ -203,6 +203,29 @@ export interface PiStageResult {
 }
 
 /**
+ * A provider answer no retry can fix: out of credit (402) or a rejected key
+ * (401). Recorded shape (machine-mode implement, 2026-11-09):
+ *   machine model produced no final text: 402: {"message":"Insufficient Balance
+ *   (request_id: …)","type":"insufficient_balance_error"…}
+ * Retrying it only cycles the revive fuses (kvstore #19, mdrender #11 spent
+ * their daily cap on it), so the lap stops and the repo pauses for a human.
+ * Returns a short reason, or null for every other outcome.
+ */
+export function billingFailure(o: PiOutcome): string | null {
+  if (o.kind !== "provider_error") return null;
+  const e = o.error;
+  if (/\b402\b|insufficient[_ ](balance|credits?|funds|quota)|payment required/i.test(e))
+    return `provider out of credit (402): ${e.slice(0, 240)}`;
+  if (/\b401\b|invalid[_ ]api[_ ]key|incorrect api key|unauthori[sz]ed/i.test(e))
+    return `provider rejected the API key (401): ${e.slice(0, 240)}`;
+  return null;
+}
+
+/** Thrown out of a lap by a billing/auth failure; runLap's catch turns it
+ *  into a billing hold (attempt refunded, repo paused). */
+export class BillingHoldError extends Error {}
+
+/**
  * Run a stage against [base, ...fallback]. Provider errors advance the
  * chain; timeouts and spawn errors return immediately (a hung stream is a
  * host problem, not a model problem — retrying on another model just burns

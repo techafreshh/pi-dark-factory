@@ -628,6 +628,39 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("#1 errored this tick — the next tick retries");
   }, 60000);
 
+  test("billing hold: an out-of-credit provider pauses the repo and refunds the attempt", async () => {
+    const w = makeWorld();
+    const out402: CallStageFn = async (stage) => {
+      if (stage === "plan") return okPi("PLAN: create hello.txt with content hello.");
+      return failPi('machine model produced no final text: 402: {"message":"Insufficient Balance (request_id: x)","type":"insufficient_balance_error"}');
+    };
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: out402 });
+    expect(outcome).toBe("billing_hold");
+    const row = w.ledger.getIssue(w.cfg.repo, 1)!;
+    expect(row.state).toBe("in_progress"); // not blocked: the work is not at fault
+    expect(row.attempts).toBe(0); // refunded
+    expect(row.last_error).toContain("402");
+    const marker = readFileSync(join(w.stateDir, "repos", "toy", "paused"), "utf8");
+    expect(marker).toContain("billing hold");
+    expect(w.gh.comments.join("\n")).not.toContain("BLOCKED");
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("BILLING HOLD on toy");
+  }, 60000);
+
+  test("daily ceiling: a repo at its implement-attempt limit stops before the next lap", async () => {
+    const w = makeWorld();
+    w.cfg.limits = { daily_attempts: 2 };
+    // the chain reloads config from disk before every lap: the limit must be there
+    writeFileSync(join(w.stateDir, "repos", "toy", "config.json"), JSON.stringify(w.cfg));
+    const earlier = w.ledger.startLap(w.cfg.repo, 9);
+    for (let i = 1; i <= 2; i++) w.ledger.startStage(w.cfg.repo, 9, earlier, "implement", i, "x/y");
+    const deps = { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) };
+    await prepareRepo(w.cfg, w.stateDir, deps);
+    await runChain(w.cfg, w.stateDir, deps, await listClaimable(w.cfg, w.ledger, w.gh));
+    expect(w.calls.length).toBe(0); // no stage spent past the ceiling
+    expect(w.ledger.getIssue(w.cfg.repo, 1)).toBeNull(); // not even claimed
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("daily attempt ceiling reached for toy: 2/2");
+  }, 60000);
+
   test("chain budget: a deep queue hands remaining work to the next tick instead of monopolizing it", async () => {
     const w = makeWorld();
     w.gh.issues.push({ number: 2, title: "Add bye file", body: "create bye.txt containing 'bye'", labels: [] });

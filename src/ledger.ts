@@ -184,4 +184,13 @@ export class Ledger {
       ? (this.db.query("SELECT * FROM stage_runs WHERE repo = ? ORDER BY id DESC LIMIT ?").all(repo, limit) as StageRunRow[])
       : (this.db.query("SELECT * FROM stage_runs ORDER BY id DESC LIMIT ?").all(limit) as StageRunRow[]);
   }
+
+  /** stage runs of one repo started at or after `sinceIso` — the daily
+   *  attempt ceiling counts implement runs from 00:00 UTC */
+  countStages(repo: string, stage: string, sinceIso: string): number {
+    const row = this.db
+      .query("SELECT COUNT(*) AS c FROM stage_runs WHERE repo = ? AND stage = ? AND started_at >= ?")
+      .get(repo, stage, sinceIso) as { c: number } | null;
+    return row?.c ?? 0;
+  }
 }

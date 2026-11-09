@@ -10,7 +10,7 @@ import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachine } fr
 import { openBoxdLapMachine, type BoxdLapMachine } from "./machine-boxd";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
-import { callPiWithFallback, type PiStageResult } from "./pi";
+import { BillingHoldError, billingFailure, callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
 import { DISCOVERY_LABEL, describeIntakeSkips, listClaimable, listClaimableDetailed, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
@@ -343,6 +343,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       ("usage" in outcome ? outcome.usage : null) ?? null,
       outcome.kind === "ok" ? null : "error" in outcome ? outcome.error : outcome.kind
     );
+    // out of credit or a dead key: no attempt can succeed, so stop the lap
+    // here instead of spending the attempt ladder and the revive fuses on it
+    const billing = billingFailure(outcome);
+    if (billing) throw new BillingHoldError(`${stage} stage: ${billing}`);
   };
 
   let outcome: string | null = null;
@@ -823,6 +827,19 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       deps.ledger.dropIssue(cfg.repo, n);
       repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
       outcome = "infra_deferred";
+    } else if (e instanceof BillingHoldError) {
+      // the provider account, not the work: refund the attempt, pause the
+      // repo with the reason in the marker, and wait for a human. Comments on
+      // the issue would not notify anyone (the factory posts as the owner).
+      lastError = `billing hold: ${e.message}`;
+      const used = deps.ledger.getIssue(cfg.repo, n)?.attempts ?? 0;
+      deps.ledger.setIssue(cfg.repo, n, { attempts: Math.max(0, used - 1), last_error: lastError });
+      deps.ledger.endLap(lapId, "billing_hold", lastError);
+      try {
+        writeFileSync(join(stateDir, "repos", cfg.slug, "paused"), `${new Date().toISOString()} ${lastError.slice(0, 500)}\n`);
+      } catch {}
+      repoReceipt(cfg.slug, stateDir, `BILLING HOLD on ${cfg.slug} at #${n}: ${e.message.slice(0, 260)} — ${cfg.slug} is paused and the attempt refunded; top up the provider or fix the key, then: dark-factory unpause ${cfg.slug}`);
+      outcome = "billing_hold";
     } else {
       // Anything else (a git push, a GitHub API call, a full disk) used to
       // escape the lap with no outcome and no last_error while the attempt
@@ -1164,6 +1181,19 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
     try {
       Object.assign(cfg, loadRepoConfig(join(stateDir, "repos", cfg.slug, "config.json")));
     } catch {}
+    // daily spend ceiling, read after the reload so a raised limit applies
+    // at once. It counts the ledger's implement runs since 00:00 UTC, so a
+    // revive, an unblock or an infra deferral (all of which reset the
+    // attempt budget) cannot reset it.
+    const ceiling = cfg.limits?.daily_attempts ?? 0;
+    if (ceiling > 0) {
+      const usedToday = deps.ledger.countStages(cfg.repo, "implement", new Date().toISOString().slice(0, 10) + "T00:00:00.000Z");
+      if (usedToday >= ceiling) {
+        repoReceipt(cfg.slug, stateDir, `daily attempt ceiling reached for ${cfg.slug}: ${usedToday}/${ceiling} implement attempts today (UTC) — stopping before #${issue.number}; the chain resumes after 00:00 UTC (limits.daily_attempts lifts it)`);
+        endedQuietly = true;
+        break;
+      }
+    }
     // chained laps re-sync main first: prepareRepo's fetch + hard reset runs
     // once per tick, so laps 2..N used to plan in a checkout missing the
     // merges made earlier in the SAME chain — exactly the dependent issues a
@@ -1192,6 +1222,11 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
     // once (it is still the oldest claimable) spent up to all its attempts
     // inside one GitHub or network outage, each after a full implement stage
     if (lapOutcome === null || lapOutcome === "error") retryNextTick.add(issue.number);
+    if (lapOutcome === "billing_hold") {
+      // the repo just paused itself; its receipt already says why
+      endedQuietly = true;
+      break;
+    }
     if (lapOutcome === "infra_deferred") {
       // the platform is down — a chained lap would queue-wait inside
       // the same dead window. Defer the WHOLE repo chain to the next
@@ -1276,7 +1311,13 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
         // waited — magpie postmortem 2026-10-25, incident 21). An
         // in-flight lap finishes; pause only stops NEW work.
         if (existsSync(join(opts.stateDir, "repos", cfg.slug, "paused"))) {
-          repoReceipt(cfg.slug, opts.stateDir, `skipping ${cfg.slug}: paused (unpause to resume)`);
+          // the marker holds the pause time and, for an automatic pause (a
+          // billing hold), its reason: repeat it every tick until a human acts
+          let why = "";
+          try {
+            why = readFileSync(join(opts.stateDir, "repos", cfg.slug, "paused"), "utf8").trim().replace(/^\S+\s*/, "");
+          } catch {}
+          repoReceipt(cfg.slug, opts.stateDir, `skipping ${cfg.slug}: paused${why ? ` — ${why.slice(0, 300)}` : ""} (unpause to resume)`);
           return;
         }
         if (!scoped && !acquireRepoLock(opts.stateDir, cfg.slug)) {
