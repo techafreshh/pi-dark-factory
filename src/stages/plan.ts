@@ -46,13 +46,31 @@ export const PLANNER_SYSTEM = [
   "The first line of your reply is machine-parsed. It is either the plan markdown itself, or one of the two escapes: `NO_ACTION: <reason>` / `INSUFFICIENT_CONTEXT: <the exact question>`.",
 ].join("\n");
 
-export function buildPlanPrompt(cfg: RepoConfig, issue: { number: number; title: string; body: string }): string {
+export function buildPlanPrompt(
+  cfg: RepoConfig,
+  issue: { number: number; title: string; body: string },
+  opts: { previousFailure?: string | null } = {}
+): string {
+  // a re-plan after a blocked round: the old plan was retired, and the
+  // planner must see why it failed or it tends to write the same plan again
+  const previous = opts.previousFailure
+    ? [
+        "",
+        "## PREVIOUS ROUND FAILED",
+        "An earlier plan for this issue was implemented, and every attempt failed verification or review; the factory retired that plan. The last findings:",
+        "",
+        opts.previousFailure.length > 4000 ? opts.previousFailure.slice(0, 4000) + "\n…(truncated)" : opts.previousFailure,
+        "",
+        "Work out why before you plan. If the approach itself was the problem, choose a different one; a plan that repeats the failed approach unchanged is a defect. The branch may already hold the earlier attempt's commits: say in the plan what to keep and what to redo.",
+      ]
+    : [];
   return [
     "Plan the next implementation lap for this repository.",
     "",
     `PROBLEM: GitHub issue #${issue.number} — ${issue.title}`,
     "",
     issue.body || "(no issue body)",
+    ...previous,
     "",
     `WHY: it is the oldest unclaimed issue in the backlog; the factory delivers issues in order.`,
     `WHY NOW: the whole lap (implement → verify → review → merge) runs unattended right after your plan.`,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoReviveBlocked, bumpInputsEpoch } from "../src/tick";
@@ -56,6 +56,18 @@ describe("autoReviveBlocked (bounded self-heal of exhausted laps)", () => {
     await autoReviveBlocked(cfg, dir, led as any);
     expect(led.patches).toEqual([{ repo: "acme/app", n: 1, patch: { state: "in_progress", attempts: 0 } }]);
     expect(led.rows[0].state).toBe("in_progress");
+  });
+
+  test("a revive retires the plan that failed (kept as superseded) but keeps the findings", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfrev-"));
+    const idir = join(dir, "repos", "app", "issues", "1");
+    mkdirSync(idir, { recursive: true });
+    writeFileSync(join(idir, "plan.md"), "the plan that spent 3 attempts");
+    writeFileSync(join(idir, "findings.md"), "[HIGH] the reason it failed");
+    await autoReviveBlocked(cfg, dir, fakeLedger([blocked("review rejected: findings A")]) as any);
+    expect(existsSync(join(idir, "plan.md"))).toBe(false); // the next lap re-plans
+    expect(readdirSync(idir).some((f) => f.startsWith("plan.superseded-"))).toBe(true);
+    expect(existsSync(join(idir, "findings.md"))).toBe(true); // and repairs from these
   });
 
   test("identical failure signature twice in a row → third round refuses (stagnation)", async () => {

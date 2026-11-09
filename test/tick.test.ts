@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GhApi, CheckState } from "../src/gh";
@@ -299,6 +299,10 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(implementCalls).toBe(2); // repair round happened
     const second = w.calls.filter((c) => c.stage === "implement")[1];
     expect(second.prompt).toContain("REPAIR ROUND");
+    // the reject's findings are saved for any later lap of this issue
+    expect(readFileSync(join(issueDir(w.stateDir, "toy", 1), "findings.md"), "utf8")).toContain("must end with a newline");
+    // a first plan never claims a failed round
+    expect(w.calls.find((c) => c.stage === "plan")!.prompt).not.toContain("PREVIOUS ROUND FAILED");
   }, 60000);
 
   test("needs-context path: planner escapes → question posted, label gate set, claim dropped, label removal re-queues", async () => {
@@ -343,6 +347,40 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(outcome).toBe("merged");
     expect(w.ledger.getIssue(w.cfg.repo, 1)!.attempts).toBe(2); // carried, not reset
     expect(w.calls.some((c) => c.stage === "plan")).toBe(false); // plan reused, not re-planned
+  }, 60000);
+
+  test("reclaim: the saved findings make the resumed lap a repair round", async () => {
+    const w = makeWorld();
+    w.ledger.claim(w.cfg.repo, 1);
+    w.ledger.setIssue(w.cfg.repo, 1, { attempts: 1, last_error: "review rejected: no newline" });
+    const idir = issueDir(w.stateDir, "toy", 1);
+    mkdirSync(idir, { recursive: true });
+    writeFileSync(join(idir, "plan.md"), "PLAN (persisted): create hello.txt.");
+    writeFileSync(join(idir, "findings.md"), "[HIGH] hello.txt:1 — must end with a newline");
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+    expect(outcome).toBe("merged");
+    const impl = w.calls.find((c) => c.stage === "implement")!;
+    expect(impl.prompt).toContain("REPAIR ROUND");
+    expect(impl.prompt).toContain("must end with a newline");
+  }, 60000);
+
+  test("revive: a blocked issue re-plans with the last findings and repairs from them", async () => {
+    const w = makeWorld();
+    w.ledger.claim(w.cfg.repo, 1);
+    w.ledger.setIssue(w.cfg.repo, 1, { state: "blocked", attempts: 3, last_error: "review rejected: no newline" });
+    const idir = issueDir(w.stateDir, "toy", 1);
+    mkdirSync(idir, { recursive: true });
+    writeFileSync(join(idir, "plan.md"), "OLD PLAN: write hello without a newline");
+    writeFileSync(join(idir, "findings.md"), "[HIGH] hello.txt:1 — must end with a newline");
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+    expect(outcome).toBe("merged");
+    const plan = w.calls.find((c) => c.stage === "plan")!; // the old plan was retired, so it re-planned
+    expect(plan.prompt).toContain("PREVIOUS ROUND FAILED");
+    expect(plan.prompt).toContain("must end with a newline");
+    const impl = w.calls.find((c) => c.stage === "implement")!;
+    expect(impl.prompt).toContain("REPAIR ROUND");
+    expect(impl.prompt).not.toContain("OLD PLAN");
+    expect(readdirSync(idir).some((f) => f.startsWith("plan.superseded-"))).toBe(true);
   }, 60000);
 
   test("machine-mode lap: implement+review run in a fake instabox machine, gates judge the pushed branch", async () => {

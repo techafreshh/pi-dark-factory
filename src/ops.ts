@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { loadRepoConfig, parseModelString, parseRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { Gh, repoDefaultBranch, type GhApi } from "./gh";
-import { deleteRemoteBranch, ensureSource, removeWorktree } from "./gitws";
+import { deleteRemoteBranch, ensureSource, removeWorktree, supersedeIssueFiles } from "./gitws";
 import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { boxdClientFromEnv } from "./machine-boxd";
@@ -1210,6 +1210,10 @@ export async function opsUnblock(stateDir: string, slug: string, issue: number, 
     } catch (e: any) {
       out.remote_branch_error = e.message?.slice(0, 150);
     }
+    // a pruned issue starts over: the next lap plans from scratch with no
+    // repair findings (both files are renamed, kept for forensics)
+    const retired = supersedeIssueFiles(stateDir, slug, issue, ["plan.md", "findings.md"]);
+    if (retired.length > 0) out.retired = retired;
   }
   return out;
 }

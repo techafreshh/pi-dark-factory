@@ -4,7 +4,7 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
-import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, supersedeIssueFiles, uncommitted } from "./gitws";
 import { machineNameFor } from "./instabox";
 import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachine } from "./machine";
 import { openBoxdLapMachine, type BoxdLapMachine } from "./machine-boxd";
@@ -305,7 +305,21 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   }
 
   let pr: number | null = priorRow?.pr ?? null;
+  // repair findings outlive the lap: a reclaimed or revived lap starts as a
+  // repair round from the last gate/review findings instead of from nothing
+  const findingsPath = join(issueDir(stateDir, cfg.slug, n), "findings.md");
   let findings: string | null = null;
+  if (existsSync(findingsPath)) {
+    try {
+      findings = readFileSync(findingsPath, "utf8").trim() || null;
+    } catch {}
+  }
+  const keepFindings = (f: string): string => {
+    try {
+      writeFileSync(findingsPath, f + "\n");
+    } catch {}
+    return f;
+  };
   let lastError = "attempts exhausted";
   // machine modes (instabox/boxd): one machine per lap, created lazily at the
   // first implement attempt and kept across this lap's repair rounds; the
@@ -421,7 +435,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const models = resolveModels(cfg, "plan");
       const res = await deps.callStage("plan", {
         models,
-        prompt: buildPlanPrompt(cfg, issue),
+        prompt: buildPlanPrompt(cfg, issue, { previousFailure: findings }),
         systemPrompt: PLANNER_SYSTEM,
         cwd: join(stateDir, "repos", cfg.slug, "source"),
         tools: stageTools(cfg, "plan", ensureHostExtension()),
@@ -546,7 +560,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const ahead = await commitsAheadRef(src, cfg.default_branch, branchName(n));
       if (ahead === 0) {
         lastError = "machine pushed no commits ahead of base — nothing was implemented";
-        findings = "The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + repoDirFor(cfg) + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.";
+        findings = keepFindings("The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + repoDirFor(cfg) + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.");
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
         repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
@@ -556,7 +570,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const dirty = await uncommitted(worktree!);
       if (dirty.length > 0) {
         lastError = `implementer left ${dirty.length} uncommitted change(s): ${dirty.slice(0, 5).join(" | ")}`;
-        findings = `The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`;
+        findings = keepFindings(`The changed gate rejected your previous attempt: you left ${dirty.length} uncommitted change(s) (${dirty.slice(0, 5).join(", ")}). Your edits persist in the worktree — run git status, finish the work, and git add -A && git commit EVERYTHING before you finish. An attempt that ends with uncommitted changes is discarded as if it did nothing.`);
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
         repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
@@ -564,7 +578,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const ahead = await commitsAhead(worktree!, cfg.default_branch);
       if (ahead === 0) {
         lastError = "no commits ahead of base — nothing was implemented";
-        findings = `The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`;
+        findings = keepFindings(`The changed gate rejected your previous attempt: no commits ahead of ${cfg.default_branch} — nothing was implemented. Implement the issue per the plan and COMMIT the changes (git add -A && git commit) before you finish.`);
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
         repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
@@ -574,7 +588,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
     if (lockfileOnly(paths)) {
       lastError = `only lockfiles changed (${paths.join(", ")})`;
-      findings = `The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`;
+      findings = keepFindings(`The changed gate rejected your previous attempt: only lockfiles changed (${paths.join(", ")}). The commit gate needs the actual implementation committed on top of the base branch.`);
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
       continue outer;
@@ -595,9 +609,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       // reproduction evidence (failing probe's command, expect, and the
       // actual response body) — the agent reproduces instead of guessing
       const summary = v.failures.map((f) => `[${f.gate}] ${f.detail}`).join("\n");
-      findings = v.failures
-        .map((f) => `[${f.gate}] ${f.detail}${f.repair ? "\n" + f.repair : ""}`)
-        .join("\n\n");
+      findings = keepFindings(
+        v.failures.map((f) => `[${f.gate}] ${f.detail}${f.repair ? "\n" + f.repair : ""}`).join("\n\n")
+      );
       lastError = `verification failed:\n${summary}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at verify: ${summary.replace(/\n/g, " ; ")}`);
@@ -712,7 +726,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // merge only on an explicit APPROVE — anything else is a reject, so a
     // verdict value this code never anticipated fails closed, not open
     if (verdict.verdict !== "approve") {
-      findings = verdict.findings;
+      findings = keepFindings(verdict.findings);
       lastError = `review rejected:\n${findings}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
       repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at review: REJECT — ${findings.replace(/\n/g, " ; ").slice(0, 300)}`);
@@ -943,10 +957,14 @@ export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledge
     rs.counts[String(row.issue_number)] = used + 1;
     rs.sigs[String(row.issue_number)] = [...sigs, sig].slice(-4);
     ledger.setIssue(cfg.repo, row.issue_number, { state: "in_progress", attempts: 0 });
+    // the plan just spent a whole attempt budget without a merge: retire it,
+    // so the next lap re-plans with the last findings (findings.md stays)
+    // instead of executing the same plan again
+    const retired = supersedeIssueFiles(stateDir, cfg.slug, row.issue_number, ["plan.md"]);
     repoReceipt(
       cfg.slug,
       stateDir,
-      `AUTO-REVIVE #${row.issue_number} (round ${used + 1}/${AUTO_REVIVE_DAILY_CAP} today) — repair ladder continues with a fresh attempt budget; previous blocker: ${sig.slice(0, 110)}`
+      `AUTO-REVIVE #${row.issue_number} (round ${used + 1}/${AUTO_REVIVE_DAILY_CAP} today) — repair ladder continues with a fresh attempt budget${retired.length ? " and a fresh plan" : ""}; previous blocker: ${sig.slice(0, 110)}`
     );
   }
   try {

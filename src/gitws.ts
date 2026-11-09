@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { sh, shOk } from "./sh";
 import type { RepoConfig } from "./types";
@@ -7,6 +7,26 @@ export const repoDir = (stateDir: string, slug: string) => join(stateDir, "repos
 export const sourceDir = (stateDir: string, slug: string) => join(repoDir(stateDir, slug), "source");
 export const issueDir = (stateDir: string, slug: string, n: number) =>
   join(repoDir(stateDir, slug), "issues", String(n));
+
+/**
+ * Retire saved lap memory (plan.md, findings.md) so the next lap starts that
+ * part over. Files are renamed to <name>.superseded-<time>.md, never deleted:
+ * forensics keep every plan an issue ever had. Returns the names it moved.
+ */
+export function supersedeIssueFiles(stateDir: string, slug: string, n: number, names: string[]): string[] {
+  const dir = issueDir(stateDir, slug, n);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const moved: string[] = [];
+  for (const name of names) {
+    const p = join(dir, name);
+    if (!existsSync(p)) continue;
+    try {
+      renameSync(p, join(dir, `${name.replace(/\.md$/, "")}.superseded-${stamp}.md`));
+      moved.push(name);
+    } catch {}
+  }
+  return moved;
+}
 export const sessionDir = (stateDir: string, slug: string, n: number) =>
   join(issueDir(stateDir, slug, n), "sessions");
 export const worktreeDir = (stateDir: string, slug: string, n: number) =>

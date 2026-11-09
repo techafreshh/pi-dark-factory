@@ -41,8 +41,8 @@ The engine is built so that autonomy can only deliver what deterministic checks 
   from its own git truth.
 - **Attempt caps and human parks.** A failed lap retries within the cap, then blocks with a
   GitHub comment carrying the failure receipt and the exact unblock command. Later ticks
-  auto-revive a blocked issue at most 3 times a day, and stop for a human once the same
-  failure repeats 3 rounds in a row. Missing product decisions escape as `factory:needs-info`
+  auto-revive a blocked issue with a fresh plan that sees the last failure, at most 3 times a
+  day, and stop for a human once the same failure repeats 3 rounds in a row. Missing product decisions escape as `factory:needs-info`
   questions for a human.
 - **Only trusted authors hand the factory work.** Issue text becomes agent prompts, and anyone
   can open an issue on a public repo, so intake claims only issues opened by the repo owner,

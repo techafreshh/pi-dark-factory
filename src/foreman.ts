@@ -158,6 +158,7 @@ async function main() {
         console.log(`dropped ledger row for #${n} — intake can reclaim it`);
         if (r.pr_closed) console.log(`closed PR #${r.pr_closed}`);
         if (r.worktree) console.log(`worktree + local branch: ${r.worktree}`);
+        if (Array.isArray(r.retired)) console.log(`retired ${r.retired.join(" + ")} — the next lap plans from scratch`);
       }
       break;
     }

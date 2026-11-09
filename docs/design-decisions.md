@@ -19,9 +19,12 @@ era is answered here structurally — by mechanism, not by prompt:
 
 Blocked issues (attempt cap exhausted, default 3) get a GitHub comment with the failure receipt,
 the last error, and the exact unblock command. Later ticks auto-revive a blocked issue with a
-fresh attempt budget, bounded by two fuses: at most 3 revives per issue per day, and none once
+fresh attempt budget and a fresh plan: the plan that failed is retired (renamed, kept for
+forensics), and the new planner and the first implement attempt both see the last round's
+findings, which are saved per issue in `findings.md`. Two fuses bound the revives: at most 3 revives per issue per day, and none once
 the same failure signature has blocked 3 rounds in a row (a summary comment then asks for a
-human). A config or scenario write resets both fuses. `factory:needs-info` parks are never
+human). A config or scenario write resets both fuses. `unblock --prune` retires the plan and
+the findings too, so the issue starts over. `factory:needs-info` parks are never
 retried: a human answers in the issue body and removes the label.
 
 ## Ordering & concurrency (by design)

@@ -48,7 +48,7 @@ export function blockedComment(
   return [
     "🤖 **pi-dark-factory** is BLOCKED on this issue after " + attempts + " attempts.",
     "",
-    "Later ticks auto-revive it with a fresh attempt budget, at most 3 times a day, and stop for a human once the same failure repeats 3 rounds in a row. Last failure:",
+    "Later ticks auto-revive it with a fresh attempt budget and a fresh plan (the new planner sees the last failure), at most 3 times a day, and stop for a human once the same failure repeats 3 rounds in a row. Last failure:",
     "",
     "```",
     error.slice(0, 1500),

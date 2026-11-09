@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { opsGetConfig, opsLogs, opsModels, opsPause, opsScenarioLint, opsScenarioSet, opsSetConfig, opsScenarioTest, opsStatus, opsUnblock, reapOrphanMachines } from "../src/ops";
@@ -85,6 +85,25 @@ describe("ops core (shared by foreman CLI and factoryd)", () => {
     const forced = await opsUnblock(state, "demo", 7, false, true); // verified-dead override
     expect(forced.dropped).toBe(true);
     expect(ledger.getIssue("acme/demo", 7)).toBeNull();
+  });
+
+  test("unblock --prune retires the saved plan and findings so the next lap starts over", async () => {
+    seedConfig();
+    const ledger = new Ledger(join(state, "factory.db"));
+    ledger.claim("acme/demo", 11);
+    ledger.setIssue("acme/demo", 11, { state: "blocked", attempts: 3, last_error: "review rejected" });
+    const idir = join(state, "repos", "demo", "issues", "11");
+    mkdirSync(idir, { recursive: true });
+    writeFileSync(join(idir, "plan.md"), "old plan");
+    writeFileSync(join(idir, "findings.md"), "old findings");
+    const r = await opsUnblock(state, "demo", 11, true);
+    expect(r.dropped).toBe(true);
+    expect(r.retired).toEqual(["plan.md", "findings.md"]);
+    expect(existsSync(join(idir, "plan.md"))).toBe(false);
+    expect(existsSync(join(idir, "findings.md"))).toBe(false);
+    const kept = readdirSync(idir);
+    expect(kept.some((f) => f.startsWith("plan.superseded-"))).toBe(true); // forensics keep the history
+    expect(kept.some((f) => f.startsWith("findings.superseded-"))).toBe(true);
   });
 
   test("status --repo scopes ledger rows to that repo; unknown slug is empty (P1-15a)", async () => {
