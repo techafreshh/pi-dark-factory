@@ -235,6 +235,14 @@ async function reconcile(cfg: RepoConfig, deps: TickDeps, stateDir: string) {
   if (rows.length === 0) return;
   const mergedPrs = await deps.gh.prListMerged(50);
   for (const row of rows) {
+    // the lap's process died mid-lap (restart, OOM, kill): close its lap row,
+    // and give the issue a last_error, or the block comment and the revive
+    // signature both read "unknown failure"
+    const dangling = deps.ledger.endDanglingLaps(cfg.repo, row.issue_number, "interrupted", "the lap's process ended mid-lap");
+    if (dangling > 0 && !row.last_error) {
+      row.last_error = "interrupted: the lap's process ended mid-lap without recording an error (factory restart, OOM or kill)";
+      deps.ledger.setIssue(cfg.repo, row.issue_number, { last_error: row.last_error });
+    }
     const claimed = (p: { body: string; headRefName: string }) =>
       p.headRefName === branchName(row.issue_number) ||
       new RegExp(`(?:closes?|fixes?|resolves?|implements?)\\s+#?${row.issue_number}\\b`, "i").test(p.body ?? "");
@@ -324,6 +332,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   };
 
   let outcome: string | null = null;
+  // where the lap is, for the error path: a lap that throws records the
+  // phase it died in instead of vanishing with no outcome and no last_error
+  let phase = "plan";
 
   // web grounding availability for this lap's prompts: instabox machines get
   // the extension through the stage env channel (checkout presence decides);
@@ -405,6 +416,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     repoReceipt(cfg.slug, stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
 
     // ---- PLAN (once per issue; retries on later attempts if it failed)
+    phase = "plan";
     if (plan === null) {
       const models = resolveModels(cfg, "plan");
       const res = await deps.callStage("plan", {
@@ -476,6 +488,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // ---- IMPLEMENT (machine mode: the machine's clone IS the worktree —
     // created once, reused across repairs; the machine runs the same gates
     // and pushes the branch itself)
+    phase = "implement";
     const implModels = resolveModels(cfg, "implement");
     const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
     let worktree: string | null = null;
@@ -520,6 +533,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // deterministic post-gates — self-report is never trusted. Machine mode
+    phase = "changed gate (fetch/push)";
     // already enforced cleanliness + commit-count inside the machine (their
     // failure failed the stage); the host re-judges the pushed branch from
     // its own git truth. Gate failures carry a repair directive into the next
@@ -567,12 +581,14 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     if (pr === null) {
+      phase = "pr create";
       pr = await deps.gh.prCreate(branchName(n), cfg.default_branch, `[#${n}] ${issue.title}`, prBody(cfg, issue, plan));
       deps.ledger.setIssue(cfg.repo, n, { branch: branchName(n), pr });
       repoReceipt(cfg.slug, stateDir, `lap #${n} opened PR #${pr}`);
     }
 
     // ---- VERIFY (all deterministic)
+    phase = "verify";
     const v = await runVerify(cfg, deps.gh, { stateDir, issue: n, worktree: worktree ?? undefined, machine: machine ?? undefined, pr, attempt });
     if (!v.pass) {
       // receipt/ledger get the one-line summary; the repair round gets FULL
@@ -593,6 +609,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
+    phase = "review";
     const revModels = resolveModels(cfg, "review");
     const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
     const reviewContext = contextFor("review", attempt, machine ? repoDirFor(cfg) : worktree!);
@@ -703,6 +720,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     }
 
     // ---- MERGE (all gates green + APPROVE)
+    phase = "merge";
     // TOCTOU guard: merge exactly the sha verify probed. No anchor (verify
     // could not read the PR head) now holds the merge — it used to skip the
     // check and merge whatever the head was — and GitHub enforces the sha
@@ -720,6 +738,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       continue outer;
     }
     await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, probedHead);
+    // the delivery landed: nothing after this line may route the lap into the
+    // error path (a failed cleanup would leave a merged issue booked as an error)
+    phase = "post-merge";
     try {
       const iv = await deps.gh.issueView(n);
       if (iv.state?.toLowerCase() === "open") await deps.gh.issueClose(n);
@@ -731,7 +752,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       // root-written files from containerized stages would EACCES the
       // host-side worktree removal — hand ownership back first
       await chownBack(stateDir, cfg, [worktreeDir(stateDir, cfg.slug, n)]);
-      await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
+      try {
+        await withSourceLock(cfg.slug, () => removeWorktree(stateDir, cfg, n, { deleteBranch: true }));
+      } catch (e) {
+        repoReceipt(cfg.slug, stateDir, `lap #${n} merged, but removing its worktree failed (cleanup only): ${e instanceof Error ? e.message.slice(0, 200) : e}`);
+      }
     }
     deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
     deps.ledger.endLap(lapId, "merged", `PR #${pr}`);
@@ -771,19 +796,52 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     outcome = "blocked";
   }
   } catch (e) {
-    // the PLATFORM failed (exec/ssh transport down, org machine cap), not the
-    // work — at implement, in verify's in-box scenario, or at review (only
-    // implement used to be covered; a review-time transport error threw out
-    // of the lap, burned the attempt and re-booted a box into the same dead
-    // platform). Burning attempts there is pure churn (reins 2026-11-05:
-    // three laps, three machines, three minutes), so defer: drop the claim,
-    // keep the attempt budget, let the next tick re-claim fresh.
-    if (!(e instanceof InfraUnavailableError)) throw e;
-    lastError = `platform unavailable: ${e.message}`;
-    deps.ledger.endLap(lapId, "infra_deferred", lastError);
-    deps.ledger.dropIssue(cfg.repo, n);
-    repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
-    outcome = "infra_deferred";
+    if (e instanceof InfraUnavailableError) {
+      // the PLATFORM failed (exec/ssh transport down, org machine cap), not the
+      // work — at implement, in verify's in-box scenario, or at review (only
+      // implement used to be covered; a review-time transport error threw out
+      // of the lap, burned the attempt and re-booted a box into the same dead
+      // platform). Burning attempts there is pure churn (reins 2026-11-05:
+      // three laps, three machines, three minutes), so defer: drop the claim,
+      // keep the attempt budget, let the next tick re-claim fresh.
+      lastError = `platform unavailable: ${e.message}`;
+      deps.ledger.endLap(lapId, "infra_deferred", lastError);
+      deps.ledger.dropIssue(cfg.repo, n);
+      repoReceipt(cfg.slug, stateDir, `lap #${n} DEFERRED — ${lastError.slice(0, 220)}; attempt budget preserved, next tick re-claims fresh`);
+      outcome = "infra_deferred";
+    } else {
+      // Anything else (a git push, a GitHub API call, a full disk) used to
+      // escape the lap with no outcome and no last_error while the attempt
+      // stayed spent: 206 of the 908 laps in the week to 2026-11-09 ended that
+      // way, and three in a row blocked an issue as "unknown failure", which
+      // the stagnation breaker then parked until a human came. The attempt
+      // still counts (a persistent failure after implement must not buy
+      // unlimited implement stages); the error is now booked like any failed
+      // attempt, and the chain retries the issue next tick, not right away.
+      const msg = e instanceof Error ? e.message : String(e);
+      lastError = `lap aborted at ${phase}: ${msg}`.slice(0, 2000);
+      const used = deps.ledger.getIssue(cfg.repo, n)?.attempts ?? 0;
+      if (phase === "post-merge") {
+        // the PR merged before the error: the delivery stands
+        deps.ledger.setIssue(cfg.repo, n, { state: "merged", last_error: null });
+        deps.ledger.endLap(lapId, "merged", `PR #${pr} (post-merge step failed: ${msg.slice(0, 200)})`);
+        repoReceipt(cfg.slug, stateDir, `lap #${n} MERGED via PR #${pr}; a post-merge step failed: ${msg.slice(0, 200)}`);
+        outcome = "merged";
+      } else if (used >= cfg.attempts) {
+        deps.ledger.setIssue(cfg.repo, n, { state: "blocked", last_error: lastError });
+        try {
+          await deps.gh.issueComment(n, blockedComment(cfg, n, used, lastError, []));
+        } catch {}
+        deps.ledger.endLap(lapId, "blocked", lastError);
+        repoReceipt(cfg.slug, stateDir, `lap #${n} BLOCKED after ${used} attempts — the last one ${lastError.replace(/\n/g, " ; ").slice(0, 300)}`);
+        outcome = "blocked";
+      } else {
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        deps.ledger.endLap(lapId, "error", lastError);
+        repoReceipt(cfg.slug, stateDir, `lap #${n} ERROR — ${lastError.replace(/\n/g, " ; ").slice(0, 300)} (attempt ${used}/${cfg.attempts} spent; the issue stays claimable)`);
+        outcome = "error";
+      }
+    }
   } finally {
     // every lap that ends in this process destroys its machine — one that
     // threw included: a reclaimed lap boots a fresh -g<lapId> machine, so a
@@ -1067,6 +1125,7 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
   let endedQuietly = false; // a break path that already receipted its own reason
   repoReceipt(cfg.slug, stateDir, `queued: ${cfg.slug} #${issue.number} (${claimable.length - 1} claimable behind it)`);
   let revivedInTick = false;
+  const retryNextTick = new Set<number>();
   const REVIVE_COOLDOWN_MS = +(process.env.PDF_REVIVE_COOLDOWN_MS ?? 10 * 60_000);
   while (issue && laps < MAX_LAPS_PER_TICK_PER_REPO && Date.now() - chainStart < CHAIN_BUDGET_MS) {
     // mid-chain pause: the in-flight lap finished; nothing NEW after
@@ -1111,6 +1170,10 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
       // in_progress row is reconciled next tick, never lost
       repoReceipt(cfg.slug, stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
     }
+    // an issue whose lap errored waits for the next tick: re-picking it at
+    // once (it is still the oldest claimable) spent up to all its attempts
+    // inside one GitHub or network outage, each after a full implement stage
+    if (lapOutcome === null || lapOutcome === "error") retryNextTick.add(issue.number);
     if (lapOutcome === "infra_deferred") {
       // the platform is down — a chained lap would queue-wait inside
       // the same dead window. Defer the WHOLE repo chain to the next
@@ -1123,7 +1186,16 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
     // completed unblock their dependent here
     const finished = issue.number;
     lastFinished = finished;
-    let next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+    const claimableNow = async () =>
+      (await listClaimable(cfg, deps.ledger, deps.gh).catch(() => [] as IssueLite[])).filter((i) => !retryNextTick.has(i.number));
+    let next = await claimableNow();
+    if (next.length === 0 && retryNextTick.size > 0) {
+      // nothing is stalled: what is left errored this tick and waits for the
+      // next one by design, so the revive cooldown below would only idle
+      repoReceipt(cfg.slug, stateDir, `#${[...retryNextTick].join(" #")} errored this tick — the next tick retries; nothing else is claimable on ${cfg.slug}`);
+      endedQuietly = true;
+      break;
+    }
     if (next.length === 0 && !revivedInTick) {
       // the chain just stalled (likely: this lap burned its attempts
       // and blocked). A blocked row only ever revives on a tick — and
@@ -1135,7 +1207,7 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
       repoReceipt(cfg.slug, stateDir, `chain stalled after #${finished} — cooling ${REVIVE_COOLDOWN_MS / 60_000} min before one in-tick revive attempt (fuses: daily cap, stagnation)`);
       await new Promise((r) => setTimeout(r, REVIVE_COOLDOWN_MS));
       await autoReviveBlocked(cfg, stateDir, deps.ledger, deps.gh);
-      next = await listClaimable(cfg, deps.ledger, deps.gh).catch(() => []);
+      next = await claimableNow();
     }
     issue = (await prioritizeDiscoveries(cfg, next, deps.ledger, deps.gh).catch(() => next))[0];
     if (issue && laps < MAX_LAPS_PER_TICK_PER_REPO && Date.now() - chainStart < CHAIN_BUDGET_MS) {

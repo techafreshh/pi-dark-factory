@@ -533,6 +533,63 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(w.calls.length).toBe(0);
   }, 60000);
 
+  test("reconcile: a lap whose process died gets closed as interrupted, and the block says so", async () => {
+    const w = makeWorld();
+    w.ledger.claim(w.cfg.repo, 1);
+    w.ledger.setIssue(w.cfg.repo, 1, { attempts: 3 }); // no last_error: the process died mid-lap
+    w.ledger.startLap(w.cfg.repo, 1); // never ended
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+    expect(outcome).toBe("idle");
+    const row = w.ledger.getIssue(w.cfg.repo, 1)!;
+    expect(row.state).toBe("blocked");
+    expect(row.last_error).toContain("interrupted");
+    const lap = w.ledger.recentLaps(w.cfg.repo, 5).find((l) => l.issue_number === 1)!;
+    expect(lap.outcome).toBe("interrupted");
+    expect(lap.ended_at).not.toBeNull();
+    expect(w.gh.comments.join("\n")).toContain("interrupted"); // the block comment carries the cause
+  }, 60000);
+
+  test("a thrown error is booked: last_error names the phase, the lap ends, the issue stays claimable", async () => {
+    const w = makeWorld();
+    w.gh.prCreate = () => Promise.reject(new Error("gh pr create failed (exit 1): HTTP 502"));
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+    expect(outcome).toBe("error");
+    const row = w.ledger.getIssue(w.cfg.repo, 1)!;
+    expect(row.state).toBe("in_progress");
+    expect(row.attempts).toBe(1); // the attempt still counts
+    expect(row.last_error).toContain("lap aborted at pr create: gh pr create failed");
+    const lap = w.ledger.recentLaps(w.cfg.repo, 5).find((l) => l.issue_number === 1)!;
+    expect(lap.outcome).toBe("error");
+    expect(lap.ended_at).not.toBeNull();
+    expect((await listClaimable(w.cfg, w.ledger, w.gh)).map((i) => i.number)).toEqual([1]);
+  }, 60000);
+
+  test("a thrown error on the last attempt blocks with the real error in the comment", async () => {
+    const w = makeWorld({ attempts: 1 });
+    w.gh.prCreate = () => Promise.reject(new Error("gh pr create failed (exit 1): HTTP 502"));
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) });
+    expect(outcome).toBe("blocked");
+    const row = w.ledger.getIssue(w.cfg.repo, 1)!;
+    expect(row.state).toBe("blocked");
+    expect(row.last_error).toContain("lap aborted at pr create");
+    expect(w.gh.comments.join("\n")).toContain("HTTP 502");
+  }, 60000);
+
+  test("chain: an issue whose lap errored waits for the next tick while the rest of the chain runs", async () => {
+    const w = makeWorld();
+    w.gh.issues.push({ number: 2, title: "Add bye file", body: "create bye.txt containing 'bye'", labels: [] });
+    const realCreate = w.gh.prCreate.bind(w.gh);
+    w.gh.prCreate = (head, base, title, body) =>
+      head === "factory/issue-1" ? Promise.reject(new Error("gh pr create failed: HTTP 502")) : realCreate(head, base, title, body);
+    const deps = { ledger: w.ledger, gh: w.gh, callStage: makeCallStage(w) };
+    await prepareRepo(w.cfg, w.stateDir, deps);
+    const claimable = await prioritizeDiscoveries(w.cfg, await listClaimable(w.cfg, w.ledger, w.gh), w.ledger, w.gh);
+    await runChain(w.cfg, w.stateDir, deps, claimable);
+    expect(w.ledger.getIssue(w.cfg.repo, 1)!.attempts).toBe(1); // not re-picked inside the same outage
+    expect(w.ledger.getIssue(w.cfg.repo, 2)!.state).toBe("merged");
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("#1 errored this tick — the next tick retries");
+  }, 60000);
+
   test("chain budget: a deep queue hands remaining work to the next tick instead of monopolizing it", async () => {
     const w = makeWorld();
     w.gh.issues.push({ number: 2, title: "Add bye file", body: "create bye.txt containing 'bye'", labels: [] });

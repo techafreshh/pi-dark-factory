@@ -144,6 +144,15 @@ export class Ledger {
     this.db.query("UPDATE laps SET ended_at = ?, outcome = ?, detail = ? WHERE id = ?").run(now(), outcome, detail ?? null, id);
   }
 
+  /** Close every lap row of this issue that never got an outcome (its process
+   *  died mid-lap). Only reconcile calls it, under the repo's tick lock, when
+   *  no live lap for the repo can exist. Returns how many rows it closed. */
+  endDanglingLaps(repo: string, n: number, outcome: string, detail: string): number {
+    return this.db
+      .query("UPDATE laps SET ended_at = ?, outcome = ?, detail = ? WHERE repo = ? AND issue_number = ? AND ended_at IS NULL")
+      .run(now(), outcome, detail, repo, n).changes;
+  }
+
   recentLaps(repo?: string, limit = 10): LapRow[] {
     return repo
       ? (this.db.query("SELECT * FROM laps WHERE repo = ? ORDER BY id DESC LIMIT ?").all(repo, limit) as LapRow[])
