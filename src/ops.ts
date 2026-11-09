@@ -79,7 +79,7 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
       }
     };
     const rows = await Promise.all(readdirSync(reposDir).filter((e) => e !== "source").map(probe));
-    repoList.push(...(rows.filter(Boolean) as OpsStatus["repos"][]));
+    repoList.push(...rows.filter((r): r is OpsStatus["repos"][number] => r !== null));
   }
   const ledger = new Ledger(join(stateDir, "factory.db"));
   const worktrees: string[] = [];
@@ -640,7 +640,7 @@ export async function opsProveGates(
   const files = ([
     ["runtime", cfg.scenario.runtime],
     ["holdout", cfg.scenario.holdout],
-  ] as const).filter((pair): pair is [string, string] => !!pair[1]);
+  ] as [string, string | undefined][]).filter((pair): pair is [string, string] => !!pair[1]);
   if (files.length === 0) throw new Error(`no scenarios configured for ${slug}`);
   if (!acquireRepoLock(stateDir, slug)) {
     throw new Error(`a lap is live for ${slug} (repo lock held) — run prove-gates when the repo is idle`);
@@ -703,6 +703,8 @@ export async function opsScenarioTest(
   if (!existsSync(join(cfgDir, "config.json"))) throw new Error(`repo ${slug} is not onboarded`);
   const cfg = loadRepoConfig(join(cfgDir, "config.json"));
   const file = kind === "runtime" ? cfg.scenario.runtime : cfg.scenario.holdout;
+  // join() throws a bare TypeError on undefined; say what is actually missing
+  if (!file) throw new Error(`no ${kind} scenario configured for ${slug} (config scenario.${kind} is empty)`);
   const path = join(cfgDir, file);
   if (!existsSync(path)) throw new Error(`no ${kind} scenario for ${slug} — onboard templates or a validated upload would have written one`);
   const spec = loadScenario(path);
@@ -1021,7 +1023,7 @@ export async function opsSetConfig(stateDir: string, slug: string, patch: any) {
           `models.${stage}.model must be the bare model id (got ${JSON.stringify(model)}) — ` +
             `put the level in models.${stage}.thinking; the provider/model:thinking form belongs in fallback arrays`
         );
-      if ((entry.provider !== undefined || model !== undefined) && !model)
+      if (((entry as any).provider !== undefined || model !== undefined) && !model)
         throw new Error(`models.${stage} must set both provider and model`);
       const fb = (entry as any).fallback;
       if (fb !== undefined) {

@@ -194,7 +194,10 @@ export function startKeyrouter(opts: {
         if (parsed && typeof parsed === "object" && parsed.reasoning_effort === undefined) {
           parsed.reasoning_effort = process.env.CRPASS_REASONING_EFFORT ?? "low";
           body = JSON.stringify(parsed);
-          inHeaders.delete("content-length"); // fetch recomputes for the new body
+          // inHeaders is the plain-object allowlist from hopByHop, which never
+          // forwards content-length (fetch computes it from the new body). The
+          // old inHeaders.delete(...) call threw a TypeError inside this try,
+          // so a rewritten body was harmless only by luck of the catch.
         }
       } catch { /* malformed or streamed body — forward as-is */ }
     }

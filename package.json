@@ -5,10 +5,13 @@
   "private": true,
   "scripts": {
     "test": "bun test",
+    "typecheck": "tsc --noEmit -p .",
+    "check": "tsc --noEmit -p . && bun test",
     "foreman": "bun src/foreman.ts"
   },
   "devDependencies": {
-    "bun-types": "latest"
+    "bun-types": "latest",
+    "typescript": "7.0.2"
   },
   "dependencies": {
     "@boxd-sh/sdk": "0.3.0"

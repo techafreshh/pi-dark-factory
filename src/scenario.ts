@@ -227,8 +227,9 @@ export async function runScenario(
     /** the lap's product worktree, exported to setup/start/teardown as $WORKTREE
      *  so a scenario can copy its build artifact into the empty scratch dir */
     worktree?: string;
-    /** container mode: prefix for setup/start/teardown + authoritative cleanup */
-    wrap?: { argvPrefix: string[]; cleanup: () => Promise<void> | void };
+    /** container mode: prefix for setup/start/teardown + authoritative cleanup
+     *  (its result is ignored; callers hand in sh(), which resolves an ShRes) */
+    wrap?: { argvPrefix: string[]; cleanup: () => unknown };
     /** docker name prefix for this repo's stage containers — swept before the
      *  scenario starts so a container leaked by a killed lap (which holds the
      *  published scenario port) cannot pre-fail every attempt */
@@ -244,6 +245,12 @@ export async function runScenario(
     results: spec.probes.map((p) => ({ id: p.id, description: p.description, pass: false, detail: "not run" })),
     error,
   });
+  // callers pin "first"/"second" with resolveScenarioPort before calling;
+  // an unpinned port must fail the scenario, not reach a shell as a word
+  if (typeof spec.port !== "number") {
+    return mkResults(false, `scenario port "${spec.port}" was never resolved to a number (resolveScenarioPort)`);
+  }
+  const port = spec.port;
 
   // a container-mode port check still makes sense: another lap or a stray
   // host process on the published port breaks deterministic verification
@@ -253,14 +260,14 @@ export async function runScenario(
       `docker run --rm -v /home/factory/.pi:/fix alpine chown -R 1001:1001 /fix 2>/dev/null || true; ` +
       `docker ps -aq --filter name=${opts.preClean} | xargs -r docker rm -f`], { timeoutMs: 30000 });
   }
-  if (await portBusy(spec.port)) {
+  if (await portBusy(port)) {
     // the port pair belongs to this repo's reservation, so a listener here
     // is a stray from an earlier attempt (a crashed server can escape the
     // process-group kill) — reclaim it before failing the scenario
-    await sh(["bash", "-c", `fuser -k -n tcp ${spec.port} 2>/dev/null || true`], { timeoutMs: 10000 });
+    await sh(["bash", "-c", `fuser -k -n tcp ${port} 2>/dev/null || true`], { timeoutMs: 10000 });
     await new Promise((r) => setTimeout(r, 1500));
-    if (await portBusy(spec.port)) {
-      return mkResults(false, `port ${spec.port} is still busy (a non-factory process is listening on it)`);
+    if (await portBusy(port)) {
+      return mkResults(false, `port ${port} is still busy (a non-factory process is listening on it)`);
     }
   }
 
@@ -270,7 +277,7 @@ export async function runScenario(
   // factory's own service env with its API keys
   const env = {
     ...agentEnv(opts.passEnv),
-    PORT: String(spec.port),
+    PORT: String(port),
     ...(opts.worktree ? { WORKTREE: opts.worktree } : {}),
   };
   const raw = (cmd: string) => (opts.wrap ? [...opts.wrap.argvPrefix, "bash", "-c", cmd] : ["bash", "-c", cmd]);
@@ -301,7 +308,7 @@ export async function runScenario(
   })();
 
   try {
-    if (!(await ready(spec.port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
+    if (!(await ready(port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
       return mkResults(false, `server never became ready within ${opts.readinessSeconds}s (see server.log)`);
     }
     const results: ProbeResult[] = [];

@@ -55,7 +55,9 @@ export function collectSkillsB64(dir: string = skillsSourceDir()): string | null
   try {
     out = execFileSync("bash", ["-c", `tar czf - -C ${escapeArg(dir)} . | base64 -w0`], {
       maxBuffer: MAX_B64_BYTES,
-      timeoutMs: 15000,
+      // execFileSync's option is `timeout`: the old `timeoutMs` key was
+      // silently ignored, so a wedged tar could hang every stage spawn
+      timeout: 15000,
     })
       .toString()
       .trim();

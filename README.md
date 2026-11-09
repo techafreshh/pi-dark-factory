@@ -121,7 +121,7 @@ pi-skills/           skill content shipped into every lap agent (ui router, agen
 cli/                 the @techafresh/dark-factory npm client
 bin/factory-remote   the Python client (deprecated)
 templates/           repo config + scenario templates
-test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps (322 tests)
+test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps (354 tests)
 docs/                deep dives (below)
 ```
 

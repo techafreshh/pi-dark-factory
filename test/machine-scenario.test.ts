@@ -25,7 +25,7 @@ describe("runScenarioInMachine (in-box exec channel — no ssh -L, bi-ai-ui 2026
   test("readiness + probes + teardown all run over the bash seam: green path", async () => {
     const dir = mkdtempSync(join(scratchRoot, "machine-"));
     const picker = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = picker.port;
+    const port = picker.port!;
     picker.stop(true);
     const spec: ScenarioSpec = {
       name: "runtime-machine",
@@ -53,7 +53,7 @@ describe("runScenarioInMachine (in-box exec channel — no ssh -L, bi-ai-ui 2026
   test("a server that never comes up reports ITSELF as down — no host mapping exists to blame", async () => {
     const dir = mkdtempSync(join(scratchRoot, "machine-dead-"));
     const picker = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = picker.port;
+    const port = picker.port!;
     picker.stop(true);
     const spec: ScenarioSpec = {
       name: "runtime-machine",

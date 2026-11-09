@@ -14,6 +14,7 @@ import type { IssueLite, PrLite, RepoConfig, StageModels } from "../src/types";
 const GIT_ID = "-c user.email=t@t.io -c user.name=Test";
 
 class FakeGh implements GhApi {
+  repo = "acme/toy";
   issues: IssueLite[] = [];
   prs: PrLite[] = [];
   mergedPrs: PrLite[] = [];

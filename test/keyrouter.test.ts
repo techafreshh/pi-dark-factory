@@ -142,3 +142,34 @@ describe("keyrouter HTTP (mock upstream)", () => {
     routerSrv?.stop(true);
   });
 });
+
+describe("keyrouter request rewrite", () => {
+  test("a chat completion without reasoning_effort is forwarded with the low default; an explicit one wins", async () => {
+    const seen: string[] = [];
+    const upstream = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        seen.push(await req.text());
+        return Response.json({ ok: true });
+      },
+    });
+    const keys = join(dir, "rewrite-keys");
+    writeFileSync(keys, "KEYR\n");
+    const router = startKeyrouter({ port: 0, keysFile: keys, upstream: `http://127.0.0.1:${upstream.port}`, stateFile: join(dir, "rewrite-state.json") });
+    try {
+      const post = (body: unknown) =>
+        fetch(`http://127.0.0.1:${router.port}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      expect((await post({ model: "m", messages: [] })).status).toBe(200);
+      expect((await post({ model: "m", messages: [], reasoning_effort: "high" })).status).toBe(200);
+      expect(JSON.parse(seen[0]).reasoning_effort).toBe(process.env.CRPASS_REASONING_EFFORT ?? "low");
+      expect(JSON.parse(seen[1]).reasoning_effort).toBe("high");
+    } finally {
+      router.stop(true);
+      upstream.stop(true);
+    }
+  }, 20000);
+});

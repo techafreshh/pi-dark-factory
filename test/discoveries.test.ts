@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DISCOVERY_LABEL, fileDiscoveries } from "../src/ops";
-import type { GhApi, IssueLite, PrLite } from "../src/gh";
+import type { GhApi } from "../src/gh";
+import type { IssueLite, PrLite } from "../src/types";
 import { loadRepoConfig } from "../src/config";
 
 let dir: string | null = null;
@@ -21,7 +22,6 @@ function stubGh(opts: { openTitles?: string[] } = {}) {
   const calls: { created: [string, string][]; labeled: [number, string[]][] } = { created: [], labeled: [] };
   const open: IssueLite[] = (opts.openTitles ?? []).map((title, i) => ({ number: 55 + i, title, body: "", headRefName: "", labels: [] }));
   const gh: GhApi = {
-    issueList: () => Promise.resolve([] as IssueLite[]),
     issueList: (state) => Promise.resolve(state === "open" ? open : []),
     issueView: () => Promise.resolve({ number: 0, title: "", body: "", labels: [], createdAt: "", state: "open" }),
     issueComment: () => Promise.resolve(),

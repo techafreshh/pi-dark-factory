@@ -46,6 +46,8 @@ const CHECK_PENDING = /PENDING|QUEUED|IN_PROGRESS|EXPECTED|ACTION_REQUIRED|WAITI
 
 /** The surface tick needs from GitHub — real Gh or a test fake. */
 export interface GhApi {
+  /** owner/name — fileDiscoveries passes it to `gh label create --repo` */
+  readonly repo: string;
   issueList(state: "open" | "all", limit?: number): Promise<IssueLite[]>;
   issueView(n: number): Promise<IssueLite & { state: string }>;
   issueComment(n: number, body: string): Promise<void>;

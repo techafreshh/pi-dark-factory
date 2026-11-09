@@ -147,8 +147,8 @@ async function machines(): Promise<any> {
       headers: { "X-API-Key": key },
       signal: AbortSignal.timeout(5000),
     });
-    const list = (await res.json()) as any[];
-    const machines = Array.isArray(list) ? list : list?.machines ?? [];
+    const list = (await res.json()) as any;
+    const machines: any[] = Array.isArray(list) ? list : list?.machines ?? [];
     machinesCache = {
       at: Date.now(),
       data: {

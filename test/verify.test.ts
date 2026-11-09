@@ -35,7 +35,7 @@ describe("writeVerifyEvidence (provenance sidecars, archon-steal #6)", () => {
 
   test("paths are unique per attempt AND per write — first failure evidence survives retries", () => {
     dir = mkdtempSync(join(tmpdir(), "pdfev-"));
-    const data = { attempt: 1, pr: null, worktreeHead: null, prHead: null, failures: [], scenarios: [] } as const;
+    const data = { attempt: 1, pr: null, worktreeHead: null, prHead: null, failures: [], scenarios: [] };
     const p1 = writeVerifyEvidence(dir, "toy", 1, { ...data, attempt: 1 });
     const p2 = writeVerifyEvidence(dir, "toy", 1, { ...data, attempt: 2 });
     const p3 = writeVerifyEvidence(dir, "toy", 1, { ...data, attempt: 1 });

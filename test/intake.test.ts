@@ -5,6 +5,7 @@ import { Ledger } from "../src/ledger";
 import type { IssueLite, PrLite, RepoConfig } from "../src/types";
 
 class FakeGh implements GhApi {
+  repo = "acme/app";
   issues: IssueLite[] = [];
   prs: PrLite[] = [];
   states: Record<number, string> = {}; // issue states by number (default "open")

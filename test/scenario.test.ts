@@ -67,11 +67,13 @@ describe("evalExpects (probe language)", () => {
 });
 
 describe("portBusy", () => {
+  // bun-types declare Server.port as number | undefined (a unix-socket server
+  // has none); every server in these tests listens on TCP, hence the `!`s
   test("detects a live listener and a free port", async () => {
     const busyServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    expect(await portBusy(busyServer.port)).toBe(true);
+    expect(await portBusy(busyServer.port!)).toBe(true);
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const freePort = probeServer.port;
+    const freePort = probeServer.port!;
     probeServer.stop(true);
     expect(await portBusy(freePort)).toBe(false);
     busyServer.stop(true);
@@ -81,7 +83,7 @@ describe("portBusy", () => {
 describe("runScenario (real harness, python3 http server)", () => {
   test("green scenario: readiness + probes + authoritative teardown", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     const spec: ScenarioSpec = {
       name: "runtime-test",
@@ -115,7 +117,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("product code and probes run under the agent env allowlist, never the factory's secrets", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     const saved = { f: process.env.FACTORY_API_KEY, z: process.env.ZAI_API_KEY };
     process.env.FACTORY_API_KEY = "factory-secret";
@@ -151,7 +153,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("failing probes report details", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     const spec: ScenarioSpec = {
       name: "fail-test",
@@ -184,7 +186,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("a reclaimable stray on the port is killed and the scenario still runs", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     const hog = Bun.spawn(["python3", "-m", "http.server", String(port), "--bind", "127.0.0.1"], {
       cwd: scratchRoot,
@@ -222,7 +224,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("an unreclaimable listener fails the scenario without running probes", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     // a supervisor that respawns the server after every kill: the closest
     // thing to a foreign process the reclaim cannot put down
@@ -253,7 +255,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("container wrap: setup/start/teardown run through the prefix, cleanup runs", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     // passthrough wrapper stands in for a `docker compose run` prefix
     const wrapBin = join(scratchRoot, "wrap-exec.sh");
@@ -291,7 +293,7 @@ describe("runScenario (real harness, python3 http server)", () => {
 
   test("failing setup fails the scenario", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
-    const port = probeServer.port;
+    const port = probeServer.port!;
     probeServer.stop(true);
     const spec: ScenarioSpec = {
       name: "setup-fail",
