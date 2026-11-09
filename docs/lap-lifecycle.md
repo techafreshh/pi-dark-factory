@@ -9,8 +9,10 @@ repo is what keeps main conflict-free.
 
 ## Lifecycle (one lap)
 
-1. **Intake** — deterministic: oldest open issue with no ledger row, no foreign PR claiming it,
-   no unmet `Depends on: #n`, none of `skip_labels` (or the factory's `needs-info` label).
+1. **Intake** — deterministic: oldest open issue with no ledger row, opened by a trusted author
+   (the repo owner, the factory's own gh account, or the config's `trusted_authors`), no
+   foreign PR claiming it, no unmet `Depends on: #n`, none of `skip_labels` (or the factory's
+   `needs-info` label).
 2. **Plan** (planner model, read-only) — writes `plan.md` in a fixed skeleton (approach with
    rejected alternatives, assumptions, repo patterns to mirror with `file:line` citations, files
    to change, anchored steps, validation, out-of-scope). Escapes: `NO_ACTION: <reason>` for

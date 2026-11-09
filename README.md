@@ -44,6 +44,12 @@ The engine is built so that autonomy can only deliver what deterministic checks 
   auto-revive a blocked issue at most 3 times a day, and stop for a human once the same
   failure repeats 3 rounds in a row. Missing product decisions escape as `factory:needs-info`
   questions for a human.
+- **Only trusted authors hand the factory work.** Issue text becomes agent prompts, and anyone
+  can open an issue on a public repo, so intake claims only issues opened by the repo owner,
+  the factory's own gh account, or a login in the repo's `trusted_authors`.
+- **Agents never see the factory's own secrets.** Host-side stages and scenario commands run
+  under an environment allowlist (runtime basics plus the repo's `pass_env`), not the service
+  environment that holds the API keys.
 - **Web grounding is untrusted data**, never instructions: lap agents verify external
   API/endpoint claims against live docs by default (`web_search` + `web_fetch`, per-repo
   toggleable).

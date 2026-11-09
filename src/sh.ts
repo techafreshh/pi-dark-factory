@@ -4,6 +4,9 @@ export interface ShOpts {
   cwd?: string;
   timeoutMs?: number;
   env?: Record<string, string>;
+  /** false = the child sees ONLY `env` (agent-facing commands pass an
+   *  agentEnv allowlist); default true merges `env` over process.env */
+  inheritEnv?: boolean;
   input?: string;
   /** spawn under setsid so a timeout can kill the whole process tree (Linux) */
   killGroup?: boolean;
@@ -42,7 +45,9 @@ export async function sh(cmd: string[], opts: ShOpts = {}): Promise<ShRes> {
     child = nodeSpawn(full[0], full.slice(1), {
       cwd: opts.cwd,
       env: Object.fromEntries(
-        Object.entries({ ...process.env, ...opts.env }).filter(([, v]) => v !== undefined)
+        Object.entries(opts.inheritEnv === false ? { ...opts.env } : { ...process.env, ...opts.env }).filter(
+          ([, v]) => v !== undefined
+        )
       ),
       stdio: [opts.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
     });

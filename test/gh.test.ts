@@ -1,5 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { labelNames } from "../src/gh";
+import { authorLogin, labelNames } from "../src/gh";
+
+describe("authorLogin (gh boundary normalization)", () => {
+  test("the real gh shape — an author object — normalizes to the login", () => {
+    // verbatim from `gh issue list --json number,author` (qed, gh 2.45, 2026-11-09)
+    const real = { id: "MDQ6VXNlcjY3NTEyODAx", is_bot: false, login: "techafreshh", name: "Techa" };
+    expect(authorLogin(real)).toBe("techafreshh");
+  });
+
+  test("string entries (test fakes) pass; anything without a login is undefined", () => {
+    expect(authorLogin("acme")).toBe("acme");
+    expect(authorLogin({ id: "x", name: "no login" })).toBeUndefined();
+    expect(authorLogin({ login: "" })).toBeUndefined();
+    expect(authorLogin(null)).toBeUndefined();
+    expect(authorLogin(undefined)).toBeUndefined();
+    expect(authorLogin("")).toBeUndefined();
+  });
+});
 
 describe("labelNames (gh boundary normalization)", () => {
   test("the real gh shape — label objects — normalizes to names", () => {

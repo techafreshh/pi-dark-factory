@@ -41,6 +41,7 @@ function stubGh(opts: { openTitles?: string[] } = {}) {
     prChecks: () => Promise.resolve([]),
     prHeadSha: () => Promise.resolve(null),
     prMerge: () => Promise.resolve(),
+    viewerLogin: () => Promise.resolve("factory-bot"),
     repo: "acme/toy",
   };
   void opts;

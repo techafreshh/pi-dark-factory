@@ -101,6 +101,13 @@ export interface RepoConfig {
     };
   };
   skip_labels: string[];
+  /**
+   * GitHub logins (beyond the repo owner and the factory's own gh account,
+   * which are always trusted) whose issues intake may claim. The issue body
+   * goes verbatim into agent prompts, and on a public repo anyone can open
+   * an issue — so an issue from anyone else is skipped, never planned.
+   */
+  trusted_authors?: string[];
   pi: {
     binary: string;
     tools: string[];
@@ -133,6 +140,9 @@ export interface IssueLite {
   title: string;
   body: string;
   labels: string[];
+  /** login of the account that opened the issue (gh's author object,
+   *  normalized at the boundary like labels) */
+  author?: string;
   createdAt?: string;
   state?: string;
 }

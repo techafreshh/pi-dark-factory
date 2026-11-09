@@ -59,6 +59,8 @@ export interface GhApi {
   prChecks(n: number): Promise<CheckState[]>;
   prHeadSha(n: number): Promise<string | null>;
   prMerge(n: number, method: "squash" | "merge" | "rebase", deleteBranch: boolean, matchHeadCommit?: string): Promise<void>;
+  /** the gh token's own login, or null when it cannot be read */
+  viewerLogin(): Promise<string | null>;
 }
 
 async function ghJson<T>(repo: string, args: string[]): Promise<T> {
@@ -83,14 +85,40 @@ export function labelNames(raw: unknown): string[] {
     .filter(Boolean);
 }
 
+/**
+ * `gh --json author` returns an OBJECT (recorded 2026-11-09 from qed:
+ * {"id":"MDQ6VXNlcjY3NTEyODAx","is_bot":false,"login":"techafreshh","name":"Techa"}).
+ * Normalize to the login, as labels are; strings pass for test fakes.
+ * Anything without a login is undefined, and intake treats that as untrusted.
+ */
+export function authorLogin(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw || undefined;
+  const login = (raw as any)?.login;
+  return typeof login === "string" && login ? login : undefined;
+}
+
+// the token's account never changes inside one process; a failed lookup is
+// not cached, so the next intake retries it
+let viewerLoginCache: string | null = null;
+
 export class Gh implements GhApi {
   constructor(public repo: string) {}
 
   issueList(state: "open" | "all", limit = 100): Promise<IssueLite[]> {
-    return ghJson<(Omit<IssueLite, "labels"> & { labels: unknown })[]>(this.repo, [
+    return ghJson<(Omit<IssueLite, "labels" | "author"> & { labels: unknown; author?: unknown })[]>(this.repo, [
       "issue", "list", "--state", state, "--limit", String(limit),
-      "--json", "number,title,body,labels,createdAt,state",
-    ]).then((rs) => rs.map((r) => ({ ...r, labels: labelNames(r.labels) })));
+      "--json", "number,title,body,labels,author,createdAt,state",
+    ]).then((rs) => rs.map((r) => ({ ...r, labels: labelNames(r.labels), author: authorLogin(r.author) })));
+  }
+
+  /** The login of the account the factory's gh token belongs to — the author
+   *  of every issue the slicer, discovery filing and regression pass open. */
+  async viewerLogin(): Promise<string | null> {
+    if (viewerLoginCache) return viewerLoginCache;
+    const res = await sh(["gh", "api", "user", "--jq", ".login"], { timeoutMs: 30000 });
+    const login = res.code === 0 ? res.stdout.trim() : "";
+    if (login) viewerLoginCache = login;
+    return login || null;
   }
 
   async issueView(n: number): Promise<IssueLite & { state: string }> {

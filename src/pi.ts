@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn } from "node:child_process";
+import { agentEnv } from "./agentenv";
 import { parseEventStream } from "./pievents";
 import { killTree, sh } from "./sh";
 import type { ModelSpec, StageModels, Usage } from "./types";
@@ -22,6 +23,10 @@ export interface PiCallOpts {
   quietMs?: number;
   /** container mode: docker prefix; cleanupArgv runs after any exit (docker rm -f) */
   runnerPrefix?: { argvPrefix: string[]; cleanupArgv?: string[] };
+  /** env var names forwarded on top of the agentEnv allowlist — the repo's
+   *  env.pass_env (model keys, GITHUB_TOKEN); everything else in the
+   *  factory's own environment stays out of the agent's process */
+  passEnv?: string[];
 }
 
 export type PiOutcome =
@@ -89,7 +94,7 @@ export async function callPi(o: PiCallOpts): Promise<PiOutcome> {
     // unresolved exit promise while identical shell invocations worked.
     proc = nodeSpawn(full[0], full.slice(1), {
       cwd: o.cwd,
-      env: Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)),
+      env: agentEnv(o.passEnv),
       stdio: ["pipe", "pipe", "pipe"],
     });
     proc.on("error", () => {}); // spawn failures surface via the exit promise

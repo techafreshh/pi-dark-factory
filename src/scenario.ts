@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { agentEnv } from "./agentenv";
 import { sh } from "./sh";
 import { escapeSh, type ShRes } from "./machine";
 
@@ -232,6 +233,9 @@ export async function runScenario(
      *  scenario starts so a container leaked by a killed lap (which holds the
      *  published scenario port) cannot pre-fail every attempt */
     preClean?: string;
+    /** the repo's env.pass_env: forwarded on top of the agentEnv allowlist —
+     *  setup and start run agent-written product code on the VPS */
+    passEnv?: string[];
   }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
@@ -262,15 +266,17 @@ export async function runScenario(
 
   rmSync(scratchDir, { recursive: true, force: true });
   mkdirSync(scratchDir, { recursive: true });
+  // product code runs under this env: an allowlist (agentEnv), never the
+  // factory's own service env with its API keys
   const env = {
-    ...process.env,
+    ...agentEnv(opts.passEnv),
     PORT: String(spec.port),
     ...(opts.worktree ? { WORKTREE: opts.worktree } : {}),
   };
   const raw = (cmd: string) => (opts.wrap ? [...opts.wrap.argvPrefix, "bash", "-c", cmd] : ["bash", "-c", cmd]);
 
   if (spec.setup) {
-    const res = await sh(raw(spec.setup), { cwd: scratchDir, env, timeoutMs: 600000, killGroup: !opts.wrap });
+    const res = await sh(raw(spec.setup), { cwd: scratchDir, env, inheritEnv: false, timeoutMs: 600000, killGroup: !opts.wrap });
     if (res.code !== 0) {
       return mkResults(false, `setup failed (exit ${res.code}): ${res.stderr.trim().slice(0, 300)}`);
     }
@@ -305,6 +311,7 @@ export async function runScenario(
       const res = await sh(["bash", "-c", probe.command], {
         cwd: scratchDir,
         env,
+        inheritEnv: false,
         timeoutMs,
         killGroup: true,
       });
@@ -344,7 +351,7 @@ export async function runScenario(
       await Promise.resolve(opts.wrap.cleanup()).catch(() => {});
     }
     if (spec.teardown) {
-      await sh(raw(spec.teardown), { cwd: scratchDir, env, timeoutMs: 60000, killGroup: !opts.wrap });
+      await sh(raw(spec.teardown), { cwd: scratchDir, env, inheritEnv: false, timeoutMs: 60000, killGroup: !opts.wrap });
     }
   }
 }

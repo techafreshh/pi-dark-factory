@@ -34,6 +34,8 @@ beforeAll(() => {
       "    import time; time.sleep(120)",
       "elif mode == 'no_text':",
       "    print(json.dumps({'type': 'agent_start'}), flush=True); sys.exit(0)",
+      "elif mode == 'env':",
+      "    emit(','.join(sorted(os.environ.keys())))",
       "else:",
       "    sys.exit(2)",
     ].join("\n")
@@ -57,6 +59,8 @@ const opts = (timeoutMs: number) => ({
   cwd: fixtureDir,
   timeoutMs,
   tools: ["read", "bash"],
+  // the fake's control knob rides the same allowlist a repo's pass_env does
+  passEnv: ["FAKE_MODE"],
 });
 
 describe("buildPiArgs", () => {
@@ -110,6 +114,31 @@ describe("callPi (real subprocess, fake pi)", () => {
       expect(Date.now() - started).toBeLessThan(5000);
     } finally {
       delete process.env.FAKE_MODE;
+    }
+  }, 10000);
+
+  test("the agent sees an env allowlist: factory secrets stay out, pass_env and the web key ride in", async () => {
+    const secrets = ["FACTORY_API_KEY", "DARK_FACTORY_LAPTOP_KEY", "INSTABOX_API_KEY", "BOXD_API_KEY", "GH_TOKEN"];
+    const touched = [...secrets, "ZAI_API_KEY", "TINYFISH_API_KEY", "FAKE_MODE"];
+    const saved = Object.fromEntries(touched.map((k) => [k, process.env[k]]));
+    for (const k of secrets) process.env[k] = "secret-" + k;
+    process.env.ZAI_API_KEY = "model-key";
+    process.env.TINYFISH_API_KEY = "web-key";
+    process.env.FAKE_MODE = "env";
+    try {
+      const res = await callPi({ ...opts(5000), model: model("good"), passEnv: ["FAKE_MODE", "ZAI_API_KEY"] });
+      expect(res.kind).toBe("ok");
+      const names = res.kind === "ok" ? res.text.split(",") : [];
+      for (const k of secrets) expect(names).not.toContain(k);
+      expect(names).toContain("ZAI_API_KEY"); // the repo's pass_env
+      expect(names).toContain("TINYFISH_API_KEY"); // force-delivered like the machine env file
+      expect(names).toContain("PATH");
+      expect(names).toContain("HOME");
+    } finally {
+      for (const k of touched) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
     }
   }, 10000);
 });

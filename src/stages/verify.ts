@@ -197,6 +197,7 @@ export async function runVerify(
         defaultProbeMs: cfg.timeouts.probe_ms,
         worktree: opts.worktree,
         preClean: `pdf-${cfg.slug}-`,
+        passEnv: cfg.env.pass_env,
         wrap: envBuild
           ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
           : undefined,
@@ -277,6 +278,7 @@ export async function runPostMergeRegression(
         defaultProbeMs: cfg.timeouts.probe_ms,
         worktree: wt,
         preClean: `pdf-${cfg.slug}-`,
+        passEnv: cfg.env.pass_env,
         wrap: envBuild
           ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
           : undefined,

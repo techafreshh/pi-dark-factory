@@ -176,7 +176,7 @@ export async function opsOnboard(
   const ports = await pickPorts(stateDir);
   const cfg = {
     _readme:
-      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
+      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. trusted_authors: GitHub logins (besides the repo owner and the factory's own gh account, always trusted) whose issues intake may claim — anyone else's issue is skipped, because its text becomes agent prompts. env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
     repo: target,
     slug,
     default_branch: branch,
@@ -186,6 +186,7 @@ export async function opsOnboard(
     timeouts: { stage_minutes: 60, checks_minutes: 30, readiness_seconds: 120, probe_ms: 10000 },
     scenario: { ports, runtime: "runtime.json", holdout: "holdout.json" },
     skip_labels: [] as string[],
+    trusted_authors: [] as string[],
     env: {
       mode: "host",
       compose_file: "docker-compose.yml",
@@ -662,6 +663,7 @@ export async function opsProveGates(
         readinessSeconds: Math.min(cfg.timeouts.readiness_seconds, 60),
         defaultProbeMs: cfg.timeouts.probe_ms,
         preClean: `pdf-${slug}-`,
+        passEnv: cfg.env.pass_env,
       });
       const expects = new Map(spec.probes.map((p) => [p.id, p.expect]));
       let sPlanted = 0;
@@ -777,6 +779,7 @@ export async function opsScenarioTest(
       defaultProbeMs: cfg.timeouts.probe_ms,
       worktree: wt,
       preClean: `pdf-${slug}-`,
+      passEnv: cfg.env.pass_env,
       wrap: envBuild
         ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
         : undefined,
@@ -873,7 +876,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
 }
 
 const CONFIG_PATCH_ALLOW = [
-  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "pi", "discoveries",
+  "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "trusted_authors", "pi", "discoveries",
 ];
 
 function deepMerge(base: any, patch: any): any {

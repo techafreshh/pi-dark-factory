@@ -77,6 +77,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       extraArgs: cfg.pi.extra_args,
       timeoutMs: stageMinutes(cfg, stage) * 60_000,
       quietMs: QUIET_KILL_MS,
+      passEnv: cfg.env.pass_env,
     };
     // "where am I" brief: prepended to the prompt (zero tool calls to see
     // it) and — where the working tree is local — written to disk beside it.

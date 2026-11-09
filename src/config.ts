@@ -140,6 +140,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
       holdout: raw.scenario?.holdout,
     },
     skip_labels: raw.skip_labels ?? DEFAULTS.skip_labels,
+    trusted_authors: raw.trusted_authors ?? [],
     discoveries: { ...DEFAULTS.discoveries, ...(raw.discoveries ?? {}) },
     ui: { ...DEFAULTS.ui, ...(raw.ui ?? {}) },
     pi: {
@@ -166,6 +167,10 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
     throw new Error(`config discoveries.auto_file must be true or false (got ${JSON.stringify(cfg.discoveries!.auto_file)})`);
   if (cfg.ui!.enabled !== undefined && typeof cfg.ui!.enabled !== "boolean")
     throw new Error(`config ui.enabled must be true or false (got ${JSON.stringify(cfg.ui!.enabled)})`);
+  // a typo'd shape here would widen or silently empty the trust list, so it
+  // fails fast like the boolean flags above
+  if (!Array.isArray(cfg.trusted_authors) || cfg.trusted_authors.some((a) => typeof a !== "string" || !/^[^\s]+$/.test(a)))
+    throw new Error(`config trusted_authors must be an array of GitHub logins (got ${JSON.stringify(cfg.trusted_authors)})`);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")

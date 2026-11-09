@@ -134,3 +134,19 @@ describe("loadRepoConfig ui key", () => {
     expect(() => loadRepoConfig(path)).toThrow(/ui.enabled must be true or false/);
   });
 });
+
+describe("loadRepoConfig trusted_authors", () => {
+  test("defaults to an empty list (owner + factory login only) and rejects anything but logins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfcfg-"));
+    const path = join(dir, "config.json");
+    const base = { repo: "acme/app", models: { default: { provider: "zai", model: "glm" } } };
+    writeFileSync(path, JSON.stringify(base));
+    expect(loadRepoConfig(path).trusted_authors).toEqual([]);
+    writeFileSync(path, JSON.stringify({ ...base, trusted_authors: ["alice", "bob-2"] }));
+    expect(loadRepoConfig(path).trusted_authors).toEqual(["alice", "bob-2"]);
+    for (const bad of ["alice", [""], ["two words"], [42], { alice: true }]) {
+      writeFileSync(path, JSON.stringify({ ...base, trusted_authors: bad }));
+      expect(() => loadRepoConfig(path)).toThrow(/trusted_authors must be an array of GitHub logins/);
+    }
+  });
+});

@@ -52,7 +52,8 @@ export interface PickResult {
  * Deterministic intake — no LLM judgment, no GitHub label state machine.
  * The claim ledger is the source of truth: only an issue with NO row (or an
  * interrupted lap below the attempt cap) is claimable, so a delivered issue
- * can never be re-claimed, no matter what a crashed lap left behind.
+ * can never be re-claimed, no matter what a crashed lap left behind. Only
+ * issues opened by a trusted author (trustedAuthors) are ever considered.
  * Returns ALL claimable issues, oldest first — the tick dispatches them in parallel.
  */
 export async function listClaimable(
@@ -65,6 +66,9 @@ export async function listClaimable(
 }
 
 export interface IntakeSkips {
+  /** opened by an account that is neither the repo owner, the factory's own
+   *  gh account, nor in trusted_authors — never planned */
+  untrusted: number[];
   /** the factory closed these (merged / no_action / blocked / cap-reached) */
   ledgerClosed: number[];
   /** an open PR claims the issue — deliberate foreign claim or stray */
@@ -75,6 +79,20 @@ export interface IntakeSkips {
   depGated: number[];
   /** open issues on GitHub, claimable or not */
   openCount: number;
+}
+
+/**
+ * Who may hand the factory work: the repo owner, the factory's own gh account
+ * (it opens every sliced, discovery and regression issue) and the repo's
+ * trusted_authors. GitHub logins are case-insensitive.
+ */
+export async function trustedAuthors(cfg: RepoConfig, gh: GhApi): Promise<Set<string>> {
+  const viewer = await gh.viewerLogin().catch(() => null);
+  return new Set(
+    [cfg.repo.split("/")[0], viewer, ...(cfg.trusted_authors ?? [])]
+      .filter((a): a is string => !!a)
+      .map((a) => a.toLowerCase())
+  );
 }
 
 /** Same intake walk as listClaimable, but it remembers WHY each non-claimable
@@ -91,10 +109,17 @@ export async function listClaimableDetailed(
   // (gh stops paging when a page comes back short).
   const issues = (await gh.issueList("open", INTAKE_ISSUE_LIMIT)).slice().sort((a, b) => a.number - b.number);
   const prs = await gh.prListOpen();
+  const trusted = await trustedAuthors(cfg, gh);
   const claimable: IssueLite[] = [];
-  const skips: IntakeSkips = { ledgerClosed: [], prClaimed: [], labelSkipped: [], depGated: [], openCount: issues.length };
+  const skips: IntakeSkips = { untrusted: [], ledgerClosed: [], prClaimed: [], labelSkipped: [], depGated: [], openCount: issues.length };
 
   for (const issue of issues) {
+    // first gate: the body becomes agent prompt text, and on a public repo
+    // anyone can open an issue. No author (a shape gh never sent) = untrusted.
+    if (!issue.author || !trusted.has(issue.author.toLowerCase())) {
+      skips.untrusted.push(issue.number);
+      continue;
+    }
     const labels = issue.labels ?? [];
     if (labels.some((l) => cfg.skip_labels.includes(l) || l === NEEDS_INFO_LABEL)) {
       skips.labelSkipped.push(issue.number);
@@ -143,6 +168,7 @@ export async function listClaimableDetailed(
 export function describeIntakeSkips(skips: IntakeSkips): string {
   const nums = (a: number[]) => (a.length > 8 ? `#${a.slice(0, 8).join(" #")} +${a.length - 8} more` : a.map((n) => `#${n}`).join(" "));
   const parts: string[] = [];
+  if (skips.untrusted.length) parts.push(`untrusted-author ${nums(skips.untrusted)}`);
   if (skips.ledgerClosed.length) parts.push(`factory-closed ${skips.ledgerClosed.length}`);
   if (skips.labelSkipped.length) parts.push(`skip-labeled ${nums(skips.labelSkipped)}`);
   if (skips.prClaimed.length) parts.push(`pr-claimed ${nums(skips.prClaimed)}`);

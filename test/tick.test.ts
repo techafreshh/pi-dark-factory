@@ -25,8 +25,15 @@ class FakeGh implements GhApi {
 
   issueList(state: "open" | "all", limit?: number): Promise<IssueLite[]> {
     return Promise.resolve(
-      this.issues.filter((i) => state === "all" || (this.states[i.number] ?? "open") === "open").slice(0, limit)
+      this.issues
+        .filter((i) => state === "all" || (this.states[i.number] ?? "open") === "open")
+        .slice(0, limit)
+        // real gh always reports the author; unset fixtures are the repo owner's
+        .map((i) => ({ ...i, author: i.author ?? "acme" }))
     );
+  }
+  viewerLogin(): Promise<string | null> {
+    return Promise.resolve("factory-bot");
   }
   issueView(n: number): Promise<IssueLite & { state: string }> {
     const i = this.issues.find((x) => x.number === n);

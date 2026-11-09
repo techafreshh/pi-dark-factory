@@ -113,6 +113,42 @@ describe("runScenario (real harness, python3 http server)", () => {
     expect(await portBusy(port)).toBe(false);
   }, 30000);
 
+  test("product code and probes run under the agent env allowlist, never the factory's secrets", async () => {
+    const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
+    const port = probeServer.port;
+    probeServer.stop(true);
+    const saved = { f: process.env.FACTORY_API_KEY, z: process.env.ZAI_API_KEY };
+    process.env.FACTORY_API_KEY = "factory-secret";
+    process.env.ZAI_API_KEY = "model-key";
+    const spec: ScenarioSpec = {
+      name: "env-test",
+      port,
+      // the "product" records what its own process can see
+      setup: "printenv FACTORY_API_KEY > setup-saw.txt || echo absent > setup-saw.txt",
+      start: "python3 -m http.server $PORT --bind 127.0.0.1",
+      readiness_path: "/",
+      probes: [
+        { id: "setup-env", description: "setup saw no factory key", command: "cat setup-saw.txt", expect: "body_contains:absent" },
+        { id: "probe-env", description: "probe sees no factory key", command: "printenv FACTORY_API_KEY || echo absent", expect: "body_contains:absent" },
+        { id: "pass-env", description: "pass_env still rides in", command: "printenv ZAI_API_KEY", expect: "body_contains:model-key" },
+      ],
+    };
+    try {
+      const result = await runScenario(spec, join(scratchRoot, "env"), {
+        readinessSeconds: 15,
+        defaultProbeMs: 5000,
+        passEnv: ["ZAI_API_KEY"],
+      });
+      expect(result.results.filter((r) => !r.pass)).toEqual([]);
+      expect(result.pass).toBe(true);
+    } finally {
+      if (saved.f === undefined) delete process.env.FACTORY_API_KEY;
+      else process.env.FACTORY_API_KEY = saved.f;
+      if (saved.z === undefined) delete process.env.ZAI_API_KEY;
+      else process.env.ZAI_API_KEY = saved.z;
+    }
+  }, 30000);
+
   test("failing probes report details", async () => {
     const probeServer = Bun.serve({ port: 0, fetch: () => new Response("x") });
     const port = probeServer.port;
