@@ -10,7 +10,7 @@ import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachine } fr
 import { openBoxdLapMachine, type BoxdLapMachine } from "./machine-boxd";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
-import { BillingHoldError, billingFailure, callPiWithFallback, type PiStageResult } from "./pi";
+import { BillingHoldError, billingHold, callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
 import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
 import { DISCOVERY_LABEL, describeIntakeSkips, listClaimable, listClaimableDetailed, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
@@ -343,10 +343,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       ("usage" in outcome ? outcome.usage : null) ?? null,
       outcome.kind === "ok" ? null : "error" in outcome ? outcome.error : outcome.kind
     );
-    // out of credit or a dead key: no attempt can succeed, so stop the lap
-    // here instead of spending the attempt ladder and the revive fuses on it
-    const billing = billingFailure(outcome);
-    if (billing) throw new BillingHoldError(`${stage} stage: ${billing}`);
+    // every model out of credit or its key dead: no attempt can succeed, so
+    // stop the lap here instead of spending the attempt ladder and the
+    // revive fuses on it (one usable model in the chain = a normal failure)
+    const billing = billingHold(res);
+    if (billing) throw new BillingHoldError(`${stage} stage, every model failed on billing — ${billing}`);
   };
 
   let outcome: string | null = null;

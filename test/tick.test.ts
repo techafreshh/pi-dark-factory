@@ -647,6 +647,24 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("BILLING HOLD on toy");
   }, 60000);
 
+  test("no billing hold while one model in the chain failed for another reason", async () => {
+    const w = makeWorld({ attempts: 1 });
+    const mixed: CallStageFn = async (stage) => {
+      if (stage === "plan") return okPi("PLAN: create hello.txt with content hello.");
+      const out402 = 'model produced no final text: 402: {"message":"Insufficient Balance (request_id: x)","type":"insufficient_balance_error"}';
+      return {
+        outcome: { kind: "provider_error" as const, error: out402 },
+        modelsTried: [
+          { spec: { provider: "meta", model: "m" }, outcome: "provider_error" as const, error: "pi exited 1: HTTP 500 upstream" },
+          { spec: { provider: "deepseek", model: "d" }, outcome: "provider_error" as const, error: out402 },
+        ],
+      };
+    };
+    const outcome = await tickRepo(w.cfg, w.stateDir, { ledger: w.ledger, gh: w.gh, callStage: mixed });
+    expect(outcome).toBe("blocked"); // an ordinary failed attempt
+    expect(existsSync(join(w.stateDir, "repos", "toy", "paused"))).toBe(false);
+  }, 60000);
+
   test("daily ceiling: a repo at its implement-attempt limit stops before the next lap", async () => {
     const w = makeWorld();
     w.cfg.limits = { daily_attempts: 2 };

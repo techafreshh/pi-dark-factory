@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { billingFailure, buildPiArgs, callPi, callPiWithFallback } from "../src/pi";
+import { billingFailure, billingHold, buildPiArgs, callPi, callPiWithFallback } from "../src/pi";
 import type { ModelSpec, StageModels } from "../src/types";
 
 let fixtureDir: string;
@@ -234,5 +234,39 @@ describe("billingFailure (errors no retry can fix)", () => {
     }
     expect(billingFailure({ kind: "timeout" })).toBeNull();
     expect(billingFailure({ kind: "ok", text: "the docs mention 402 Payment Required", usage: null })).toBeNull();
+  });
+});
+
+describe("billingHold (only when no model in the chain can serve)", () => {
+  // provider texts recorded 2026-11-10 from the factory's own models.json providers
+  const RIVER_402 = 'model produced no final text: 402: {"message":"Billing: insufficient_funds","type":"invalid_request_error","code":null}';
+  const DEEPSEEK_402 = 'model produced no final text: 402: {"message":"Insufficient Balance (request_id: 6e70b4f4)","type":"insufficient_balance_error"}';
+  const COOLING_429 = 'model produced no final text: 429: {"message":"all clinepass keys are cooling"}';
+  const step = (provider: string, outcome: "ok" | "provider_error", error?: string) => ({
+    spec: { provider, model: "m" },
+    outcome,
+    ...(error ? { error } : {}),
+  });
+  const res = (steps: ReturnType<typeof step>[]) => {
+    const last = steps[steps.length - 1];
+    return {
+      outcome: last.outcome === "ok" ? { kind: "ok" as const, text: "x", usage: null } : { kind: "provider_error" as const, error: last.error! },
+      modelsTried: steps,
+    };
+  };
+
+  test("every model out of credit is a hold, and the reason names each one", () => {
+    const why = billingHold(res([step("river", "provider_error", RIVER_402), step("deepseek", "provider_error", DEEPSEEK_402)]));
+    expect(why).toContain("river/m");
+    expect(why).toContain("deepseek/m");
+  });
+
+  test("a transient failure anywhere in the chain is not a hold", () => {
+    expect(billingHold(res([step("meta", "provider_error", "pi exited 1: HTTP 500"), step("river", "provider_error", RIVER_402), step("deepseek", "provider_error", DEEPSEEK_402)]))).toBeNull();
+    expect(billingHold(res([step("river", "provider_error", RIVER_402), step("clinepass-rotator", "provider_error", COOLING_429), step("deepseek", "provider_error", DEEPSEEK_402)]))).toBeNull();
+  });
+
+  test("a fallback that served means the stage worked", () => {
+    expect(billingHold(res([step("river", "provider_error", RIVER_402), step("meta", "ok")]))).toBeNull();
   });
 });

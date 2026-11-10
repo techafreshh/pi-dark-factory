@@ -226,6 +226,27 @@ export function billingFailure(o: PiOutcome): string | null {
 export class BillingHoldError extends Error {}
 
 /**
+ * A stage is a billing hold only when EVERY model its fallback chain tried
+ * failed on billing. A failure anywhere else in the chain (a primary's 500,
+ * a key pool cooling down) can clear on its own, and pausing the repo for it
+ * would wait on a human for nothing. Recorded case (2026-11-10): meta serves,
+ * while river and deepseek, the fallbacks of most repos, both answer 402, so
+ * a meta blip ending the chain on deepseek's 402 must not pause those repos.
+ * Returns the per-model reasons, or null.
+ */
+export function billingHold(res: PiStageResult): string | null {
+  const tried = res.modelsTried ?? [];
+  if (tried.length === 0) return billingFailure(res.outcome);
+  const reasons: string[] = [];
+  for (const t of tried) {
+    const why = t.outcome === "provider_error" ? billingFailure({ kind: "provider_error", error: t.error ?? "" }) : null;
+    if (!why) return null;
+    reasons.push(`${t.spec.provider}/${t.spec.model}: ${why.slice(0, 160)}`);
+  }
+  return reasons.join(" | ");
+}
+
+/**
  * Run a stage against [base, ...fallback]. Provider errors advance the
  * chain; timeouts and spawn errors return immediately (a hung stream is a
  * host problem, not a model problem — retrying on another model just burns

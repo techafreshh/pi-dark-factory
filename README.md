@@ -150,5 +150,5 @@ docs/                deep dives (below)
   concurrent machines; boxd: your org's limit).
 - Lap and backlog mutations spend real provider tokens. Spend is bounded by per-stage timeouts,
   attempt caps and a per-repo daily ceiling (`limits.daily_attempts`, default 60 implement
-  attempts per UTC day), not by a dollar meter. A provider `402` (out of credit) or `401` (bad
-  key) pauses the repo until someone runs `unpause`.
+  attempts per UTC day), not by a dollar meter. When every model a stage tries answers `402`
+  (out of credit) or `401` (bad key), the repo pauses until someone runs `unpause`.
