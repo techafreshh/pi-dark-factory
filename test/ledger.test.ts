@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Ledger } from "../src/ledger";
 
 describe("Ledger (claim ledger — the anti-wedge source of truth)", () => {
@@ -46,4 +49,35 @@ describe("Ledger (claim ledger — the anti-wedge source of truth)", () => {
     expect(stage.input_tokens).toBe(100);
     expect(stage.output_tokens).toBe(50);
   });
+
+  test("a write waits for another process's write lock instead of failing with 'database is locked'", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfledger-"));
+    const path = join(dir, "factory.db");
+    try {
+      const l = new Ledger(path);
+      // a second process holds the write lock for 800 ms, as a neighbor
+      // repo's tick process does while it records a stage
+      const holder = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `const { Database } = require("bun:sqlite"); const db = new Database(${JSON.stringify(path)});` +
+            `db.exec("BEGIN IMMEDIATE"); console.log("locked"); Bun.sleepSync(800); db.exec("COMMIT");`,
+        ],
+        { stdout: "pipe" }
+      );
+      const dec = new TextDecoder();
+      let seen = "";
+      for await (const chunk of holder.stdout) {
+        seen += dec.decode(chunk);
+        if (seen.includes("locked")) break;
+      }
+      const t0 = Date.now();
+      expect(l.claim("acme/app", 1)).toBe(true); // blocks until the holder commits
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(300);
+      expect(await holder.exited).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20000);
 });

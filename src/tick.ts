@@ -1350,10 +1350,15 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
     // instabox janitor at the tick's tail: machines are per-lap disposables,
     // but crashed laps park them (and the platform list has shown phantom
     // "running" records after deletes) — reap anything whose issue has no
-    // in_progress ledger row, so quota never silently fills with orphans
-    try {
-      await reapOrphanMachines(opts.stateDir, ledger, (m) => receipt(opts.stateDir, m));
-    } catch {}
+    // in_progress ledger row, so quota never silently fills with orphans.
+    // Full ticks only: the daemon scheduler starts a scoped tick per repo
+    // every pass and runs the janitor once itself, so scoped tails would
+    // list the platforms' machines ~30 times per pass.
+    if (!scoped) {
+      try {
+        await reapOrphanMachines(opts.stateDir, ledger, (m) => receipt(opts.stateDir, m));
+      } catch {}
+    }
   } finally {
     // per-repo locks are released per task; a scoped tick's single lock by
     // beginTick's own finally — nothing left to release at whole-tick level

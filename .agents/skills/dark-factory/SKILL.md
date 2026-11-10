@@ -17,8 +17,10 @@ description: >-
 > Source of truth lives in the factory repo (`.agents/skills/dark-factory/`);
 > installed copies are re-synced from it. Deep dives: the repo's `docs/`.
 
-The factory is an unattended loop on the VPS: a systemd **timer fires a tick
-every 15 minutes**, and each tick **chains laps down the dependency chain** —
+The factory is an unattended loop on the VPS: a scheduler **starts a tick
+every 15 minutes** (the daemon's scheduler, one tick process per repo; older
+installs use the `pi-factory.timer` fleet tick), and each tick **chains laps
+down the dependency chain** —
 after a merge or block it re-intakes and runs the next claimable issue
 (bounded at 6 laps/repo/tick), auto-revives blocked issues (fresh attempt
 budget; fuses: max 3 revive rounds/issue/day, plus a stagnation breaker when
@@ -27,8 +29,8 @@ cooldown to retry its own recovery. Every lap takes the oldest claimable
 GitHub issue through intake → plan → implement → verify (CI + black-box
 runtime/holdout scenarios) → review → squash-merge → close. The **claim
 ledger** is the source of truth — a delivered issue is never re-claimed.
-Manual `tick` is always safe: the pidfile no-ops it while the timer's tick
-is live.
+Manual `tick` is always safe: the per-repo pidfile no-ops it while that
+repo's scheduled tick is live.
 
 **This skill's entire factory interface is the remote client + GitHub.** For
 code-level truth (diffs, checks, files, issue bodies) query GitHub directly
@@ -52,11 +54,14 @@ repo's `docs/operations.md`.
   implementer's context and never move into the product repo.
 - **One repo, one slug.** `unblock <slug>` takes the slug — never touch
   another repo's rows.
-- A `git pull` on the server is not enough for tick-behavior changes: the
-  daemon runs its start-time code until restarted, and a restart kills
-  in-flight laps. This discipline is the operator's; when tick behavior
-  changed, TELL the operator that a restart at idle is required
-  (details: repo `docs/operations.md`).
+- Every tick runs as its own process and loads the code on disk, so a
+  `git pull` on the server reaches the next tick. The daemon itself (API,
+  scheduler) keeps its start-time code until restarted. With the daemon
+  scheduler set up (`docs/operations.md`, "Daemon scheduler"), a restart
+  leaves running laps alone; on an install still on the timer, a restart
+  kills the tick processes the daemon started, so it waits for idle. This
+  discipline is the operator's: when `factoryd.ts`, `ops.ts` or
+  `scheduler.ts` changed, TELL the operator a daemon restart is required.
 
 ## Connect
 
@@ -337,7 +342,7 @@ Every row was paid for in real laps. Match the receipt, don't re-derive.
 | a fresh GitHub issue doesn't tick while other repos run laps | `chain budget (N min) spent for <slug> — remaining work (from #M) resumes on the next tick` = the repo's chain hit its 12-min-per-tick window and handed off by design (the in-flight lap always completes; bounded because the timer's re-arm waits for the whole tick to end); `idle after #N: K open, none claimable — dep-gated …` = the body's own `Depends on: #…` gate holds until its parents merge | read the receipts first: a budget handoff needs nothing; `Depends on:` gates resolve themselves as parents merge; to drain one repo NOW, `tick <slug>` fires a scoped tick (pidfile-arbitrated, never double-runs) |
 | boxd lap: `pi: command not found` (exit 127) in-box | the SDK exec transport starts NO login shell, so `~/.bun/bin` (where `bun i -g` put pi) is off PATH — instabox's sshd never had this because sshd sources the profile | fixed in the exec wrapper (exports the standard PATH before the payload); recurs → the snapshot lost the binary (`bun i -g @earendil-works/pi-coding-agent` on a bake box, re-snapshot) |
 | boxd verify: `server never became ready … (last code 000)` while the box answers fine out-of-band | fixed frame-parsing artifact (2026-11-07, both smoke repos, 9 attempts): `curl -w '%{http_code}'` emits NO trailing newline, the old capture frames fused the last output line with the END marker and the regex silently dropped it — the probes were answering 200 all along | fixed (wrapper emits a newline before each END marker; parser strips exactly one). Should not recur — if 000s appear again, FIRST probe the box directly through the SDK before blaming the server |
-| boxd: a parked `pdf-*` machine outlives its lap (daemon restart mid-lap) | only a killed process leaves one: every lap that ends in-process destroys its box, thrown laps included | the janitor reaps it at the next tick's tail once the issue has no live lap; `dark-factory cleanup` forces a pass now |
+| boxd: a parked `pdf-*` machine outlives its lap (a killed tick process) | only a killed process leaves one: every lap that ends in-process destroys its box, thrown laps included | the janitor reaps it at the next scheduler pass (or fleet tick) once the issue has no live lap; `dark-factory cleanup` forces a pass now |
 
 
 Operator discipline paid for twice: after a server-side infra fix, wait for a

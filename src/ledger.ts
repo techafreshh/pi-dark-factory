@@ -87,6 +87,11 @@ export class Ledger {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true });
+    // first, before anything that takes a lock: per-repo tick processes and
+    // the daemon write the same file, and without a timeout a write that
+    // meets another process's write lock fails at once with "database is
+    // locked" (inside a lap that costs an attempt); with it, the write waits
+    this.db.exec("PRAGMA busy_timeout = 15000;");
     this.db.exec("PRAGMA journal_mode=WAL;");
     this.db.exec(SCHEMA);
     // additive migration: pi's usage carries a computed dollar cost — try the

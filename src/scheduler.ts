@@ -64,12 +64,16 @@ export function onboardedSlugs(stateDir: string): string[] {
 /** One scheduling pass: start a tick process for every repo that has none
  *  running (up to `concurrency` live repo ticks; 0 = unlimited), then reap
  *  orphaned lap machines. Pause handling stays in the child, which receipts
- *  the pause and its reason exactly as the fleet tick did. */
+ *  the pause and its reason exactly as the fleet tick did. Starts are spaced
+ *  `gapMs` apart (default 1 s, PDF_SCHEDULER_GAP_MS): a tick process holds
+ *  ~45-56 MB, an idle one exits within seconds, and 30 simultaneous starts
+ *  on the 2026-11 host (3.9 GB available, swap in use) were a ~1.5 GB spike. */
 export async function schedulePass(
   stateDir: string,
-  opts: { concurrency?: number; spawnTick?: (stateDir: string, slug: string) => number | undefined } = {}
+  opts: { concurrency?: number; gapMs?: number; spawnTick?: (stateDir: string, slug: string) => number | undefined } = {}
 ): Promise<{ started: string[]; running: string[] }> {
   const start = opts.spawnTick ?? spawnRepoTick;
+  const gapMs = opts.gapMs ?? Number(process.env.PDF_SCHEDULER_GAP_MS ?? 1000);
   const slugs = onboardedSlugs(stateDir);
   const running = slugs.filter((s) => repoLockHeld(stateDir, s));
   const limit = opts.concurrency ?? 0;
@@ -83,15 +87,21 @@ export async function schedulePass(
       receipt(stateDir, `skipping ${slug}: concurrency cap (${limit}) reached this pass`, slug);
       continue;
     }
+    if (started.length > 0 && gapMs > 0) await new Promise((r) => setTimeout(r, gapMs));
     start(stateDir, slug);
     started.push(slug);
   }
   receipt(stateDir, `scheduler: started ${started.length} repo tick(s), ${running.length} still running${limit > 0 ? `, concurrency=${limit}` : ""}`);
   // the janitor ran at the tail of every fleet tick; it only reaps machines
-  // whose issue has no in_progress row, so laps running in children are safe
+  // whose issue has no in_progress row, so laps running in children are safe.
+  // The ledger is closed after: the daemon runs this pass 96 times a day.
+  const ledger = new Ledger(join(stateDir, "factory.db"));
   try {
-    await reapOrphanMachines(stateDir, new Ledger(join(stateDir, "factory.db")), (m) => receipt(stateDir, m));
-  } catch {}
+    await reapOrphanMachines(stateDir, ledger, (m) => receipt(stateDir, m));
+  } catch {
+  } finally {
+    ledger.db.close();
+  }
   return { started, running };
 }
 
