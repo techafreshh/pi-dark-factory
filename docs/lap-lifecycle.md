@@ -9,6 +9,11 @@ chained lap; whatever remains resumes on the next tick. When the chain stalls on
 10 minutes once and tries one revive. Strict one-at-a-time order inside a repo is what keeps
 main conflict-free.
 
+Machine-mode laps lease a machine slot from the fleet's allocator **before** intake claims
+an issue (priority with aging; see [parallel-mode.md](parallel-mode.md)). A repo with
+`scheduling.parallel` runs up to `max_lanes` laps at once, each on an issue whose
+dependencies are closed, longest chain first, and lands them through a merge queue (step 6).
+
 ## Lifecycle (one lap)
 
 1. **Intake** — deterministic: oldest open issue with no ledger row, opened by a trusted author
@@ -31,4 +36,8 @@ main conflict-free.
    the findings back into the next implement attempt (repair loop, bounded by the attempt cap;
    findings must be dispositioned — fixed or declined with a reason).
 6. **Merge** — squash, close the issue, delete the worktree, close the ledger row, receipt.
+   In parallel mode the merge waits its turn in the repo's merge queue. If main moved since
+   verify, the foreman rebases the branch in the lap's machine and re-runs verify before
+   merging. A first rebase conflict goes back to implement as findings (a free attempt); a
+   second one retires the plan and re-plans on the fresh main.
    In machine modes the lap's machine is deleted when the lap ends, whatever the outcome.

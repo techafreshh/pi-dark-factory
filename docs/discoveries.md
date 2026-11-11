@@ -24,3 +24,11 @@ chains):
   roadmap: while any product (non-discovery) issue is claimable they are left out of the
   queue entirely, and they flow only after the PRD backlog drains. Majors keep the 2026-11-01
   drain-first priority.
+
+In parallel mode ([parallel-mode.md](parallel-mode.md)) three rules are added. At most one
+discovery lap runs at a time per repo, because a discovery has no `Depends on:` and would
+otherwise fill every lane. A parallel lap files its harvest when the lap ends. Every filing,
+serial or parallel, dedupes by normalized title or heavy word overlap (Jaccard ≥ 0.7), and a
+parallel lap also checks against what sibling lanes filed this tick. The plan prompt lists
+the sibling issues in flight, so a discovery a sibling is already fixing can end as
+`NO_ACTION`.

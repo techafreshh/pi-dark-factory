@@ -118,6 +118,11 @@ GITHUB_TOKEN=<same token> # machine stages read this name
 INSTABOX_API_KEY=…        # instabox repos
 BOXD_API_KEY=…            # boxd repos
 TINYFISH_API_KEY=…        # web grounding
+# machine-slot pools (optional; defaults shown) — docs/parallel-mode.md
+# PDF_POOL_INSTABOX=5
+# PDF_POOL_BOXD=10
+# PDF_AGING_MINUTES=30
+# PDF_FLEET_DAILY_ATTEMPTS=0
 ```
 
 `/etc/systemd/system/pi-factoryd.service`:
@@ -147,7 +152,7 @@ WantedBy=multi-user.target
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-factoryd
-curl -fsS http://127.0.0.1:8077/health     # ok:true, scheduler_minutes:15
+curl -fsS http://127.0.0.1:8077/health     # ok:true, scheduler_minutes:15, pools: instabox 5, boxd 10
 ```
 
 How scheduling behaves:

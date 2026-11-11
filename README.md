@@ -21,10 +21,12 @@ intake → plan → implement → verify → review → squash-merge → close
 ```
 
 Every gate between stages is **deterministic** — git truth, GitHub checks, black-box HTTP
-probes — so the LLM is never trusted and an agent can never declare its own work done. Laps
-run strictly one at a time per repo, in dependency order: a merge re-intakes at once, so a
+probes — so the LLM is never trusted and an agent can never declare its own work done. By
+default laps run strictly one at a time per repo, in dependency order: a merge re-intakes at once, so a
 tick chains up to 6 laps per repo inside a 12-minute budget and the next tick takes the rest.
-Repos fan out in parallel.
+Repos fan out in parallel, and a repo can opt into parallel lanes: independent issues
+build at once and land one by one through a rebase-and-re-verify merge queue. Machine slots
+are shared across the fleet by priority ([parallel mode](docs/parallel-mode.md)).
 
 From your **laptop** everything is remote: the factory exposes an HTTPS API (`factoryd`) —
 onboard repos, slice PRDs, watch laps, unblock, clean up — **no SSH after install day**.
@@ -142,6 +144,7 @@ docs/                deep dives (below)
 | [Web & skills](docs/web-and-skills.md) | TinyFish grounding and the factory skill channel |
 | [Discoveries](docs/discoveries.md) | severity, deferral, and the recursion gate |
 | [Key router](docs/keyrouter.md) | multi-key provider failover |
+| [Parallel mode](docs/parallel-mode.md) | machine-slot allocator, parallel lanes, merge queue |
 | [Development](docs/development.md) | tests, and why boundary stubs must use recorded real shapes |
 
 ## Limitations

@@ -198,7 +198,7 @@ dark-factory config SLUG            # read back the effective config and check i
 Config rules (all enforced at write time):
 - **Allowed top-level keys:** `models`, `env`, `timeouts`, `merge`,
   `default_branch`, `attempts`, `skip_labels`, `trusted_authors`, `pi`,
-  `discoveries`, `limits`. Anything else is rejected, including `_readme`,
+  `discoveries`, `limits`, `scheduling`. Anything else is rejected, including `_readme`,
   `repo`, `scenario` and `ui`. `ui.enabled:false` is a server-side edit.
 - **Models are objects:** `{"provider", "model", "thinking", "fallback": []}`.
   - `model` is the bare id; the level goes in `thinking`.
@@ -232,7 +232,21 @@ Decisions to walk with the user:
   - `host` (no isolation; avoid for repos with outside contributors).
 - **`trusted_authors`.** Anyone besides the owner who may file work. Issue
   text becomes agent prompt, so keep it short.
-- **`limits.daily_attempts`.** The cost ceiling; 0 means none.
+- **`limits.daily_attempts`.** The cost ceiling; 0 means none. In parallel
+  mode every lane shares it, so a wide repo reaches it sooner.
+- **`scheduling`** (docs/parallel-mode.md). Machine modes only.
+  - `priority`: `high`, `normal` (default) or `low`, the repo's place in the
+    fleet's machine-slot queue. A waiting request moves up one level per 30
+    minutes, so `low` is never starved.
+  - `parallel: true` with `max_lanes` (default 3, at most 10): independent
+    issues of the backlog build at the same time and land one by one through
+    a merge queue. Worth it when the backlog is wide (many issues with no
+    `Depends on:` between them). Slicing a new PRD with it on adds a
+    foundation-issue rule to the slicer, so set it **before** `backlog`.
+  - `spill_over: true`: when the repo's own platform pool is full, a lap may
+    run on the other one. Needs a working snapshot on both: run
+    `scenario SLUG --test` on each platform first (instabox bases ship node,
+    the boxd base ships bun), or spilled laps fail in verify.
 - **`discoveries.auto_file`.** On by default: reviewer findings become
   `[discovery]` issues. Set false for a quiet repo.
 - **`pi.web.search` / `pi.web.fetch`.** Web tools for the agent, on by default.

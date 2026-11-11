@@ -87,6 +87,13 @@ review and scenarios all in a per-lap box), driven differently:
   (once per scheduler pass, at the end of a full fleet tick, and in `foreman cleanup`)
   deletes `factory=1`-labelled boxes whose issue
   has no live lap.
+- **Machine slots** (both machine modes): every lap leases a slot from the fleet's
+  allocator before it claims an issue — pools of `PDF_POOL_INSTABOX` (5) and
+  `PDF_POOL_BOXD` (10) machines, ordered by priority with aging. The platform's own
+  cap-reject wait above stays as a fallback for machines the allocator does not count.
+  With `scheduling.spill_over`, a lap whose own pool is full runs on the other platform
+  with `env.mode` swapped for that lap only, so both `env.instabox` and `env.boxd` must
+  name a working snapshot and `repo_dir`. See [parallel-mode.md](parallel-mode.md).
 - **No post-merge regression pass**: as with instabox, each lap's in-box verify is the
   contract check, so a merge never runs product code on the VPS. (`scenario --test` still
   benches boxd repos on the host; there is no boxd bench machine yet.)

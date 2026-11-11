@@ -1,6 +1,8 @@
 # Parallel mode and the slot allocator
 
-Status: design, not built. Implementation plan: `.agents/plans/parallel-mode.plan.md`.
+Status: built on branch `feature/parallel-mode` (2026-11-11), not yet deployed or piloted.
+Implementation plan: `.agents/plans/completed/parallel-mode.plan.md`; report:
+`.agents/reports/parallel-mode-report.md`.
 
 Two features that ship together:
 
@@ -63,6 +65,8 @@ Fleet-wide, in `factoryd.env` (the daemon's children inherit it):
 | `PDF_AGING_MINUTES` | `30` | a waiting request moves up one priority level per this many minutes |
 | `PDF_SLOT_WAIT_MS` | `840000` (14 min) | how long a tick process waits for a grant before it parks its request and exits |
 | `PDF_FLEET_DAILY_ATTEMPTS` | `0` (off) | implement attempts across every repo per UTC day |
+| `PDF_SLOT_POLL_MS` | `5000` | how often a waiting lap polls (and runs a grant pass) |
+| `PDF_PR_HEAD_POLL_MS` | `3000` | how often the merge queue checks that GitHub sees a rebased head |
 
 ## The slot allocator
 
@@ -110,8 +114,10 @@ who gets the next free slot.
 
 ### Lifecycle
 
-1. A lane calls `acquireSlot` before it picks or claims an issue. A request that waits does
-   not hold an `in_progress` row, so intake, `unblock` and the janitor see nothing in flight.
+1. A lane checks that something is claimable (so it never holds a slot for nothing), then
+   calls `acquireSlot` before it claims. A request that waits does not hold an `in_progress`
+   row, so intake, `unblock` and the janitor see nothing in flight. After the grant the lane
+   picks again: the wait may have outlived the first pick.
 2. The process polls every 5 s. After `PDF_SLOT_WAIT_MS` without a grant it marks the request
    `parked` (no pid) and the tick exits. The repo's next tick adopts the parked row, keeping
    its `requested_at`, so aging keeps counting. Waiting tick processes stay bounded in time and
@@ -220,7 +226,10 @@ lands in the existing error path.
 - **Filed at lap end, deduped across siblings.** A parallel lap stores its harvest and files it
   when the lap ends. Titles are compared normalized (case, punctuation, the `[discovery]`
   prefix) and by word overlap (Jaccard ≥ 0.7) against open issues and against what siblings
-  filed this tick. Reworded duplicates with different words still get through.
+  filed this tick. Serial filing uses the same comparison against open issues. Reworded
+  duplicates with different words still get through.
+- **Minors** wait until no product issue is claimable, counting product issues still in
+  flight in a sibling lane (the PRD backlog has not drained while one is being built).
 - **Sibling-aware plans.** The plan prompt lists the issues in flight in sibling lanes, so a
   discovery whose code a sibling is rewriting can end as `NO_ACTION`.
 - Unchanged: the recursion gate, the severity axis, auto-filing behind `discoveries.auto_file`.
@@ -234,7 +243,8 @@ honesty is unchanged: no invented edges.
 
 ## Dashboard
 
-A new **Scheduling** page, plus a card on the overview:
+A new **Scheduling** page (`#/scheduling`, `GET /api/scheduling`), plus slot usage on the
+overview's Machines card:
 
 - **Pools:** per platform, cap, leases (repo, issue, lane, priority, effective priority, age,
   spilled), and the waiting queue in grant order with effective priority after aging.
@@ -244,7 +254,18 @@ A new **Scheduling** page, plus a card on the overview:
 - **Needs you:** a new `slot_wait` item for a request waiting more than 60 minutes.
 
 The dashboard keeps its rule of no imports from `src/`. The effective-priority formula is
-duplicated there, and a test pins both copies to the same results.
+duplicated there, and a test pins both copies to the same results. Pool caps come from
+factoryd's `/health` when the daemon answers, else from `DASHBOARD_POOL_INSTABOX` /
+`DASHBOARD_POOL_BOXD` (falling back to `PDF_POOL_*`, then 5 and 10).
+
+## Prompts
+
+- The **plan** prompt of a parallel lap lists the issues in flight in sibling lanes and asks
+  for `NO_ACTION` when one of them already covers this issue.
+- The **implement** prompt no longer tells the agent to integrate main itself ("parallel laps
+  may merge…", a leftover of the reverted `a24e5c2`). It says the factory rebases before
+  merging and hands a conflict back as findings, and allows a rebase only when the findings
+  ask for one.
 
 ## Not in scope
 

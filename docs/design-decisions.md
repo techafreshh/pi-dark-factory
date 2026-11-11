@@ -43,6 +43,13 @@ shipped 11 of 12 issues in perfect order with zero conflicts, while concurrent b
 mid-flight union-merges, a stranded never-delivered branch, and cross-worktree import
 contamination.
 
+Serial stays the default. `scheduling.parallel` (machine modes only) runs independent issues
+at once and answers each of those failures structurally: one merge at a time per repo, each
+on a branch rebased onto the current main and re-verified there (no union-merges, nothing
+stranded), every lap in its own machine (no shared worktrees), and a rebase conflict routed
+back to the lap as a repair, then a re-plan. Machine slots are leased fleet-wide by priority
+before any claim. See [parallel-mode.md](parallel-mode.md).
+
 Model bindings are read fresh at each spawn, so provider switching never wedges in-flight work;
 the SQLite ledger is WAL and single-writer-per-process-safe; per-repo git operations
 (fetch/worktree add/worktree remove) are mutexed even under manual concurrency.

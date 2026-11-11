@@ -161,6 +161,27 @@ sudo systemctl restart pi-factoryd              # switching over: do this one re
 curl -s localhost:8077/health | grep scheduler_minutes   # 15
 ```
 
+#### Machine slots
+
+With the scheduler on, the daemon also runs the slot allocator's heartbeat every 15 s
+(sweep dead lease holders, grant waiting requests; laps also decide on their own polls,
+so a daemon restart never stalls one). `/health` reports `pools`: cap, granted, waiting
+and parked per platform. Settings go in `factoryd.env`; the daemon's tick children
+inherit them:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PDF_POOL_INSTABOX` | 5 | concurrent factory machines on InstaBox |
+| `PDF_POOL_BOXD` | 10 | concurrent factory machines on boxd (a cost cap; the account allows 100) |
+| `PDF_AGING_MINUTES` | 30 | a waiting request moves up one priority level per this many minutes |
+| `PDF_SLOT_WAIT_MS` | 840000 | how long a tick waits for a slot before it parks its request and exits |
+| `PDF_FLEET_DAILY_ATTEMPTS` | 0 (off) | implement attempts across every repo per UTC day |
+
+Per-repo priority, spill-over and parallel lanes are `scheduling` config keys
+([parallel-mode.md](parallel-mode.md)). Set the dashboard's own copies
+(`DASHBOARD_POOL_INSTABOX` / `_BOXD`) only if the daemon is unreachable from it; otherwise
+it reads the caps from `/health`.
+
 The older alternative is `pi-factory.timer`, a oneshot fleet tick every 15 minutes. systemd
 can't start it again while it runs, so one long lap delays every repo (33 of 311 ticks
 overran their slot in the week to 2026-11-09). To go back to it: remove the drop-in,
@@ -172,8 +193,10 @@ overran their slot in the week to 2026-11-09). To go back to it: remove the drop
 Authelia at `pi-factory.techa.pro/dashboard/`) is a read-only sidecar: it opens `factory.db`
 readonly, reads `laps.log`, the paused markers and the per-issue session files, and imports
 nothing from `src/`. Pages: overview (needs-you, live laps, outcome and cost charts, model
-health, machines), projects, a paged/filtered/sorted lap list, and a lap view with its stages
-and the agent sessions (prompts, thinking, tool calls and results). Routes are hash routes
+health, machines with slot usage), projects, a paged/filtered/sorted lap list, a lap view with
+its stages and the agent sessions (prompts, thinking, tool calls and results), and Scheduling
+(slot pools, leases, the waiting queue in grant order with priority after aging, parallel
+lanes, merge queues, spill-over). Needs-you flags a lane waiting over an hour for a slot. Routes are hash routes
 (`#/laps/123`) because Caddy strips the `/dashboard` prefix.
 
 The machine panel reads its API keys from `/home/factory/dashboard.env` (mode 600, factory
