@@ -284,10 +284,13 @@ Deployed at 20:15 UTC (ledger backed up first to `state/factory.db.pre-parallel-
 | 20:27:21 | #5 conflicts again (now with #4) → plan retired, re-planned on fresh main |
 | 20:33:01 | #5 merges; main serves all three endpoints, probed by hand |
 
-17 minutes from start to the third merge; serially the three laps took about 5 minutes
-each plus the chain overhead. Every conflict was a real one (the same route-dispatch
-block), so this pilot exercised the repair and re-plan paths, not the clean-rebase path
-(that one is covered by tests). The reviews filed one discovery, which the next tick ran in
+17 minutes from start to the third merge. A clean lap here takes about 5.5 minutes, so the
+same three issues run serially would also take about 17 minutes: in this pilot the
+conflicts cost what the parallel start gained. All three issues edited the same
+route-dispatch block of a one-file service, which is the worst case for parallel mode. It
+exercised the repair and re-plan paths; the clean-rebase path, where the speedup comes
+from, is covered by tests but has not run in production yet. A backlog whose issues touch
+different files is the real test of the speedup. The reviews filed one discovery, which the next tick ran in
 the single discovery lane and merged at 20:50.
 
 **Spill-over, `factory-boxd-smoke-2`** (boxd repo, `spill_over` on, `env.instabox.snapshot`
