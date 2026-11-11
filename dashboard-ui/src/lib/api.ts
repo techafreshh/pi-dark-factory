@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface StageRef { stage: string; model: string; attempt: number; started_at: string; ended_at: string | null; exit: string | null }
 export interface LiveLap { id: number; repo: string; slug: string; issue_number: number; title: string | null; started_at: string; attempts: number | null; pr: number | null; stage: StageRef | null }
-export interface NeedsYou { kind: "blocked" | "paused" | "daily_cap" | "billing" | "backup"; repo: string | null; slug: string | null; issue: number | null; title: string | null; detail: string; at: string | null; pr?: number | null; attempts?: number; lap_id?: number | null }
+export interface NeedsYou { kind: "blocked" | "paused" | "daily_cap" | "billing" | "backup" | "slot_wait"; repo: string | null; slug: string | null; issue: number | null; title: string | null; detail: string; at: string | null; pr?: number | null; attempts?: number; lap_id?: number | null }
 export interface ModelHealth { model: string; tries: number; ok: number; failed: number; billing: number; last_at: string; last_outcome: string; last_error: string | null }
 export interface MachineRow { provider: "instabox" | "boxd"; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
 export interface MachinePool { provider: "instabox" | "boxd"; configured: boolean; error: string | null; machines: MachineRow[] }
@@ -26,6 +26,28 @@ export interface Summary {
   scheduler: { last_pass_at: string | null; last_pass: string; ticks_running: string[]; minutes: number | null; next_pass_at: string | null; daemon_up: boolean };
   machines: MachinePool[];
   backup: { last_ok_at?: string | null; last_id?: string; last_error?: string | null; last_error_at?: string | null } | null;
+}
+
+export type PoolName = "instabox" | "boxd";
+export interface PoolRow { pool: PoolName; cap: number; used: number; waiting: number; parked: number }
+export interface LeaseRow {
+  id: number; repo: string; slug: string; lane: number; pool: PoolName; priority: string; issue: number | null; title: string | null;
+  lap_id: number | null; granted_at: string; requested_at: string; spilled: boolean; stage: StageRef | null;
+}
+export interface WaitingRow {
+  id: number; repo: string; slug: string; lane: number; pools: PoolName[]; priority: string; effective: string;
+  extra_lane: boolean; state: "waiting" | "parked"; requested_at: string; position: number;
+}
+export interface LaneRepo {
+  repo: string; slug: string; parallel: boolean; max_lanes: number; priority: string; spill_over: boolean; mode: string | null;
+  laps: LeaseRow[]; waiting: number;
+}
+export interface MergeQueueRow { id: number; repo: string; issue_number: number; lap_id: number; state: string; entered_at: string; updated_at: string; detail: string | null; title: string | null }
+export interface Scheduling {
+  generatedAt: string; aging_minutes: number; daemon_up: boolean;
+  pools: PoolRow[]; leases: LeaseRow[]; waiting: WaitingRow[]; lanes: LaneRepo[];
+  merge_queues: { repo: string; slug: string; open: MergeQueueRow[]; recent: MergeQueueRow[] }[];
+  spills: { id: number; repo: string; slug: string; issue: number | null; title: string | null; pool: PoolName; own: string | null; granted_at: string; state: string }[];
 }
 
 export interface Project {

@@ -6,6 +6,7 @@ import { ActivityPage } from "@/pages/activity";
 import { LapPage } from "@/pages/lap";
 import { Overview } from "@/pages/overview";
 import { LapsPage, ProjectPage, Projects } from "@/pages/projects";
+import { SchedulingPage } from "@/pages/scheduling";
 
 export default function App() {
   const route = useRoute();
@@ -26,6 +27,7 @@ export default function App() {
   else if (section === "laps" && arg && /^\d+$/.test(arg)) page = <LapPage key={arg} route={route} id={Number(arg)} />;
   else if (section === "laps") page = <LapsPage route={route} />;
   else if (section === "activity") page = <ActivityPage route={route} />;
+  else if (section === "scheduling") page = <SchedulingPage />;
   else page = <Empty>Nothing lives at {route.path}. <a className="text-info" href="#/">Go to the overview</a>.</Empty>;
 
   return <Shell path={route.path}>{page}</Shell>;

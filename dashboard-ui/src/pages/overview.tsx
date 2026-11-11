@@ -1,8 +1,8 @@
-import { AlertTriangle, CircleDollarSign, Clock, DatabaseBackup, Gauge, PauseCircle } from "lucide-react";
+import { AlertTriangle, CircleDollarSign, Clock, DatabaseBackup, Gauge, Hourglass, PauseCircle } from "lucide-react";
 import { BarChart } from "@/components/charts/bar-chart";
 import { PageHeader } from "@/components/shell";
 import { Badge, Card, CardHeader, Empty, ErrorNote, EXIT_TONE, Kpi, Link, STATUS, Table, Td, Th, Tr } from "@/components/ui";
-import { useApi, type NeedsYou, type Summary } from "@/lib/api";
+import { useApi, type NeedsYou, type Scheduling, type Summary } from "@/lib/api";
 import { href } from "@/lib/router";
 import { ago, dur, num, pct, since, usd } from "@/lib/format";
 
@@ -12,13 +12,14 @@ const NEED = {
   daily_cap: { label: "daily ceiling", tone: "orange", icon: Gauge, color: "text-orange" },
   billing: { label: "out of credit", tone: "warn", icon: CircleDollarSign, color: "text-warn" },
   backup: { label: "backup", tone: "bad", icon: DatabaseBackup, color: "text-bad" },
+  slot_wait: { label: "slot wait", tone: "violet", icon: Hourglass, color: "text-violet" },
 } as const;
 
 function NeedsYouCard({ items }: { items: NeedsYou[] }) {
   if (items.length === 0) return null;
   return (
     <Card className="mb-5 border-warn/40">
-      <CardHeader title={`Needs you (${items.length})`} description="Blocked issues, paused projects, daily ceilings, models whose last call failed on billing, and state backups that stopped." />
+      <CardHeader title={`Needs you (${items.length})`} description="Blocked issues, paused projects, daily ceilings, models whose last call failed on billing, state backups that stopped, and lanes waiting over an hour for a machine slot." />
       <ul className="divide-y divide-border/60">
         {items.map((n, i) => {
           const k = NEED[n.kind];
@@ -51,6 +52,7 @@ const OUTCOME_SERIES = ["merged", "blocked", "error", "billing_hold", "infra_def
 
 export function Overview() {
   const { data: d, error } = useApi<Summary>("api/summary", 15_000);
+  const { data: sch } = useApi<Scheduling>("api/scheduling", 15_000);
   if (error && !d) return <ErrorNote>Dashboard failed to load: {error}</ErrorNote>;
   if (!d) return <div className="text-sm text-muted-foreground">loading…</div>;
   const k = d.kpis;
@@ -178,6 +180,7 @@ export function Overview() {
           <CardHeader
             title={`Machines (${allMachines.length})`}
             description="Lap machines on InstaBox and boxd, matched to their project and issue."
+            action={<Link href={href("/scheduling")}>scheduling</Link>}
           />
           <div className="flex flex-wrap gap-2 border-b border-border px-4 py-2 text-xs">
             {d.machines.map((p) => (
@@ -186,6 +189,14 @@ export function Overview() {
                 {!p.configured ? <Badge>no key</Badge> : p.error ? <Badge tone="bad" title={p.error}>error</Badge> : (
                   <Badge tone={p.machines.length ? "info" : "neutral"}>{p.machines.filter((m) => m.state === "running").length} running / {p.machines.length}</Badge>
                 )}
+                {(() => {
+                  const pool = sch?.pools.find((x) => x.pool === p.provider);
+                  return pool ? (
+                    <Badge tone={pool.used >= pool.cap ? "warn" : "neutral"} title="factory slots leased / pool cap; waiting requests">
+                      {pool.used}/{pool.cap} slots{pool.waiting ? ` · ${pool.waiting} waiting` : ""}
+                    </Badge>
+                  ) : null;
+                })()}
               </span>
             ))}
           </div>

@@ -202,3 +202,71 @@ describe("sessions", () => {
     expect(lapDetail(led.db, 99999)).toBeNull();
   });
 });
+
+describe("computeScheduling (slot pools, queue, lanes, merge queues)", async () => {
+  const { computeScheduling, effectivePriority: dashEff } = await import("../bin/dashboard");
+  const alloc = await import("../src/allocator");
+  const R3 = "techafreshh/gamma";
+  const sl = new Ledger(":memory:");
+  mkdirSync(join(dir, "repos", "gamma"), { recursive: true });
+  writeFileSync(join(dir, "repos", "gamma", "config.json"), JSON.stringify({ repo: R3, env: { mode: "instabox" }, scheduling: { parallel: true, max_lanes: 2, spill_over: true, priority: "high" } }));
+  const now = Date.now();
+  const iso = (minAgo: number) => new Date(now - minAgo * 60_000).toISOString();
+  // a lease on boxd for an instabox repo (spilled), bound to a live lap
+  sl.claim(R3, 21);
+  const lap = sl.startLap(R3, 21);
+  sl.startStage(R3, 21, lap, "implement", 1, "m/x");
+  const leased = alloc.requestSlot(sl, { repo: R3, slug: "gamma", lane: 0, pools: ["instabox", "boxd"], priority: "high", extraLane: false }, now - 5 * 60_000);
+  sl.db.query("UPDATE slot_requests SET state = 'granted', pool = 'boxd', granted_at = ?, issue_number = 21, lap_id = ? WHERE id = ?").run(iso(4), lap, leased);
+  // waiting: an extra lane (high) and an old low first lane that aged to high
+  alloc.requestSlot(sl, { repo: R3, slug: "gamma", lane: 1, pools: ["instabox", "boxd"], priority: "high", extraLane: true }, now - 2 * 60_000);
+  alloc.requestSlot(sl, { repo: R1, slug: "alpha", lane: 0, pools: ["instabox"], priority: "low", extraLane: false }, now - 90 * 60_000);
+  const mq = sl.mergeQueueEnter(R3, 21, lap);
+  sl.mergeQueueSet(mq, "reverifying");
+  const done = sl.mergeQueueEnter(R3, 20, lap - 1);
+  sl.mergeQueueSet(done, "merged");
+
+  const s = computeScheduling(sl.db, now);
+
+  test("pools count leases against caps; waiting counts by first preference", () => {
+    expect(s.pools.find((p) => p.pool === "boxd")).toMatchObject({ cap: 10, used: 1 });
+    expect(s.pools.find((p) => p.pool === "instabox")).toMatchObject({ cap: 5, used: 0, waiting: 2 });
+  });
+
+  test("the waiting queue is in grant order with priority after aging", () => {
+    expect(s.waiting.map((w) => [w.slug, w.lane, w.effective, w.position])).toEqual([
+      ["alpha", 0, "high", 1], // first lane, aged low → high after 90 min
+      ["gamma", 1, "high", 2], // extra lane waits behind every first lane
+    ]);
+  });
+
+  test("leases show the lap's stage and whether they spilled", () => {
+    expect(s.leases[0]).toMatchObject({ slug: "gamma", issue: 21, pool: "boxd", spilled: true });
+    expect(s.leases[0].stage.stage).toBe("implement");
+    expect(s.spills.map((x) => [x.slug, x.pool, x.own])).toEqual([["gamma", "boxd", "instabox"]]);
+  });
+
+  test("lanes group a parallel repo's leases; merge queues split open from recent", () => {
+    const g = s.lanes.find((l) => l.slug === "gamma")!;
+    expect(g).toMatchObject({ parallel: true, max_lanes: 2, priority: "high", waiting: 1 });
+    expect(g.laps.map((l) => l.issue)).toEqual([21]);
+    const q = s.merge_queues.find((m) => m.slug === "gamma")!;
+    expect(q.open.map((r: any) => [r.issue_number, r.state])).toEqual([[21, "reverifying"]]);
+    expect(q.recent.map((r: any) => [r.issue_number, r.state])).toEqual([[20, "merged"]]);
+  });
+
+  test("a request waiting over an hour shows up in needs-you", () => {
+    const n = computeSummary(sl.db).needs_you.filter((x) => x.kind === "slot_wait");
+    expect(n.length).toBe(1);
+    expect(n[0].slug).toBe("alpha");
+    expect(n[0].detail).toContain("machine slot on instabox");
+  });
+
+  test("the dashboard's effectivePriority copy agrees with the allocator's", () => {
+    for (const base of ["low", "normal", "high"] as const)
+      for (const m of [0, 29, 30, 59, 60, 61, 200]) {
+        const at = new Date(now - m * 60_000).toISOString();
+        expect(dashEff(base, at, now, 30)).toBe(alloc.effectivePriority(base, at, now, 30));
+      }
+  });
+});

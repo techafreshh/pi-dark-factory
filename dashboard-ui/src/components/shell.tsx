@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
-import { Activity, Boxes, ChevronRight, LayoutDashboard, ListOrdered } from "lucide-react";
+import { Activity, Boxes, ChevronRight, LayoutDashboard, ListOrdered, Network } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "#/", label: "Overview", icon: LayoutDashboard, match: (p: string) => p === "/" },
   { href: "#/projects", label: "Projects", icon: Boxes, match: (p: string) => p.startsWith("/projects") },
   { href: "#/laps", label: "Laps", icon: ListOrdered, match: (p: string) => p.startsWith("/laps") },
+  { href: "#/scheduling", label: "Scheduling", icon: Network, match: (p: string) => p.startsWith("/scheduling") },
   { href: "#/activity", label: "Activity", icon: Activity, match: (p: string) => p.startsWith("/activity") },
 ];
 

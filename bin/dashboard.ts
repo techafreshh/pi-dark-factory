@@ -16,6 +16,7 @@
  *   GET /api/laps/:id             one lap: stages, artifacts, plan
  *   GET /api/session?slug&issue&file   one session file, parsed into messages
  *   GET /api/activity?slug&q&limit     laps.log tail, filtered
+ *   GET /api/scheduling           slot pools, waiting queue, lanes, merge queues, spill-over
  */
 import { Database } from "bun:sqlite";
 import { existsSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from "node:fs";
@@ -65,7 +66,10 @@ const utcMidnight = () => new Date(new Date().toISOString().slice(0, 10) + "T00:
 
 // ── state-dir readers ───────────────────────────────────────────────────────
 
-interface RepoInfo { slug: string; repo: string; mode: string; dailyAttempts: number; paused: { at: string; reason: string } | null }
+interface RepoInfo {
+  slug: string; repo: string; mode: string; dailyAttempts: number; paused: { at: string; reason: string } | null;
+  scheduling: { priority: string; parallel: boolean; max_lanes: number; spill_over: boolean };
+}
 
 /** every onboarded repo from repos/<slug>/config.json, keyed by full name */
 export function repoInfo(): Map<string, RepoInfo> {
@@ -97,6 +101,12 @@ export function repoInfo(): Map<string, RepoInfo> {
         mode: cfg.env?.mode ?? "host",
         dailyAttempts: typeof daily === "number" ? daily : DEFAULT_DAILY_ATTEMPTS,
         paused,
+        scheduling: {
+          priority: ["high", "normal", "low"].includes(cfg.scheduling?.priority) ? cfg.scheduling.priority : "normal",
+          parallel: cfg.scheduling?.parallel === true,
+          max_lanes: Number.isInteger(cfg.scheduling?.max_lanes) ? cfg.scheduling.max_lanes : 3,
+          spill_over: cfg.scheduling?.spill_over === true,
+        },
       });
     } catch {}
   }
@@ -380,6 +390,15 @@ function needsYou(db: Database, info: Map<string, RepoInfo>, health: ReturnType<
     items.push({ kind: "billing", repo: null, slug: null, issue: null, title: null,
       detail: `${base}: ${h.last_error ?? "out of credit"}`, at: h.last_at });
   }
+  // a lane that has waited an hour for a machine slot: the pools are too
+  // small for the fleet, or something holds slots it should not
+  const hourAgo = new Date(Date.now() - SLOT_WAIT_ALERT_MS).toISOString();
+  for (const r of q(db, `SELECT id, repo, slug, lane, pools, priority, state, requested_at FROM slot_requests
+                         WHERE state IN ('waiting', 'parked') AND requested_at < ? ORDER BY requested_at`, hourAgo)) {
+    items.push({ kind: "slot_wait", repo: r.repo, slug: info.get(r.repo)?.slug ?? r.slug, issue: null, title: null,
+      detail: `lane ${r.lane} has waited ${Math.round((Date.now() - ms(r.requested_at)) / 60_000)} min for a machine slot on ${poolsOf(r.pools).join(" or ")} (priority ${r.priority}${r.state === "parked" ? ", parked between ticks" : ""})`,
+      at: r.requested_at });
+  }
   // state backups (bin/backup.ts): flag a failing or stalled one; no status file = not set up
   const b = backupStatus();
   if (b) {
@@ -454,6 +473,103 @@ function stageModel(db: Database, days = 7) {
                        AVG(CASE WHEN ended_at IS NOT NULL AND (julianday(ended_at) - julianday(started_at)) * 86400 >= 1
                                 THEN (julianday(ended_at) - julianday(started_at)) * 86400 END) avg_s
                 FROM stage_runs WHERE started_at >= ? GROUP BY stage, model ORDER BY cost DESC, n DESC`, since);
+}
+
+// ── scheduling: slot pools, waiting queue, lanes, merge queues ─────────────
+
+const SLOT_WAIT_ALERT_MS = 60 * 60_000;
+const PRIORITY_LEVEL: Record<string, number> = { low: 0, normal: 1, high: 2 };
+const LEVEL_NAME = ["low", "normal", "high"];
+const poolsOf = (raw: string): string[] => {
+  try {
+    const p = JSON.parse(raw);
+    return Array.isArray(p) ? p : [];
+  } catch {
+    return [];
+  }
+};
+
+/** Mirrors effectivePriority in src/allocator.ts (the dashboard imports
+ *  nothing from src/ by design); test/dashboard.test.ts pins both copies to
+ *  the same answers. */
+export function effectivePriority(base: string, requestedAtIso: string, nowMs: number, agingMin = Number(process.env.PDF_AGING_MINUTES ?? 30) || 30): number {
+  const waitedMin = Math.max(0, (nowMs - Date.parse(requestedAtIso)) / 60_000);
+  return Math.min(2, (PRIORITY_LEVEL[base] ?? 1) + Math.floor(waitedMin / agingMin));
+}
+
+const poolCaps = () => ({
+  instabox: Number(process.env.DASHBOARD_POOL_INSTABOX ?? process.env.PDF_POOL_INSTABOX ?? 5),
+  boxd: Number(process.env.DASHBOARD_POOL_BOXD ?? process.env.PDF_POOL_BOXD ?? 10),
+});
+
+/** The Scheduling page. Pure over the ledger + state dir; the server swaps in
+ *  factoryd's own pool caps when the daemon answers. */
+export function computeScheduling(db: Database, nowMs = Date.now()) {
+  const info = repoInfo();
+  const slugOf = (repo: string, fallback?: string) => info.get(repo)?.slug ?? fallback ?? repo;
+  const caps = poolCaps();
+  const open = q(db, `SELECT * FROM slot_requests WHERE state IN ('waiting', 'granted', 'parked') ORDER BY id`);
+  const granted = open.filter((r) => r.state === "granted");
+  const leases = granted.map((r) => {
+    const own = info.get(r.repo)?.mode ?? null;
+    const [stage] = r.lap_id
+      ? q(db, `SELECT stage, model, attempt, started_at, ended_at, exit FROM stage_runs WHERE lap_id = ? ORDER BY id DESC LIMIT 1`, r.lap_id)
+      : [];
+    const slug = slugOf(r.repo, r.slug);
+    return {
+      id: r.id, repo: r.repo, slug, lane: r.lane, pool: r.pool, priority: r.priority,
+      issue: r.issue_number, title: titleOf(slug, r.issue_number), lap_id: r.lap_id,
+      granted_at: r.granted_at, requested_at: r.requested_at,
+      spilled: own !== null && r.pool !== own, stage: stage ?? null,
+    };
+  });
+  const waiting = open
+    .filter((r) => r.state === "waiting" || r.state === "parked")
+    .map((r) => ({ r, eff: effectivePriority(r.priority, r.requested_at, nowMs) }))
+    // grant order (src/allocator.ts grantOrder): first lanes, priority after aging, oldest
+    .sort((a, b) => a.r.extra_lane - b.r.extra_lane || b.eff - a.eff || a.r.requested_at.localeCompare(b.r.requested_at) || a.r.id - b.r.id)
+    .map(({ r, eff }, i) => ({
+      id: r.id, repo: r.repo, slug: slugOf(r.repo, r.slug), lane: r.lane, pools: poolsOf(r.pools),
+      priority: r.priority, effective: LEVEL_NAME[eff], extra_lane: !!r.extra_lane, state: r.state,
+      requested_at: r.requested_at, position: i + 1,
+    }));
+  const pools = (["instabox", "boxd"] as const).map((pool) => ({
+    pool,
+    cap: caps[pool],
+    used: granted.filter((r) => r.pool === pool).length,
+    waiting: waiting.filter((w) => w.pools[0] === pool && w.state === "waiting").length,
+    parked: waiting.filter((w) => w.pools[0] === pool && w.state === "parked").length,
+  }));
+  // lanes: every repo with a lease now, plus every parallel repo
+  const laneRepos = new Set([...leases.map((l) => l.repo), ...[...info.values()].filter((r) => r.scheduling.parallel).map((r) => r.repo)]);
+  const lanes = [...laneRepos].sort().map((repo) => {
+    const ri = info.get(repo);
+    return {
+      repo, slug: slugOf(repo), parallel: ri?.scheduling.parallel ?? false, max_lanes: ri?.scheduling.parallel ? ri.scheduling.max_lanes : 1,
+      priority: ri?.scheduling.priority ?? "normal", spill_over: ri?.scheduling.spill_over ?? false, mode: ri?.mode ?? null,
+      laps: leases.filter((l) => l.repo === repo).sort((a, b) => a.lane - b.lane),
+      waiting: waiting.filter((w) => w.repo === repo).length,
+    };
+  });
+  const queueRepos = q(db, `SELECT DISTINCT repo FROM merge_queue WHERE updated_at >= ?`, new Date(nowMs - 7 * DAY_MS).toISOString()).map((r) => r.repo);
+  const merge_queues = queueRepos.sort().map((repo) => {
+    const slug = slugOf(repo);
+    const row = (r: any) => ({ ...r, title: titleOf(slug, r.issue_number) });
+    return {
+      repo, slug,
+      open: q(db, `SELECT * FROM merge_queue WHERE repo = ? AND state NOT IN ('merged', 'bounced') ORDER BY id`, repo).map(row),
+      recent: q(db, `SELECT * FROM merge_queue WHERE repo = ? AND state IN ('merged', 'bounced') ORDER BY id DESC LIMIT 10`, repo).map(row),
+    };
+  });
+  const spills = q(db, `SELECT id, repo, slug, issue_number, pool, granted_at, state FROM slot_requests
+                        WHERE granted_at >= ? AND pool IS NOT NULL ORDER BY granted_at DESC`, new Date(nowMs - DAY_MS).toISOString())
+    .filter((r) => {
+      const own = info.get(r.repo)?.mode;
+      return own && r.pool !== own;
+    })
+    .map((r) => ({ id: r.id, repo: r.repo, slug: slugOf(r.repo, r.slug), issue: r.issue_number, title: titleOf(slugOf(r.repo, r.slug), r.issue_number),
+      pool: r.pool, own: info.get(r.repo)?.mode ?? null, granted_at: r.granted_at, state: r.state }));
+  return { generatedAt: new Date(nowMs).toISOString(), aging_minutes: Number(process.env.PDF_AGING_MINUTES ?? 30) || 30, pools, leases, waiting, lanes, merge_queues, spills };
 }
 
 /** the overview page. Pure over the ledger + state dir (machines/scheduler are added by the server). */
@@ -892,6 +1008,16 @@ export async function route(url: URL): Promise<Response | null> {
     const minutes = h?.scheduler_minutes ?? null;
     const next = minutes && s.scheduler.last_pass_at ? new Date(ms(s.scheduler.last_pass_at) + minutes * 60_000).toISOString() : null;
     return Response.json({ ...s, scheduler: { ...s.scheduler, minutes, next_pass_at: next, daemon_up: !!h?.ok }, machines: m });
+  }
+  if (p === "/api/scheduling") {
+    const h = await factorydHealth();
+    const s = withDb((db) => computeScheduling(db));
+    // the daemon's caps are the truth when it answers (its env, not ours)
+    if (Array.isArray(h?.pools)) for (const pool of s.pools) {
+      const d = h.pools.find((x: any) => x.pool === pool.pool);
+      if (d && typeof d.cap === "number") pool.cap = d.cap;
+    }
+    return Response.json({ ...s, daemon_up: !!h?.ok });
   }
   if (p === "/api/projects") return Response.json({ generatedAt: new Date().toISOString(), rows: withDb(listProjects) });
   if (p === "/api/laps") {
