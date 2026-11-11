@@ -55,7 +55,9 @@ export function LapsTable({ route, repo, slugs }: { route: Route; repo?: string;
   const repos = repo ? [repo] : qp.get("repo")?.split(",").filter(Boolean) ?? [];
   const q = qp.get("q") ?? "";
   const [text, setText] = useState(q);
-  useEffect(() => setText(q), [q]);
+  useEffect(() => {
+    setText(q);
+  }, [q]);
   useEffect(() => {
     if (text === q) return;
     const t = setTimeout(() => setQuery({ q: text, page: null }), 300);

@@ -14,7 +14,9 @@ export function ActivityPage({ route }: { route: Route }) {
   const slug = route.query.get("slug") ?? "";
   const q = route.query.get("q") ?? "";
   const [text, setText] = useState(q);
-  useEffect(() => setText(q), [q]);
+  useEffect(() => {
+    setText(q);
+  }, [q]);
   useEffect(() => {
     if (text === q) return;
     const t = setTimeout(() => setQuery({ q: text }), 300);

@@ -15,7 +15,9 @@ export default function App() {
     document.title = section ? `${arg ? arg + " · " : ""}${section} · pi-dark-factory` : "pi-dark-factory";
   }, [section, arg]);
   // a new page starts at the top; query changes (filters, paging) keep the scroll
-  useEffect(() => window.scrollTo(0, 0), [route.path]);
+  useEffect(() => {
+    window.scrollTo(0, 0); // braces: Chrome returns a Promise here, which React would call as a cleanup
+  }, [route.path]);
 
   let page: React.ReactNode;
   if (!section) page = <Overview />;
