@@ -479,7 +479,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     prevStart = Date.now();
     deps.ledger.setIssue(cfg.repo, n, { attempts: attempt });
     const runTag = `${attempt}-${Date.now().toString(36)}`;
-    repoReceipt(cfg.slug, stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
+    repoReceipt(cfg.slug, stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts + bonusAttempts}${findings ? " (repair)" : ""}${bonusAttempts > 0 ? ` (cap +${bonusAttempts}: free rebase-conflict repair)` : ""}`);
 
     // ---- PLAN (once per issue; retries on later attempts if it failed).
     // Machine modes plan inside the lap's machine like every other agent
