@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface StageRef { stage: string; model: string; attempt: number; started_at: string; ended_at: string | null; exit: string | null }
 export interface LiveLap { id: number; repo: string; slug: string; issue_number: number; title: string | null; started_at: string; attempts: number | null; pr: number | null; stage: StageRef | null }
-export interface NeedsYou { kind: "blocked" | "paused" | "daily_cap" | "billing"; repo: string | null; slug: string | null; issue: number | null; title: string | null; detail: string; at: string | null; pr?: number | null; attempts?: number; lap_id?: number | null }
+export interface NeedsYou { kind: "blocked" | "paused" | "daily_cap" | "billing" | "backup"; repo: string | null; slug: string | null; issue: number | null; title: string | null; detail: string; at: string | null; pr?: number | null; attempts?: number; lap_id?: number | null }
 export interface ModelHealth { model: string; tries: number; ok: number; failed: number; billing: number; last_at: string; last_outcome: string; last_error: string | null }
 export interface MachineRow { provider: "instabox" | "boxd"; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
 export interface MachinePool { provider: "instabox" | "boxd"; configured: boolean; error: string | null; machines: MachineRow[] }
@@ -25,6 +25,7 @@ export interface Summary {
   stage_model: { stage: string; model: string; n: number; ok: number; i: number; o: number; cost: number | null; avg_s: number | null }[];
   scheduler: { last_pass_at: string | null; last_pass: string; ticks_running: string[]; minutes: number | null; next_pass_at: string | null; daemon_up: boolean };
   machines: MachinePool[];
+  backup: { last_ok_at?: string | null; last_id?: string; last_error?: string | null; last_error_at?: string | null } | null;
 }
 
 export interface Project {

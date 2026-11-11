@@ -82,6 +82,14 @@ describe("computeSummary (read-only overview)", () => {
     expect(s.scheduler.last_pass_at).toBe("2026-11-01T00:15:00.000Z");
   });
 
+  test("a failing state backup shows up in needs-you", () => {
+    writeFileSync(join(dir, "backup.json"), JSON.stringify({ last_ok_at: "2026-11-01T00:00:00.000Z", last_error: "connect ECONNREFUSED", last_error_at: "2026-11-01T01:00:00.000Z" }));
+    const b = computeSummary(led.db).needs_you.find((n) => n.kind === "backup")!;
+    expect(b.detail).toContain("ECONNREFUSED");
+    writeFileSync(join(dir, "backup.json"), JSON.stringify({ last_ok_at: new Date().toISOString() }));
+    expect(computeSummary(led.db).needs_you.some((n) => n.kind === "backup")).toBe(false);
+  });
+
   test("model health is attributed from the fallback trail", () => {
     const h = s.model_health.find((m) => m.model === "river/glm:low")!;
     expect(h.last_outcome).toBe("billing");

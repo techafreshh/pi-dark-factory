@@ -1,4 +1,4 @@
-import { AlertTriangle, CircleDollarSign, Clock, Gauge, PauseCircle } from "lucide-react";
+import { AlertTriangle, CircleDollarSign, Clock, DatabaseBackup, Gauge, PauseCircle } from "lucide-react";
 import { BarChart } from "@/components/charts/bar-chart";
 import { PageHeader } from "@/components/shell";
 import { Badge, Card, CardHeader, Empty, ErrorNote, EXIT_TONE, Kpi, Link, STATUS, Table, Td, Th, Tr } from "@/components/ui";
@@ -11,13 +11,14 @@ const NEED = {
   paused: { label: "paused", tone: "warn", icon: PauseCircle, color: "text-warn" },
   daily_cap: { label: "daily ceiling", tone: "orange", icon: Gauge, color: "text-orange" },
   billing: { label: "out of credit", tone: "warn", icon: CircleDollarSign, color: "text-warn" },
+  backup: { label: "backup", tone: "bad", icon: DatabaseBackup, color: "text-bad" },
 } as const;
 
 function NeedsYouCard({ items }: { items: NeedsYou[] }) {
   if (items.length === 0) return null;
   return (
     <Card className="mb-5 border-warn/40">
-      <CardHeader title={`Needs you (${items.length})`} description="Blocked issues, paused projects, daily ceilings and models whose last call failed on billing." />
+      <CardHeader title={`Needs you (${items.length})`} description="Blocked issues, paused projects, daily ceilings, models whose last call failed on billing, and state backups that stopped." />
       <ul className="divide-y divide-border/60">
         {items.map((n, i) => {
           const k = NEED[n.kind];
@@ -72,6 +73,7 @@ export function Overview() {
               last pass {ago(sched.last_pass_at)}{sched.next_pass_at && <> · next {ago(sched.next_pass_at)}</>}
               {sched.minutes && <> · every {sched.minutes} min</>}
             </span>
+            {d.backup && <span>backup {ago(d.backup.last_ok_at)}</span>}
             <span>{sched.ticks_running.length} repo tick{sched.ticks_running.length === 1 ? "" : "s"} running</span>
             <span className="text-xs">refreshed {new Date(d.generatedAt).toLocaleTimeString()}</span>
           </span>

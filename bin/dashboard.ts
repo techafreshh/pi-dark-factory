@@ -170,6 +170,17 @@ function tailReceipts(lines = 200, filter?: { slug?: string; q?: string }): stri
   }
 }
 
+const BACKUP_STALE_MS = 3 * 3600_000; // hourly backups: three missed runs is a problem
+
+/** <state>/backup.json, written by bin/backup.ts on every run */
+function backupStatus(): { last_ok_at?: string | null; last_id?: string; last_error?: string | null; last_error_at?: string | null; last_attempt_at?: string } | null {
+  try {
+    return JSON.parse(readFileSync(join(STATE_DIR, "backup.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /** repo tick processes alive right now: tick-<slug>.lock pidfiles whose pid runs */
 function liveTicks(): string[] {
   const out: string[] = [];
@@ -369,6 +380,17 @@ function needsYou(db: Database, info: Map<string, RepoInfo>, health: ReturnType<
     items.push({ kind: "billing", repo: null, slug: null, issue: null, title: null,
       detail: `${base}: ${h.last_error ?? "out of credit"}`, at: h.last_at });
   }
+  // state backups (bin/backup.ts): flag a failing or stalled one; no status file = not set up
+  const b = backupStatus();
+  if (b) {
+    const failing = b.last_error_at && (!b.last_ok_at || b.last_error_at > b.last_ok_at);
+    const stale = !b.last_ok_at || Date.now() - ms(b.last_ok_at) > BACKUP_STALE_MS;
+    if (failing || stale) {
+      items.push({ kind: "backup", repo: null, slug: null, issue: null, title: null,
+        detail: failing ? `state backup failing: ${b.last_error}` : `no successful state backup since ${b.last_ok_at ?? "ever"}`,
+        at: failing ? b.last_error_at : b.last_ok_at });
+    }
+  }
   return items;
 }
 
@@ -451,6 +473,7 @@ export function computeSummary(db: Database) {
     model_health: health,
     stage_model: stageModel(db),
     scheduler: { last_pass_at: log.lastPass, last_pass: log.lastPassLine, ticks_running: liveTicks() },
+    backup: backupStatus(),
   };
 }
 
