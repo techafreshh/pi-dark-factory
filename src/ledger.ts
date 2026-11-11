@@ -80,6 +80,35 @@ CREATE TABLE IF NOT EXISTS stage_runs (
   output_tokens INTEGER,
   error TEXT
 );
+CREATE TABLE IF NOT EXISTS slot_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  lane INTEGER NOT NULL,
+  pools TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  extra_lane INTEGER NOT NULL,
+  pid INTEGER,
+  state TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  granted_at TEXT,
+  pool TEXT,
+  issue_number INTEGER,
+  lap_id INTEGER,
+  released_at TEXT,
+  parked_at TEXT,
+  detail TEXT
+);
+CREATE TABLE IF NOT EXISTS merge_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  lap_id INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  entered_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  detail TEXT
+);
 `;
 
 const now = () => new Date().toISOString();
@@ -111,7 +140,12 @@ export class Ledger {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_laps_repo ON laps(repo, id);" +
         "CREATE INDEX IF NOT EXISTS idx_stage_runs_lap ON stage_runs(lap_id);" +
-        "CREATE INDEX IF NOT EXISTS idx_stage_runs_started ON stage_runs(started_at);"
+        "CREATE INDEX IF NOT EXISTS idx_stage_runs_started ON stage_runs(started_at);" +
+        // the slot allocator scans open requests per pool on every grant pass;
+        // the dashboard reads the merge queue per repo
+        "CREATE INDEX IF NOT EXISTS idx_slot_requests_state ON slot_requests(state, pool);" +
+        "CREATE INDEX IF NOT EXISTS idx_slot_requests_repo ON slot_requests(repo, state);" +
+        "CREATE INDEX IF NOT EXISTS idx_merge_queue_repo ON merge_queue(repo, state);"
     );
   }
 
@@ -217,4 +251,50 @@ export class Ledger {
       .get(repo, stage, sinceIso) as { c: number } | null;
     return row?.c ?? 0;
   }
+
+  /** stage runs of EVERY repo since `sinceIso` — the fleet-wide daily
+   *  ceiling (PDF_FLEET_DAILY_ATTEMPTS) counts implement runs from 00:00 UTC */
+  countStagesAll(stage: string, sinceIso: string): number {
+    const row = this.db
+      .query("SELECT COUNT(*) AS c FROM stage_runs WHERE stage = ? AND started_at >= ?")
+      .get(stage, sinceIso) as { c: number } | null;
+    return row?.c ?? 0;
+  }
+
+  /** a lap entered its repo's merge queue (parallel mode); returns the row id */
+  mergeQueueEnter(repo: string, n: number, lapId: number): number {
+    const t = now();
+    const r = this.db
+      .query("INSERT INTO merge_queue (repo, issue_number, lap_id, state, entered_at, updated_at) VALUES (?, ?, ?, 'waiting', ?, ?)")
+      .run(repo, n, lapId, t, t);
+    return Number(r.lastInsertRowid);
+  }
+
+  mergeQueueSet(id: number, state: MergeQueueState, detail?: string | null) {
+    this.db.query("UPDATE merge_queue SET state = ?, detail = ?, updated_at = ? WHERE id = ?").run(state, detail ?? null, now(), id);
+  }
+
+  /** rows a dead process left mid-queue: closed as bounced (reconcile, under the repo lock) */
+  mergeQueueCloseOpen(repo: string, detail: string): number {
+    return this.db
+      .query("UPDATE merge_queue SET state = 'bounced', detail = ?, updated_at = ? WHERE repo = ? AND state NOT IN ('merged', 'bounced')")
+      .run(detail, now(), repo).changes;
+  }
+
+  mergeQueueRows(repo: string): MergeQueueRow[] {
+    return this.db.query("SELECT * FROM merge_queue WHERE repo = ? ORDER BY id").all(repo) as MergeQueueRow[];
+  }
+}
+
+export type MergeQueueState = "waiting" | "rebasing" | "reverifying" | "merging" | "merged" | "bounced";
+
+export interface MergeQueueRow {
+  id: number;
+  repo: string;
+  issue_number: number;
+  lap_id: number;
+  state: MergeQueueState;
+  entered_at: string;
+  updated_at: string;
+  detail: string | null;
 }

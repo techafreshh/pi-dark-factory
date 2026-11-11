@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { closeSync, existsSync, openSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Ledger } from "./ledger";
+import { grantPass } from "./allocator";
 import { repoLockHeld } from "./lock";
 import { reapOrphanMachines } from "./ops";
 import { receipt } from "./receipts";
@@ -128,6 +129,31 @@ export function startScheduler(stateDir: string, everyMs: number, concurrency = 
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
+    },
+  };
+}
+
+/** The daemon's allocator heartbeat (src/allocator.ts): one grant pass every
+ *  `everyMs` — dead lease holders are swept, waiting requests granted. A
+ *  failing pass is receipted once per distinct message, not every 15 s. */
+export function startAllocator(stateDir: string, everyMs = 15_000): { stop(): void } {
+  const ledger = new Ledger(join(stateDir, "factory.db"));
+  let lastError = "";
+  const timer = setInterval(() => {
+    try {
+      const granted = grantPass(ledger);
+      lastError = "";
+      for (const g of granted) receipt(stateDir, `allocator: granted ${g.pool} slot to ${g.slug} lane ${g.lane}`, g.slug);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e).slice(0, 300);
+      if (msg !== lastError) receipt(stateDir, `allocator pass failed: ${msg}`);
+      lastError = msg;
+    }
+  }, everyMs);
+  return {
+    stop() {
+      clearInterval(timer);
+      ledger.db.close();
     },
   };
 }

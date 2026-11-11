@@ -48,6 +48,12 @@
   "limits": {
     "daily_attempts": 60
   },
+  "scheduling": {
+    "priority": "normal",
+    "spill_over": false,
+    "parallel": false,
+    "max_lanes": 3
+  },
   "env": {
     "mode": "host",
     "compose_file": "docker-compose.yml",

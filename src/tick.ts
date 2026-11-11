@@ -6,8 +6,9 @@ import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
 import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, supersedeIssueFiles, uncommitted } from "./gitws";
 import { machineNameFor } from "./instabox";
-import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachine } from "./machine";
-import { openBoxdLapMachine, type BoxdLapMachine } from "./machine-boxd";
+import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachineLike } from "./machine";
+import { openBoxdLapMachine } from "./machine-boxd";
+import { acquireSlot, bindLease, configForPool, lanePools, releaseSlot, type SlotLease } from "./allocator";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { BillingHoldError, billingHold, callPiWithFallback, type PiStageResult } from "./pi";
@@ -198,6 +199,15 @@ export interface TickDeps {
   ledger: Ledger;
   gh: GhApi;
   callStage: CallStageFn;
+  /** machine factory seam (tests): default opens an InstaBox or boxd lap
+   *  machine by cfg.env.mode */
+  openMachine?: (cfg: RepoConfig, issue: number, log: (m: string) => void, lapId: number, stateDir: string) => LapMachineLike;
+}
+
+/** what a caller hands one lap beyond the issue: the machine-slot lease it
+ *  holds (machine modes) — parallel lanes add their context in parallel.ts */
+export interface RunLapOpts {
+  lease?: SlotLease | null;
 }
 
 function prBody(cfg: RepoConfig, issue: IssueLite, plan: string): string {
@@ -281,13 +291,14 @@ export async function prepareRepo(cfg: RepoConfig, stateDir: string, deps: TickD
   await reconcile(cfg, deps, stateDir);
 }
 
-export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, issue: IssueLite): Promise<string> {
+export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, issue: IssueLite, opts: RunLapOpts = {}): Promise<string> {
   const n = issue.number;
   const priorRow = deps.ledger.getIssue(cfg.repo, n);
   if (!priorRow) {
     if (!deps.ledger.claim(cfg.repo, n)) return "claimed-elsewhere"; // race
   } // else: reclaim of an interrupted lap — attempts carry over
   const lapId = deps.ledger.startLap(cfg.repo, n);
+  if (opts.lease) bindLease(deps.ledger, opts.lease.id, n, lapId);
   const startAttempt = (priorRow?.attempts ?? 0) + 1;
   repoReceipt(cfg.slug, stateDir, `lap #${n} "${issue.title}" (attempt base ${startAttempt}, PR: ${priorRow?.pr ?? "none"})`);
 
@@ -327,12 +338,15 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // below destroys it however the lap ends (a reclaimed lap boots a fresh
   // -g<lapId> machine, so nothing is ever parked for reuse)
   // (cast: the stage closures assign it, which control-flow narrowing can't see)
-  let machine = null as LapMachine | BoxdLapMachine | null;
+  let machine = null as LapMachineLike | null;
   const machineMode = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
-  const openMachine = (): LapMachine | BoxdLapMachine =>
-    cfg.env.mode === "boxd"
-      ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
-      : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
+  const machineLog = (m: string) => repoReceipt(cfg.slug, stateDir, m);
+  const openMachine = (): LapMachineLike =>
+    deps.openMachine
+      ? deps.openMachine(cfg, n, machineLog, lapId, stateDir)
+      : cfg.env.mode === "boxd"
+        ? openBoxdLapMachine(cfg, n, machineLog, lapId, stateDir)
+        : openLapMachine(cfg, n, machineLog, lapId, stateDir);
 
   // a stage's ledger row opens BEFORE the stage runs (the dashboard's live
   // stage and real durations read it) and closes however the stage ends:
@@ -919,7 +933,33 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
     repoReceipt(cfg.slug, stateDir, `idle: no claimable issue${extra}`);
     return "idle";
   }
-  return runLap(cfg, stateDir, deps, claimable[0]);
+  const lease = lanePools(cfg).length > 0 ? await acquireLaneSlot(cfg, stateDir, deps, 0) : null;
+  if (lanePools(cfg).length > 0 && !lease) return "no_slot";
+  try {
+    return await runLap(lease ? configForPool(cfg, lease.pool) : cfg, stateDir, deps, claimable[0], { lease });
+  } finally {
+    if (lease) releaseSlot(deps.ledger, lease.id);
+  }
+}
+
+/** one lane's slot request with the repo's scheduling settings; null when
+ *  the repo paused while waiting or the wait window ran out (parked) */
+export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: TickDeps, lane: number): Promise<SlotLease | null> {
+  return acquireSlot(
+    deps.ledger,
+    {
+      repo: cfg.repo,
+      slug: cfg.slug,
+      lane,
+      pools: lanePools(cfg),
+      priority: cfg.scheduling?.priority ?? "normal",
+      extraLane: lane > 0,
+    },
+    {
+      log: (m) => repoReceipt(cfg.slug, stateDir, m),
+      isPaused: () => existsSync(join(stateDir, "repos", cfg.slug, "paused")),
+    }
+  );
 }
 
 /**
@@ -1227,14 +1267,41 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
         break;
       }
     }
+    // machine modes lease a slot BEFORE the claim (src/allocator.ts): a lap
+    // waiting for a box holds no in_progress row. No grant (paused while
+    // waiting, or the wait window spent and the request parked) ends the
+    // chain; the next tick adopts the parked request with its age intact.
+    let lease: SlotLease | null = null;
+    if (lanePools(cfg).length > 0) {
+      lease = await acquireLaneSlot(cfg, stateDir, deps, 0);
+      if (!lease) {
+        endedQuietly = true;
+        break;
+      }
+      if (lease.waitedMs > 60_000) {
+        // the wait may have outlived the pick (a human closed it, a label
+        // landed): pick again now that a box is ours
+        const fresh = (await listClaimable(cfg, deps.ledger, deps.gh).catch(() => [] as IssueLite[])).filter((i) => !retryNextTick.has(i.number));
+        const repick = (await prioritizeDiscoveries(cfg, fresh, deps.ledger, deps.gh).catch(() => fresh))[0];
+        if (!repick) {
+          releaseSlot(deps.ledger, lease.id, "nothing claimable after the wait");
+          endedQuietly = true;
+          break;
+        }
+        issue = repick;
+      }
+    }
     laps++;
     let lapOutcome: string | null = null;
     try {
-      lapOutcome = await runLap(cfg, stateDir, deps, issue);
+      lapOutcome = await runLap(lease ? configForPool(cfg, lease.pool) : cfg, stateDir, deps, issue, { lease });
     } catch (e: any) {
       // infra failure (git/gh/network) — receipt and move on; the
       // in_progress row is reconciled next tick, never lost
       repoReceipt(cfg.slug, stateDir, `lap #${issue.number} error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
+    } finally {
+      // runLap destroyed its machine in its own finally: the slot is free
+      if (lease) releaseSlot(deps.ledger, lease.id);
     }
     // an issue whose lap errored waits for the next tick: re-picking it at
     // once (it is still the oldest claimable) spent up to all its attempts

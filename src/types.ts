@@ -137,7 +137,21 @@ export interface RepoConfig {
    *  day (default 60; 0 = no ceiling). It counts the ledger's implement
    *  stage runs, so revives, unblocks and infra deferrals cannot reset it. */
   limits?: { daily_attempts?: number };
+  /** machine-slot scheduling (docs/parallel-mode.md). priority orders this
+   *  repo's slot requests fleet-wide (aging raises a waiting request one level
+   *  per PDF_AGING_MINUTES); spill_over lets a lap run on the other machine
+   *  platform when this repo's own pool is full; parallel runs up to
+   *  max_lanes laps at once (machine modes only), landing through a per-repo
+   *  merge queue. */
+  scheduling?: {
+    priority?: SchedulingPriority;
+    spill_over?: boolean;
+    parallel?: boolean;
+    max_lanes?: number;
+  };
 }
+
+export type SchedulingPriority = "high" | "normal" | "low";
 
 export interface IssueLite {
   number: number;

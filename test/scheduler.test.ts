@@ -128,3 +128,26 @@ describe("spawnRepoTick (real child process)", () => {
     expect(readFileSync(log, "utf8")).toContain("tick crashed (ghost)");
   }, 30000);
 });
+
+describe("startAllocator (the daemon's grant heartbeat)", () => {
+  test("grants a waiting request without the requester polling, and receipts it", async () => {
+    const { startAllocator } = await import("../src/scheduler");
+    const { requestSlot } = await import("../src/allocator");
+    const { Ledger } = await import("../src/ledger");
+    const st = stateWith([]);
+    const l = new Ledger(join(st, "factory.db"));
+    const id = requestSlot(l, { repo: "acme/a", slug: "a", lane: 0, pools: ["instabox"], priority: "normal", extraLane: false });
+    const a = startAllocator(st, 20);
+    try {
+      for (let i = 0; i < 100; i++) {
+        if ((l.db.query("SELECT state FROM slot_requests WHERE id = ?").get(id) as any).state === "granted") break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect((l.db.query("SELECT state FROM slot_requests WHERE id = ?").get(id) as any).state).toBe("granted");
+      expect(readFileSync(join(st, "laps.log"), "utf8")).toContain("allocator: granted instabox slot to a lane 0");
+    } finally {
+      a.stop();
+      l.db.close();
+    }
+  });
+});

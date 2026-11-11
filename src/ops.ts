@@ -3,6 +3,7 @@
  * (local) and factoryd (remote HTTP). Functions return data; the surfaces
  * decide how to print it.
  */
+import { poolStatus, type PoolStatus, type SlotRequestRow } from "./allocator";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -44,6 +45,9 @@ export interface OpsStatus {
   laps: ReturnType<Ledger["recentLaps"]>;
   stages: ReturnType<Ledger["recentStages"]>;
   worktrees: string[];
+  /** machine-slot pools (src/allocator.ts) and every open lease/request */
+  pools: PoolStatus[];
+  slots: SlotRequestRow[];
 }
 
 export async function opsStatus(stateDir: string, slug?: string): Promise<OpsStatus> {
@@ -99,6 +103,10 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
     laps: ledger.recentLaps(slug, 10),
     stages: ledger.recentStages(repoForStages, 15),
     worktrees,
+    pools: poolStatus(ledger),
+    slots: (ledger.db
+      .query("SELECT * FROM slot_requests WHERE state IN ('waiting', 'granted', 'parked') ORDER BY id")
+      .all() as SlotRequestRow[]).filter((r) => !repoForStages || r.repo === repoForStages),
   };
 }
 
@@ -880,6 +888,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
 
 const CONFIG_PATCH_ALLOW = [
   "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "trusted_authors", "pi", "discoveries", "limits",
+  "scheduling",
 ];
 
 function deepMerge(base: any, patch: any): any {
@@ -1299,6 +1308,7 @@ export async function reapOrphanMachines(
   if (!existsSync(reposDir)) return 0;
   const instaboxBySlug = new Map<string, RepoConfig>();
   const boxdBySlug = new Map<string, RepoConfig>();
+  let instaboxClientCfg: RepoConfig | null = null;
   for (const slug of readdirSync(reposDir)) {
     const cfgPath = join(reposDir, slug, "config.json");
     if (!existsSync(cfgPath)) continue;
@@ -1306,15 +1316,26 @@ export async function reapOrphanMachines(
       const cfg = loadRepoConfig(cfgPath);
       // keyed by the SANITIZED slug, the form machineNameFor writes into
       // every machine name: a raw key would miss a slug that sanitizes
-      // differently and file its live machines under "unknown repo"
+      // differently and file its live machines under "unknown repo".
+      // A machine-mode repo is known on BOTH platforms: a spill-over lap
+      // (scheduling.spill_over) runs on the other one, and bucketing by
+      // env.mode alone reaped a spilled box mid-lap as "unknown repo".
       const key = sanitizeMachinePart(cfg.slug);
-      if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxBySlug.set(key, cfg);
-      if (cfg.env.mode === "boxd") boxdBySlug.set(key, cfg);
+      const machine = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
+      if (machine && cfg.env.instabox) instaboxBySlug.set(key, cfg);
+      if (machine) boxdBySlug.set(key, cfg);
+      if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxClientCfg ??= cfg;
     } catch {}
   }
   let reaped = 0;
-  if (instaboxBySlug.size > 0) reaped += await reapInstaboxMachines(stateDir, ledger, log, instaboxBySlug);
-  if (boxdBySlug.size > 0) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
+  // a lane runs only where some repo lives: instabox when an instabox-mode
+  // repo exists (its block names the API), boxd when a boxd-mode repo exists
+  // or a repo may spill there
+  const anyBoxd = [...boxdBySlug.values()].some((c) => c.env.mode === "boxd" || c.scheduling?.spill_over);
+  const anyInstabox = !!instaboxClientCfg || [...instaboxBySlug.values()].some((c) => c.scheduling?.spill_over);
+  if (anyInstabox && instaboxBySlug.size > 0)
+    reaped += await reapInstaboxMachines(stateDir, ledger, log, instaboxBySlug, instaboxClientCfg ?? instaboxBySlug.values().next().value!);
+  if (anyBoxd) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
   return reaped;
 }
 
@@ -1375,9 +1396,10 @@ async function reapInstaboxMachines(
   stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
-  instaboxBySlug: Map<string, RepoConfig>
+  instaboxBySlug: Map<string, RepoConfig>,
+  clientCfg: RepoConfig
 ): Promise<number> {
-  const ib = InstaBox.fromEnv(instaboxBySlug.values().next().value!.env.instabox!);
+  const ib = InstaBox.fromEnv(clientCfg.env.instabox!);
   let machines;
   try {
     machines = await ib.listMachines();

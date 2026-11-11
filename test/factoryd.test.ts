@@ -22,6 +22,18 @@ describe("factoryd (remote-control API)", () => {
     expect(body.service).toBe("pi-dark-factory");
   });
 
+  test("health reports the machine-slot pools from the ledger", async () => {
+    const { requestSlot, grantPass } = await import("../src/allocator");
+    const l = new Ledger(join(dir, "factory.db"));
+    requestSlot(l, { repo: "acme/a", slug: "a", lane: 0, pools: ["boxd"], priority: "normal", extraLane: false });
+    grantPass(l, Date.now(), { alive: () => true });
+    l.db.close();
+    const body = (await (await fetch(base + "health")).json()) as any;
+    const boxd = body.pools.find((p: any) => p.pool === "boxd");
+    expect(boxd).toMatchObject({ cap: 10, used: 1, waiting: 0 });
+    expect(body.pools.find((p: any) => p.pool === "instabox").cap).toBe(5);
+  });
+
   test("everything else requires the key", async () => {
     expect((await fetch(base + "status")).status).toBe(401);
     const bad = await fetch(base + "status", { headers: { "x-api-key": "wrong" } });

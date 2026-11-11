@@ -538,7 +538,28 @@ export class InfraUnavailableError extends Error {
 export const isInfraTransportText = (t: string): boolean =>
   /permission denied \(publickey\)|machine unreachable|connect failed|connection (refused|timed out|closed)|broken pipe|kex_exchange/i.test(t);
 
-export class LapMachine {
+export interface MachineStageOpts {
+  models: StageModels;
+  prompt: string;
+  systemPrompt: string;
+  tools?: string[];
+  extraArgs?: string[];
+  timeoutMs: number;
+}
+
+/** What a lap needs from its machine — LapMachine (instabox) and
+ *  BoxdLapMachine (boxd) both provide it; tests inject fakes through
+ *  TickDeps.openMachine. */
+export interface LapMachineLike {
+  readonly name: string;
+  issue: number;
+  bash(script: string, opts?: { timeoutMs?: number }): Promise<ShRes>;
+  bootstrap(): Promise<void>;
+  callStage(stage: "plan" | "implement" | "review", o: MachineStageOpts): Promise<MachineStageResult & { stage: "plan" | "implement" | "review" }>;
+  destroy(): Promise<void>;
+}
+
+export class LapMachine implements LapMachineLike {
   readonly name: string;
   private machine: InstaMachine | null = null;
   private conn: SshTarget | null = null;

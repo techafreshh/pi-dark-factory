@@ -166,3 +166,46 @@ describe("loadRepoConfig limits", () => {
     }
   });
 });
+
+describe("loadRepoConfig scheduling", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pdfcfg-"));
+  const path = join(dir, "config.json");
+  const base = { repo: "acme/app", models: { default: { provider: "zai", model: "glm" } } };
+  const load = (extra: any) => {
+    writeFileSync(path, JSON.stringify({ ...base, ...extra }));
+    return loadRepoConfig(path);
+  };
+
+  test("defaults: serial, normal priority, no spill, 3 lanes", () => {
+    expect(load({}).scheduling).toEqual({ priority: "normal", spill_over: false, parallel: false, max_lanes: 3 });
+  });
+
+  test("a partial block merges over the defaults", () => {
+    const s = load({ env: { mode: "boxd" }, scheduling: { parallel: true, priority: "high" } }).scheduling!;
+    expect(s).toEqual({ priority: "high", spill_over: false, parallel: true, max_lanes: 3 });
+  });
+
+  test("bad shapes fail fast with the field named", () => {
+    expect(() => load({ scheduling: { priority: "urgent" } })).toThrow(/scheduling.priority must be/);
+    expect(() => load({ scheduling: { parallel: "true" } })).toThrow(/scheduling.parallel must be true or false/);
+    expect(() => load({ scheduling: { spill_over: 1 } })).toThrow(/scheduling.spill_over must be true or false/);
+    for (const bad of [0, 11, 2.5, "3"]) {
+      expect(() => load({ env: { mode: "boxd" }, scheduling: { max_lanes: bad } })).toThrow(/scheduling.max_lanes must be a whole number from 1 to 10/);
+    }
+  });
+
+  test("parallel and spill-over need a machine mode", () => {
+    expect(() => load({ scheduling: { parallel: true } })).toThrow(/parallel requires env.mode "instabox" or "boxd"/);
+    expect(() => load({ env: { mode: "compose" }, scheduling: { spill_over: true } })).toThrow(/spill_over requires env.mode/);
+  });
+
+  test("spill-over needs the other platform's block", () => {
+    // the boxd block has defaults (repo_dir + the shared boxd base), so an
+    // instabox repo can spill without extra config
+    expect(load({ env: { mode: "instabox" }, scheduling: { spill_over: true } }).scheduling!.spill_over).toBe(true);
+    expect(() => load({ env: { mode: "instabox", boxd: { repo_dir: "" } }, scheduling: { spill_over: true } })).toThrow(/requires env.boxd.repo_dir/);
+    // a boxd repo needs an instabox snapshot or template to boot from
+    expect(load({ env: { mode: "boxd" }, scheduling: { spill_over: true } }).scheduling!.spill_over).toBe(true);
+    expect(() => load({ env: { mode: "boxd", instabox: { snapshot: "", template: "" } }, scheduling: { spill_over: true } })).toThrow(/requires env.instabox.repo_dir and env.instabox.snapshot/);
+  });
+});

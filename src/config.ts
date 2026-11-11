@@ -19,6 +19,9 @@ const DEFAULTS = {
   // the three weeks to 2026-11-09 (median 12, p90 34) except the three of the
   // 2026-11-02 discovery storm (67-73), which the owner later reined in
   limits: { daily_attempts: 60 },
+  // serial, normal priority, own platform only: parallel mode and spill-over
+  // are opt-in per repo (docs/parallel-mode.md)
+  scheduling: { priority: "normal" as const, spill_over: false, parallel: false, max_lanes: 3 },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -148,6 +151,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
     discoveries: { ...DEFAULTS.discoveries, ...(raw.discoveries ?? {}) },
     ui: { ...DEFAULTS.ui, ...(raw.ui ?? {}) },
     limits: { ...DEFAULTS.limits, ...(raw.limits ?? {}) },
+    scheduling: { ...DEFAULTS.scheduling, ...(raw.scheduling ?? {}) },
     pi: {
       ...DEFAULTS.pi,
       ...raw.pi,
@@ -179,6 +183,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
   const daily = cfg.limits!.daily_attempts;
   if (daily !== undefined && (!Number.isInteger(daily) || daily < 0))
     throw new Error(`config limits.daily_attempts must be a whole number, 0 for no ceiling (got ${JSON.stringify(daily)})`);
+  validateScheduling(cfg);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")
@@ -188,4 +193,27 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
   // fail fast on a missing base model rather than at lap time
   resolveModels(cfg, "implement");
   return cfg;
+}
+
+/** scheduling block checks — same fail-fast rule as the flags above: a bad
+ *  remote patch is rejected at write time, never discovered at lap time */
+function validateScheduling(cfg: RepoConfig) {
+  const s = cfg.scheduling!;
+  if (!["high", "normal", "low"].includes(s.priority as string))
+    throw new Error(`config scheduling.priority must be "high", "normal" or "low" (got ${JSON.stringify(s.priority)})`);
+  for (const k of ["spill_over", "parallel"] as const) {
+    if (typeof s[k] !== "boolean") throw new Error(`config scheduling.${k} must be true or false (got ${JSON.stringify(s[k])})`);
+  }
+  if (!Number.isInteger(s.max_lanes) || s.max_lanes! < 1 || s.max_lanes! > 10)
+    throw new Error(`config scheduling.max_lanes must be a whole number from 1 to 10 (got ${JSON.stringify(s.max_lanes)})`);
+  const machine = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
+  if (s.parallel && !machine)
+    throw new Error(`config scheduling.parallel requires env.mode "instabox" or "boxd" (got "${cfg.env.mode}"): every parallel lap needs its own machine`);
+  if (s.spill_over) {
+    if (!machine) throw new Error(`config scheduling.spill_over requires env.mode "instabox" or "boxd" (got "${cfg.env.mode}")`);
+    if (cfg.env.mode === "instabox" && !cfg.env.boxd?.repo_dir)
+      throw new Error(`config scheduling.spill_over on an instabox repo requires env.boxd.repo_dir (and a boxd snapshot) for laps that spill to boxd`);
+    if (cfg.env.mode === "boxd" && (!cfg.env.instabox?.repo_dir || !(cfg.env.instabox.snapshot || cfg.env.instabox.template)))
+      throw new Error(`config scheduling.spill_over on a boxd repo requires env.instabox.repo_dir and env.instabox.snapshot (or template) for laps that spill to instabox`);
+  }
 }

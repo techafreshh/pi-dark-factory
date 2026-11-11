@@ -21,7 +21,7 @@
  * reaps the box).
  */
 import { Boxd } from "@boxd-sh/sdk";
-import { buildMachineEnvFile, bootstrapScriptFor, outcomeFromRun, STAGE_DRIVER, InfraUnavailableError, isInfraTransportText, type MachineStageResult, type ShRes } from "./machine";
+import { buildMachineEnvFile, bootstrapScriptFor, outcomeFromRun, STAGE_DRIVER, InfraUnavailableError, isInfraTransportText, type LapMachineLike, type MachineStageResult, type ShRes } from "./machine";
 import { machineNameFor } from "./instabox";
 import { resolveSnapshotName } from "./sharedbase";
 import { buildPiArgs, type PiOutcome } from "./pi";
@@ -206,7 +206,7 @@ export async function callBoxdStage(
  * when the lap books out. Mirrors LapMachine's surface exactly — tick.ts
  * dispatches on mode and holds either behind the same calls.
  */
-export class BoxdLapMachine {
+export class BoxdLapMachine implements LapMachineLike {
   readonly name: string;
   private client: Boxd;
   private machine: any = null;

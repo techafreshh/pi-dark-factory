@@ -13,7 +13,9 @@ import { homedir } from "node:os";
 import { readBases, readSharedBase } from "./sharedbase";
 import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
 import { repoLockHeld } from "./lock";
-import { spawnRepoTick, startScheduler } from "./scheduler";
+import { spawnRepoTick, startAllocator, startScheduler } from "./scheduler";
+import { poolStatus } from "./allocator";
+import { Ledger } from "./ledger";
 import {
   newRenderState,
   newestSessionFileForSlug,
@@ -36,6 +38,20 @@ async function readJson(req: Request): Promise<any> {
     return await req.json();
   } catch {
     return {};
+  }
+}
+
+/** pool usage from the ledger; null on a state dir without one yet */
+function readPools(stateDir: string) {
+  if (!existsSync(join(stateDir, "factory.db"))) return null;
+  let ledger: Ledger | null = null;
+  try {
+    ledger = new Ledger(join(stateDir, "factory.db"));
+    return poolStatus(ledger);
+  } catch {
+    return null;
+  } finally {
+    ledger?.db.close();
   }
 }
 
@@ -69,6 +85,8 @@ export function startFactoryd(opts: FactorydOpts) {
           bases: readBases(opts.stateDir),
           // null = the systemd timer schedules ticks; a number = this daemon does
           scheduler_minutes: Number(process.env.PDF_SCHEDULER_MINUTES ?? 0) > 0 ? Number(process.env.PDF_SCHEDULER_MINUTES) : null,
+          // machine-slot pools (src/allocator.ts): cap, granted, waiting, parked
+          pools: readPools(opts.stateDir),
         });
       }
 
@@ -320,5 +338,9 @@ if (import.meta.main) {
     const cap = Number(process.env.PI_FACTORY_CONCURRENCY ?? 0);
     startScheduler(stateDir, every * 60_000, Number.isFinite(cap) ? cap : 0);
     console.log(`scheduler on: a tick process per idle repo every ${every} min${cap > 0 ? `, at most ${cap} at once` : ""}`);
+    // the slot allocator's own heartbeat: sweep dead lease holders and grant
+    // waiting requests every 15 s (waiting laps also decide on their polls,
+    // so a daemon restart never stalls one)
+    startAllocator(stateDir, 15_000);
   }
 }

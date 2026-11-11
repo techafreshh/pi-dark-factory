@@ -49,9 +49,15 @@ function lockRelease(path: string) {
   }
 }
 
+/** live AND a factory process — the liveness rule every pidfile uses, for
+ *  callers holding a pid of their own (slot-lease holders, src/allocator.ts) */
+export function pidAlive(pid: number): boolean {
+  return Number.isFinite(pid) && pid > 0 && isAlive(pid) && looksLikeFactory(pid);
+}
+
 /**
- * Scheduler mutual exclusion via pidfile + liveness: only ONE tick (the
- * dispatcher) may run at a time. Laps themselves run in parallel inside it.
+ * Scheduler mutual exclusion via pidfile + liveness: only ONE full tick may
+ * run at a time (repo-scoped ticks take only their repo's lock below).
  * systemd never overlaps the service with itself; this only guards a manual
  * `foreman tick` against the scheduled one. A dead holder's lock is
  * reclaimed, so a crashed tick can never wedge the timer forever.

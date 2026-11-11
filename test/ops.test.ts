@@ -423,6 +423,36 @@ describe("reapOrphanMachines (guarded janitor)", () => {
     delete process.env.TEST_IB_KEY;
   });
 
+  test("spill-over: a boxd repo's live InstaBox machine survives; only unknown slugs are reaped as unknown", async () => {
+    const st = mkdtempSync(join(tmpdir(), "pdfspill-"));
+    const { srv, deleted } = serve(["pdf-bx-i4-g9", "pdf-bx-i5-g10", "pdf-nobody-i1"]);
+    mkdirSync(join(st, "repos", "bx"), { recursive: true });
+    writeFileSync(
+      join(st, "repos", "bx", "config.json"),
+      JSON.stringify({
+        repo: "acme/bx",
+        models: { default: { provider: "x", model: "y" } },
+        scheduling: { spill_over: true },
+        env: {
+          mode: "boxd",
+          instabox: { api_base: `http://127.0.0.1:${srv.port}`, api_key_env: "TEST_IB_KEY", template: "basic", snapshot: "shared-base", repo_dir: "/data/repo" },
+        },
+      })
+    );
+    process.env.TEST_IB_KEY = "k";
+    const rows: Record<string, { state: string }> = { "acme/bx#4": { state: "in_progress" }, "acme/bx#5": { state: "merged" } };
+    const ledger = { getIssue: (repo: string, n: number) => rows[`${repo}#${n}`] ?? null };
+    const log: string[] = [];
+    const boxdClient = { machines: { list: async () => [], delete: async () => {} } };
+    const reaped = await reapOrphanMachines(st, ledger as any, (m) => log.push(m), { boxdClient });
+    expect(reaped).toBe(2);
+    expect(deleted).toEqual(["m_pdf-bx-i5-g10", "m_pdf-nobody-i1"]);
+    expect(log.join("\n")).toContain("pdf-bx-i5-g10 (merged)");
+    expect(log.join("\n")).toContain("pdf-nobody-i1 (unknown repo)");
+    srv.stop(true);
+    delete process.env.TEST_IB_KEY;
+  });
+
   test("no instabox repos = no-op", async () => {
     const empty = mkdtempSync(join(tmpdir(), "pdfib2-"));
     const reaped = await reapOrphanMachines(empty, { getIssue: () => null } as any, () => {});
