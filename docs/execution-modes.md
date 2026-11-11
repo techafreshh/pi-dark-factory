@@ -34,9 +34,9 @@ container (`docker rm -f` follows every stage, timeout or crash included). The h
 
 [InstaBox](https://instabox.sh) rents microVMs purpose-built for coding agents: a full Linux
 machine with its own kernel, Docker inside, and **snapshot boot in seconds**, billed
-burst-style (running time + storage; a paused machine costs storage only). In this mode the
-implement and review stages run inside a **disposable machine per issue** booted from the
-repo's golden snapshot — the compose-mode bargain (install anything, host stays clean) with
+burst-style (running time + storage; a paused machine costs storage only). In this mode
+every agent stage (plan, implement, review) runs inside a **disposable machine per lap**
+booted from the repo's snapshot — the compose-mode bargain (install anything, host stays clean) with
 perfect reproducibility instead of shared caches:
 
 - **One-time bake**: `foreman bake <slug>` boots a machine from the template (default
@@ -56,10 +56,12 @@ perfect reproducibility instead of shared caches:
   (`ssh -L` forwards black-holed readiness polls in October 2026, so nothing is forwarded any
   more). The scenario files stay in factory state; only their commands travel, per run.
 - **Lifetimes**: one machine per lap, kept across that lap's repair rounds and destroyed when
-  the lap ends (a reclaimed lap boots a fresh `-g<lapId>` machine). The janitor (every tick's
-  tail and `foreman cleanup`) reaps any `pdf-*` machine whose issue has no live lap.
-- **Env**: `INSTABOX_API_KEY` (or your `api_key_env`) in the service unit; model keys and
-  `GITHUB_TOKEN` ride into each stage via `pass_env`. Concurrency is capped by your
+  the lap ends (a reclaimed lap boots a fresh `-g<lapId>` machine). The janitor (once per
+  scheduler pass, at the end of a full fleet tick, and in `foreman cleanup`) reaps any
+  `pdf-*` machine whose issue has no live lap.
+- **Env**: `INSTABOX_API_KEY` (or your `api_key_env`) in the service unit; model keys ride
+  into each stage via `pass_env`; `GITHUB_TOKEN` and `TINYFISH_API_KEY` always do, and the
+  factory's pi `auth.json`/`models.json` ship with every stage. Concurrency is capped by your
   account (5 machines on the entry tier ≈ 5 concurrent laps). Docker is **not** needed
   on the VPS for machine-mode repos. The ClinePass router is a host-local service —
   machines cannot reach it, so machine-mode stages point their provider directly.
@@ -82,7 +84,8 @@ review and scenarios all in a per-lap box), driven differently:
   the slot queue's 10-minute wait): the claim drops with the attempt budget intact and the
   next tick re-claims. Same rule as instabox.
 - **Lifetimes**: as instabox, one box per lap, destroyed when the lap ends. The janitor
-  (every tick's tail and `foreman cleanup`) deletes `factory=1`-labelled boxes whose issue
+  (once per scheduler pass, at the end of a full fleet tick, and in `foreman cleanup`)
+  deletes `factory=1`-labelled boxes whose issue
   has no live lap.
 - **No post-merge regression pass**: as with instabox, each lap's in-box verify is the
   contract check, so a merge never runs product code on the VPS. (`scenario --test` still

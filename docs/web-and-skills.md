@@ -39,7 +39,7 @@ every mode sees the same tree:
 
 Add a skill by dropping a directory in `pi-skills/` — the next stage carries it, no
 restart (the collector refuses payloads over 4 MiB of base64 rather than bloat every
-stage's ssh stdin, and loose `.md` files in the tree root load as skills too, so use
+stage's payload (ssh stdin on instabox, the exec call on boxd), and loose `.md` files in the tree root load as skills too, so use
 directories). The shipped skills today: `agent-browser` (visual/runtime UI verification),
 `ui` — the frontend router: before any component/page/block work, a lap must consult
 it and install from the approved shadcn-registry family (coss primitives, efferd blocks,
@@ -50,4 +50,7 @@ runtime-context line (build from scratch, never install libraries) — plus its 
 companions: `transitions-dev` (12 tuned CSS transition snippets with reduced-motion
 guards — the motion source for non-React stacks), `web-design-guidelines` (audits changed
 files against Vercel's LIVE-fetched a11y/interaction rulebook before a UI lap finishes),
-and `create-readme` (builds a repo README from proven open-source patterns).
+`create-readme` (builds a repo README from proven open-source patterns), and
+`scenario-harness` (the runtime-verification contract: the `expect`-token grammar probes are
+judged with, what failed-probe reproduction data means, and why probes are the issue's
+contract rather than something to game).

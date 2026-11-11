@@ -1,11 +1,13 @@
 # Lap lifecycle
 
-Each repo works its claimable issues one lap at a time, oldest first, through six deterministic stages.
+Each repo works its claimable issues one lap at a time, oldest first, through six stages. The plan, implement and review stages are model calls; every gate between
+stages is deterministic.
 
 A merge (or a block) re-intakes at once, so one tick chains up to 6 laps per repo inside a
 12-minute budget (`PDF_CHAIN_BUDGET_MS`), re-syncing the source checkout to main before each
-chained lap; whatever remains resumes on the next tick. Strict one-at-a-time order inside a
-repo is what keeps main conflict-free.
+chained lap; whatever remains resumes on the next tick. When the chain stalls on a block, the tick waits
+10 minutes once and tries one revive. Strict one-at-a-time order inside a repo is what keeps
+main conflict-free.
 
 ## Lifecycle (one lap)
 
@@ -28,5 +30,5 @@ repo is what keeps main conflict-free.
    unproven findings are silence, one unmet acceptance criterion is a reject. Rejection routes
    the findings back into the next implement attempt (repair loop, bounded by the attempt cap;
    findings must be dispositioned — fixed or declined with a reason).
-6. **Merge** — squash, close the issue, delete the worktree (or machine), close the ledger
-   row, receipt.
+6. **Merge** — squash, close the issue, delete the worktree, close the ledger row, receipt.
+   In machine modes the lap's machine is deleted when the lap ends, whatever the outcome.

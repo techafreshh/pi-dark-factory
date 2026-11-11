@@ -5,9 +5,9 @@ era is answered here structurally — by mechanism, not by prompt:
 
 | Old wound | Mechanism in this factory |
 |---|---|
-| Already-delivered issues re-claimed forever | **SQLite claim ledger** — intake only picks issues with no row (or a crashed `in_progress` row below the attempt cap). GitHub labels are cosmetic. |
+| Already-delivered issues re-claimed forever | **SQLite claim ledger** — intake only picks issues with no row (or a crashed `in_progress` row below the attempt cap). Labels only gate intake (`skip_labels`, `factory:needs-info`); claim state never lives in them. |
 | Hung laps / silent streams | Every stage is a **one-shot subprocess with a wall-clock watchdog**; kill = kill the process group (setsid). Timeouts are generous and per-stage (`plan_minutes` / `implement_minutes` / `review_minutes`) — they exist to break hangs, not to throttle work. |
-| Orphaned workers needing targeted kills | Everything is a child of the oneshot service cgroup — systemd reaps leftovers. Plus a janitor pass (`foreman cleanup`) for stale `pi --mode json` processes older than 2h and leftover machines. |
+| Orphaned workers needing targeted kills | Every repo tick is its own process holding its repo's pidfile; a dead holder's lock is reclaimed. Each stage runs in its own process group with a watchdog. `foreman cleanup` kills `pi --mode json` processes older than 2h, and the machine janitor (every scheduler pass) deletes lap machines whose issue has no live lap. |
 | Worktree/session reuse confusing resumed runs | One worktree per issue (created at first implement, deleted at merge), reused only within that issue's repair loop. Every stage is a fresh process reading current disk truth — there is no cached-node replay to poison. |
 | Structured output failures / "turn off thinking" | **No schema-valid JSON is ever demanded from a model.** All structure is Pi tool calls and text; verdicts are parsed leniently with up to five re-asks, then fail closed. |
 | False-green traveling two gates | Green = `git diff` vs base + `gh pr checks` + black-box scenario probes. Agent self-report is never a gate; lockfile-only changes don't count. |
@@ -25,8 +25,9 @@ forensics), and the new planner and the first implement attempt both see the las
 findings, which are saved per issue in `findings.md`. Two fuses bound the revives: at most 3 revives per issue per day, and none once
 the same failure signature has blocked 3 rounds in a row (a summary comment then asks for a
 human). A config or scenario write resets both fuses. `unblock --prune` retires the plan and
-the findings too, so the issue starts over. `factory:needs-info` parks are never
-retried: a human answers in the issue body and removes the label.
+the findings too, so the issue starts over. `factory:needs-info` parks are not
+auto-revived: intake skips them until a human answers in the issue body and removes the label,
+then the next tick claims the issue with a fresh attempt budget.
 
 ## Ordering & concurrency (by design)
 
@@ -34,7 +35,8 @@ A repo's backlog is a dependency chain: the slicer writes `Depends on: #n`, and 
 repo's **oldest claimable issue** — one whose deps are all closed by merged PRs. Laps inside a
 repo run strictly one at a time: a merge re-intakes at once, so a tick chains up to 6 laps per
 repo inside a 12-minute budget (`PDF_CHAIN_BUDGET_MS`), re-syncing main before each, and the
-next tick takes the rest. Repos run concurrently with each
+next tick takes the rest. When the chain stalls on a block, the tick waits 10 minutes once
+(`PDF_REVIVE_COOLDOWN_MS`) and tries one revive before it ends. Repos run concurrently with each
 other (`--concurrency N` / `PI_FACTORY_CONCURRENCY` caps cross-repo parallelism; default
 unlimited). The previous factory's runs supplied the evidence for this shape: serial delivery
 shipped 11 of 12 issues in perfect order with zero conflicts, while concurrent branches produced

@@ -54,10 +54,11 @@ Config lands in `~/.dark-factory/config.json`. Per-shell overrides and precedenc
 
 | watch | drive |
 |---|---|
-| `health` · `doctor` · `models` | `onboard OWNER/NAME` |
+| `setup URL KEY` · `where` | `onboard OWNER/NAME` |
+| `health` · `doctor` · `models` | |
 | `status [--repo SLUG] [--raw]` | `config SLUG [--json PATCH]` |
 | `logs [--repo SLUG] [--tail N]` | `tick SLUG` · `pause SLUG` · `unpause SLUG` |
-| `session SLUG [--follow] [--think] [--issue N]` | `scenario SLUG runtime\|holdout [--file F] [--lint] [--test] [--dump]` |
+| `session SLUG [--follow] [--think] [--issue N]` | `scenario SLUG runtime\|holdout [--file F] [--lint] [--test [--branch B]] [--dump]` |
 | | `prove-gates SLUG` · `discoveries SLUG [--file]` |
 | | `backlog SLUG --prd-file F [--max N] [--create]` |
 | | `unblock SLUG ISSUE [--prune] [--force]` · `cleanup` |

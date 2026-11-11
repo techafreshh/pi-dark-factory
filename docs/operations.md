@@ -32,18 +32,19 @@ install into an agent walk-through instead of a script:
 - `DEPLOYMENT.md` executed **phase by phase with a verify after each** — factory user,
   runtimes, `gh` + provider auth, full `~/.pi` provisioning (custom `models.json`
   providers, packages, every `provider/model:thinking` string smoke-tested against the
-  live API), factory code + state dir, systemd timer + factoryd + Caddy;
+  live API), factory code + state dir, factoryd with its scheduler + Caddy, optional
+  dashboard and backups;
 - **idempotent**: a re-run resumes, never re-does; secrets go into 600-mode files and
   never into the transcript.
 
-**Done means**: `pi-factory.timer` armed (fires every 15 minutes), `pi-factoryd` green
-behind Caddy with its API key in `factoryd.env` (600), every model string proven by a live
+**Done means**: `pi-factoryd` green with its scheduler on (`/health` shows
+`scheduler_minutes: 15`) behind Caddy with its API key in `factoryd.env` (600), every model string proven by a live
 smoke call, the laptop able to `doctor` in over HTTPS — and, if you opted in, Docker or
 the InstaBox / boxd key wired into the service environment.
 
 ### Day 2 — onboarding a project (back on your laptop)
 
-Two remote clients speak to the same HTTPS endpoint (`X-Api-Key` edge gate —
+The remote client speaks to the factory's HTTPS endpoint (`X-Api-Key` edge gate —
 the daemon additionally rejects keys it does not hold; Caddy OR-matches the
 revocable per-client edge keys; `/health` stays open):
 
@@ -63,7 +64,7 @@ GitHub, and the only manual moment is answering a `factory:needs-info` question.
 InstaBox repos bake their golden snapshot once on the server (`foreman bake <slug>`) —
 onboarding reminds you when.
 
-The manual alternative for all of the above is [`DEPLOYMENT.md`](DEPLOYMENT.md) — the
+The manual alternative for all of the above is [`DEPLOYMENT.md`](../DEPLOYMENT.md) — the
 runbook the setup skill executes.
 
 ## Commands
@@ -91,8 +92,12 @@ bun src/foreman.ts cleanup                      # dep caches, stale pi workers, 
   repos/<slug>/config.json  # per-repo config (see templates/repo.config.json)
   repos/<slug>/runtime.json  # black-box acceptance (OUTSIDE the product repo)
   repos/<slug>/holdout.json  # adversarial acceptance, second port
+  repos/<slug>/revives.json  # auto-revive bookkeeping (daily count, failure signatures, inputs epoch)
+  repos/<slug>/paused        # present = ticks skip the repo; "<iso> <reason>" for a billing hold
   repos/<slug>/source/       # main checkout (fetch + hard reset each tick; agent never works here)
-  repos/<slug>/issues/<n>/   # plan.md + stage JSONLs + Pi session forensics
+  repos/<slug>/issues/<n>/   # plan.md, findings.md, stage JSONLs, Pi sessions, discoveries
+  base-snapshot.json         # stack-base aliases (shared-base, …) → machine snapshots
+  backup.json                # last backup result (bin/backup.ts)
   worktrees/<slug>/issue-<n>/ # the only place agents ever work (host + compose modes)
 ```
 
@@ -117,25 +122,29 @@ disciplined model for implement/review.
 
 ## Deploying changes to the factory
 
-Two code surfaces load differently — a `git pull` reaches only one of them:
+```sh
+cd /home/factory/pi-dark-factory && sudo -u factory git pull --ff-only
+sudo -u factory env PATH=/home/factory/.bun/bin:/usr/bin:/bin bun install --frozen-lockfile   # only when package.json changed
+sudo systemctl restart pi-factoryd
+```
 
-- **Timer ticks** (pi-factory.service, every 15 min) spawn a fresh process from the checkout
-  per firing — a pull lands at the next tick, safe mid-lap.
-- **The daemon** (pi-factoryd, :8077) serves the API. Since the scheduler change, a
-  slug-scoped tick (`dark-factory tick SLUG`) runs as its own `foreman tick --repo SLUG`
-  process, so it loads the code on disk at start like a timer tick does. The daemon itself
-  keeps its start-time code (API routes, the scheduler loop) until it restarts, so a change
-  to `factoryd.ts`, `ops.ts` or `scheduler.ts` still ends with
-  `sudo systemctl restart pi-factoryd`. Under the default `KillMode=control-group`, that
-  restart kills every tick process the daemon started; with the scheduler setup below it
-  leaves them running.
+Two code surfaces load differently:
 
-### Daemon scheduler (replaces the timer)
+- **Repo ticks** are `foreman tick --repo <slug>` processes the scheduler (or `dark-factory
+  tick`) starts, so each one loads the code on disk when it starts. A pull reaches the next
+  tick without a restart, and a lap already running keeps the code it started with.
+- **The daemon** (pi-factoryd, :8077) keeps its start-time code for the API routes and the
+  scheduler loop until it restarts. Restart it after any change to `factoryd.ts`, `ops.ts`,
+  `scheduler.ts` or code they import. With `KillMode=process` (below) the restart leaves
+  running ticks alone, so it is safe at any time.
 
-The timer runs the whole fleet as one oneshot service, and systemd cannot start that service
-again while it runs: one repo with a long lap delays every other repo's next tick (33 of 311
-ticks overran their slot in the week to 2026-11-09, the longest by 111 minutes). The daemon
-can schedule instead, starting one tick process per idle repo on the quarter hour:
+### Daemon scheduler
+
+The daemon schedules ticks: on the quarter hour it starts one tick process per idle repo,
+spaced `PDF_SCHEDULER_GAP_MS` apart (default 1 s), then runs the machine janitor once. A
+repo whose previous tick still runs is skipped, so a long lap delays only its own repo.
+`PI_FACTORY_CONCURRENCY` caps how many repo ticks run at once. The scheduler is off unless
+`PDF_SCHEDULER_MINUTES` is set; this deployment sets it in a drop-in:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/pi-factoryd.service.d
@@ -148,13 +157,14 @@ KillMode=process
 EOF
 sudo systemctl daemon-reload
 sudo systemctl disable --now pi-factory.timer   # one scheduler, not two
-sudo systemctl restart pi-factoryd              # this one restart still needs idle laps
+sudo systemctl restart pi-factoryd              # switching over: do this one restart with laps idle
 curl -s localhost:8077/health | grep scheduler_minutes   # 15
 ```
 
-From then on a deploy is `git pull` (plus `bun install` when `package.json` changed) and
-`sudo systemctl restart pi-factoryd`, at any time. `PI_FACTORY_CONCURRENCY` caps how many
-repo ticks run at once. To go back: remove the drop-in, `daemon-reload`, re-enable the timer.
+The older alternative is `pi-factory.timer`, a oneshot fleet tick every 15 minutes. systemd
+can't start it again while it runs, so one long lap delays every repo (33 of 311 ticks
+overran their slot in the week to 2026-11-09). To go back to it: remove the drop-in,
+`daemon-reload`, restart the daemon, and enable the timer.
 
 ### Telemetry dashboard
 

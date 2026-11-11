@@ -13,8 +13,8 @@
 ## What it is
 
 You hand it a PRD; it slices the PRD into a dependency-ordered GitHub backlog, then builds it
-with **no human in the loop**: a systemd timer on your VPS fires every 15 minutes, picks each
-repo's next claimable issue, and runs one **lap** through
+with **no human in the loop**: every 15 minutes the factory daemon on your VPS starts a tick
+for each repo, which picks the repo's next claimable issue and runs one **lap** through
 
 ```
 intake → plan → implement → verify → review → squash-merge → close
@@ -76,8 +76,8 @@ pi        # any coding agent session in the checkout works
 
 then tell the agent: **"Run the dark-factory-setup skill — set the factory up on this server."**
 The skill ships in this repo (`.agents/skills/dark-factory-setup/`) and walks the whole install —
-factory user, runtimes, auth, pi provisioning with every model string smoke-tested, systemd
-timer + daemon + Caddy — idempotently, with secrets going into 600-mode files and never into
+factory user, runtimes, auth, pi provisioning with every model string smoke-tested, the
+daemon with its scheduler, Caddy, and optionally the dashboard and backups — idempotently, with secrets going into 600-mode files and never into
 the transcript. The manual alternative is [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 Then onboard a project (from any machine):
@@ -122,9 +122,11 @@ Full verb manuals: [cli/README.md](cli/README.md).
 src/                 the engine: ledger, tick, stages, gates, instabox + boxd + compose drivers, factoryd
 pi-skills/           skill content shipped into every lap agent (ui router, agent-browser, …)
 cli/                 the @techafresh/dark-factory npm client
+bin/dashboard.ts     read-only telemetry dashboard server (UI in dashboard-ui/)
+bin/backup.ts        hourly ledger + state backups to S3-compatible storage
 bin/factory-remote   the Python client (deprecated)
 templates/           repo config + scenario templates
-test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps (354 tests)
+test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps
 docs/                deep dives (below)
 ```
 
@@ -154,4 +156,5 @@ docs/                deep dives (below)
 - Lap and backlog mutations spend real provider tokens. Spend is bounded by per-stage timeouts,
   attempt caps and a per-repo daily ceiling (`limits.daily_attempts`, default 60 implement
   attempts per UTC day), not by a dollar meter. When every model a stage tries answers `402`
-  (out of credit) or `401` (bad key), the repo pauses until someone runs `unpause`.
+  (out of credit) or `401` (bad key), the attempt is refunded and the repo pauses until someone
+  runs `unpause`.

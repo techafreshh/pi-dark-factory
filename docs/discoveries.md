@@ -24,8 +24,3 @@ chains):
   roadmap: while any product (non-discovery) issue is claimable they are left out of the
   queue entirely, and they flow only after the PRD backlog drains. Majors keep the 2026-11-01
   drain-first priority.
-
-The starter, `scenario-harness`, teaches agents the runtime-verification
-contract: the `expect`-token grammar probes are judged with, what failed-probe
-reproduction data means, and why probes are the issue's contract rather than something
-to game.

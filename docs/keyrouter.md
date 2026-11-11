@@ -6,8 +6,9 @@
 
 ClinePass's weekly cap once killed ~13 consecutive laps in the old factory. The router makes
 that class impossible: `src/keyrouter.ts` (systemd service `pi-keyrouter`, port 8099) sits
-between Pi and ClinePass and fans requests over however many API keys live in
-`~/state/clinepass.keys` (one per line, live-reloaded). A 429 parses the reset window from
+between Pi and ClinePass and fans requests over however many API keys live in the file named
+by `CRPASS_KEYS_FILE` on the unit (here `/home/factory/state/clinepass.keys`, one per line,
+live-reloaded). A 429 parses the reset window from
 ClinePass's own text ("The limit resets in 4d 5h") and cools that key **exactly** that long
 (unparseable → 24h, 402 → 7d, 401 → 30d), the retry transparently uses the next hot key, and
 SSE streams pass through untouched. All keys cooling → a plain 429 (add a key, it's picked up
@@ -21,8 +22,8 @@ a provider's `apiKey` exactly that way, so set the `clinepass-rotator` entry's `
 `models.json` to the same token. Unset, the router stays open (it logs `OPEN` at start).
 
 Wiring (one-time, on the VPS): merge `templates/pi-models.clinepass-router.json` into the
-factory user's `~/.pi/agent/models.json`, put your keys in `~/state/clinepass.keys`, and point
+factory user's `~/.pi/agent/models.json`, put your keys in the `CRPASS_KEYS_FILE` file, and point
 repo configs at `provider: "clinepass-rotator"`. `host.docker.internal` resolves both on the
 host (the `dark-factory-setup` skill adds the `/etc/hosts` line) and inside containers (fallback
-mode adds it; compose mode uses `extra_hosts`). Remember: host-local, so instabox machines
-bypass it.
+mode adds it; compose mode uses `extra_hosts`). Remember: host-local, so machine-mode (instabox,
+boxd) stages bypass it.

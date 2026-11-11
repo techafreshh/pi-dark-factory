@@ -7,18 +7,19 @@
 ```
 bun install
 bun run check     # tsc --noEmit (0 errors expected) + bun test
-bun test          # 354 tests: lenient parsers, ledger, probes, spawner (fake pi binary),
+bun test          # lenient parsers, ledger, probes, spawner (fake pi binary),
                   # scenario harness (real python3 server), instabox client (fake API),
                   # machine stages through a fake ssh gateway (real git), full machine-mode lap,
                   # boxd exec wrapper + lap machine (stubbed SDK client),
                   # tick integration (real git, fake gh), parallel dispatcher,
                   # per-repo tick scheduler (real child process),
-                  # TinyFish web-tools client (stubbed API) + stage-tool wiring
+                  # TinyFish web-tools client (stubbed API) + stage-tool wiring,
+                  # env allowlist, revive fuses, dashboard API, state backups
 ```
 
 Bun runs TypeScript without checking it, so `bun run check` is the type gate: TypeScript is a
 pinned dev dependency, and `tsconfig.json` covers `src/`, `test/`, `bin/`, `pi-extensions/`
-and the declaration shims in `types/` (pi's extension API) and `cli/bin/dark-factory.d.ts`.
+and the declaration shims in `types/` (pi's extension API).
 The tree type-checks with zero errors; keep it there. A versioned pre-push hook runs the same
 check; enable it once per clone with `git config core.hooksPath .githooks`. The first pass
 to zero (2026-11-09) found three live bugs: the key router called `.delete()` on a plain
