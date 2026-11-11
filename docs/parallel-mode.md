@@ -1,6 +1,6 @@
 # Parallel mode and the slot allocator
 
-Status: built on branch `feature/parallel-mode` (2026-11-11), not yet deployed or piloted.
+Status: deployed 2026-11-11 (main 8ed2623) and piloted on the two boxd smoke repos (results below).
 Implementation plan: `.agents/plans/completed/parallel-mode.plan.md`; report:
 `.agents/reports/parallel-mode-report.md`.
 
@@ -266,6 +266,40 @@ factoryd's `/health` when the daemon answers, else from `DASHBOARD_POOL_INSTABOX
   may merge…", a leftover of the reverted `a24e5c2`). It says the factory rebases before
   merging and hands a conflict back as findings, and allows a rebase only when the findings
   ask for one.
+
+## Pilot results (2026-11-11, production)
+
+Deployed at 20:15 UTC (ledger backed up first to `state/factory.db.pre-parallel-2026-11-11`).
+
+**Parallel lanes, `factory-boxd-smoke-1`** (boxd, `max_lanes` 3). Three independent issues
+(#4 `/time`, #5 `/echo`, #6 `/version`), all editing the one file `app.py`:
+
+| Time (UTC) | Event |
+|---|---|
+| 20:16:25 | 3 lanes start #4, #5, #6 at once on 3 boxd machines |
+| 20:21:2x | all three verify green |
+| 20:21:55 | #6 merges first |
+| 20:21:57 / 20:22:06 | #4 and #5: rebase conflict in `app.py` → free repair round each |
+| 20:27:08 | #4 merges after its repair |
+| 20:27:21 | #5 conflicts again (now with #4) → plan retired, re-planned on fresh main |
+| 20:33:01 | #5 merges; main serves all three endpoints, probed by hand |
+
+17 minutes from start to the third merge; serially the three laps took about 5 minutes
+each plus the chain overhead. Every conflict was a real one (the same route-dispatch
+block), so this pilot exercised the repair and re-plan paths, not the clean-rebase path
+(that one is covered by tests). The reviews filed one discovery, which the next tick ran in
+the single discovery lane and merged at 20:50.
+
+**Spill-over, `factory-boxd-smoke-2`** (boxd repo, `spill_over` on, `env.instabox.snapshot`
+`shared-base`). A manual tick with `PDF_POOL_BOXD=0` received an instabox slot at once
+(`slot granted on instabox — spilled over (boxd pool full)`). The lap ran plan, implement,
+verify (scenarios in the InstaBox machine) and review there, and merged #4 at 20:44. The
+chained discovery lap spilled the same way and merged at 20:51. Its machine survived the
+20:45 janitor pass.
+
+Not yet seen in production: a serial instabox lap taking a lease (no instabox repo had
+claimable work in the passes after the deploy), the 30-minute aging, a parked request.
+All three are covered by tests.
 
 ## Not in scope
 
