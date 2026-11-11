@@ -63,10 +63,12 @@ export function buildImplementPrompt(
         ]
       : []),
     `- Branch: factory/issue-${issue.number} (already checked out). Target base: origin/${cfg.default_branch}.`,
-    "- Do not change git config or rewrite history.",
-    "- Parallel factory laps may merge other issues while you work: before finishing, make sure your branch still integrates with origin/" +
+    "- Do not change git config. Do not rewrite history, except a rebase onto origin/" +
       cfg.default_branch +
-      " (rebase/merge it in and fix trivial conflicts yourself; a conflict is your finding to resolve, not a failure to report).",
+      " when the findings ask for one.",
+    "- Other factory laps may merge into origin/" +
+      cfg.default_branch +
+      " while you work: the factory rebases your branch onto it before merging and hands any conflict back to you as a finding to resolve.",
     "",
     "ACCEPTANCE (deterministic, checked after you finish):",
     "1. `git status --porcelain` must be EMPTY — commit ALL your work (including new files) with clear messages.",

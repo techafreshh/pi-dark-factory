@@ -49,7 +49,7 @@ export const PLANNER_SYSTEM = [
 export function buildPlanPrompt(
   cfg: RepoConfig,
   issue: { number: number; title: string; body: string },
-  opts: { previousFailure?: string | null } = {}
+  opts: { previousFailure?: string | null; siblings?: { number: number; title: string }[] } = {}
 ): string {
   // a re-plan after a blocked round: the old plan was retired, and the
   // planner must see why it failed or it tends to write the same plan again
@@ -64,6 +64,19 @@ export function buildPlanPrompt(
         "Work out why before you plan. If the approach itself was the problem, choose a different one; a plan that repeats the failed approach unchanged is a defect. The branch may already hold the earlier attempt's commits: say in the plan what to keep and what to redo.",
       ]
     : [];
+  // parallel mode: other lanes are changing the repo right now. A discovery
+  // whose code a sibling is rewriting should end as NO_ACTION, and a plan
+  // must not quietly redo a sibling's issue.
+  const siblings = opts.siblings?.length
+    ? [
+        "",
+        "## IN FLIGHT IN PARALLEL LANES",
+        "Other laps are implementing these issues on this repo right now and will merge before or after yours:",
+        ...opts.siblings.slice(0, 10).map((s) => `- #${s.number} ${s.title.slice(0, 120)}`),
+        "",
+        "Plan only this issue. If this issue is already covered by one of them, answer NO_ACTION and name it. Stay out of the files their titles point at unless this issue needs them: a sibling's changes land through a rebase, and an overlap becomes a conflict to resolve.",
+      ]
+    : [];
   return [
     "Plan the next implementation lap for this repository.",
     "",
@@ -71,8 +84,11 @@ export function buildPlanPrompt(
     "",
     issue.body || "(no issue body)",
     ...previous,
+    ...siblings,
     "",
-    `WHY: it is the oldest unclaimed issue in the backlog; the factory delivers issues in order.`,
+    opts.siblings?.length
+      ? `WHY: its dependencies are closed and it heads the longest chain of open work; the factory builds independent issues in parallel lanes.`
+      : `WHY: it is the oldest unclaimed issue in the backlog; the factory delivers issues in order.`,
     `WHY NOW: the whole lap (implement → verify → review → merge) runs unattended right after your plan.`,
     `OUTCOME: a standalone implementation plan, in the skeleton below.`,
     "",

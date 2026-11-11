@@ -4,16 +4,18 @@ import { loadRepoConfig, resolveModels } from "./config";
 import { buildStageCmd } from "./env";
 import { sh } from "./sh";
 import { Gh, type GhApi } from "./gh";
-import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, supersedeIssueFiles, uncommitted } from "./gitws";
+import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir as sourceDirOf, worktreeDir, addWorktree, changedPaths, changedPathsFromRef, commitsAhead, commitsAheadRef, ensureSource, fetchBranch, lockfileOnly, pushBranch, removeWorktree, supersedeIssueFiles, uncommitted, withSourceLock } from "./gitws";
 import { machineNameFor } from "./instabox";
-import { InfraUnavailableError, openLapMachine, repoDirFor, type LapMachineLike } from "./machine";
+import { buildMachineEnvFile, InfraUnavailableError, isInfraTransportText, openLapMachine, rebaseScriptFor, repoDirFor, resetToBaseScriptFor, type LapMachineLike } from "./machine";
 import { openBoxdLapMachine } from "./machine-boxd";
 import { acquireSlot, bindLease, configForPool, lanePools, releaseSlot, type SlotLease } from "./allocator";
+import { runParallel, type MergeQueue } from "./parallel";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
 import { BillingHoldError, billingHold, callPiWithFallback, type PiStageResult } from "./pi";
 import { receipt, repoReceipt } from "./receipts";
-import { scenarioSummary, runVerify, runPostMergeRegression } from "./stages/verify";
+import { scenarioSummary, runVerify, runPostMergeRegression, type VerifyOutcome } from "./stages/verify";
+import type { MergeQueueState } from "./ledger";
 import { DISCOVERY_LABEL, describeIntakeSkips, listClaimable, listClaimableDetailed, NEEDS_INFO_LABEL, prioritizeDiscoveries } from "./stages/intake";
 import { buildPlanPrompt, parsePlan, PLANNER_SYSTEM } from "./stages/plan";
 import { buildImplementPrompt, IMPLEMENTER_SYSTEM } from "./stages/implement";
@@ -208,6 +210,18 @@ export interface TickDeps {
  *  holds (machine modes) — parallel lanes add their context in parallel.ts */
 export interface RunLapOpts {
   lease?: SlotLease | null;
+  /** parallel mode: the lane this lap runs in (src/parallel.ts) */
+  lane?: LaneCtx;
+}
+
+/** What a parallel lane hands its lap: the siblings in flight (for the plan
+ *  prompt), the repo's merge queue, and the discovery titles siblings filed
+ *  this tick (batch dedupe). */
+export interface LaneCtx {
+  lane: number;
+  siblings: () => { number: number; title: string }[];
+  mergeQueue: MergeQueue;
+  filedThisTick: string[];
 }
 
 function prBody(cfg: RepoConfig, issue: IssueLite, plan: string): string {
@@ -221,17 +235,6 @@ function prBody(cfg: RepoConfig, issue: IssueLite, plan: string): string {
   ].join("\n");
 }
 
-/**
- * Per-repo git mutex: parallel laps share one source checkout, and git is
- * not fond of concurrent `worktree add` / `fetch && reset` on the same .git.
- */
-const sourceLocks = new Map<string, Promise<unknown>>();
-async function withSourceLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
-  const prev = sourceLocks.get(slug) ?? Promise.resolve();
-  const task = prev.then(fn, fn);
-  sourceLocks.set(slug, task.catch(() => {}));
-  return task;
-}
 
 /**
  * Crash reconciliation — the anti-wedge pass. During a tick, ANY in_progress
@@ -241,6 +244,10 @@ async function withSourceLock<T>(slug: string, fn: () => Promise<T>): Promise<T>
  *  - otherwise the row stays reclaimable by intake with attempts carried over
  */
 async function reconcile(cfg: RepoConfig, deps: TickDeps, stateDir: string) {
+  // merge-queue turns a dead process left open (parallel mode): under the
+  // repo lock nothing can still hold the queue
+  if (deps.ledger.mergeQueueCloseOpen(cfg.repo, "interrupted: the lap's process ended mid-queue") > 0)
+    repoReceipt(cfg.slug, stateDir, `NOTE: reconciled ${cfg.slug}'s merge queue — closed turns a dead process left open`);
   const rows = deps.ledger.listIssues(cfg.repo).filter((r) => r.state === "in_progress");
   if (rows.length === 0) return;
   const mergedPrs = await deps.gh.prListMerged(50);
@@ -389,6 +396,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   };
 
   let outcome: string | null = null;
+  const pendingDiscoveries: Parameters<typeof fileDiscoveries>[3] = [];
   // where the lap is, for the error path: a lap that throws records the
   // phase it died in instead of vanishing with no outcome and no last_error
   let phase = "plan";
@@ -449,8 +457,13 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   const RAPID_FAIL_MS = 120_000;
   const BLIP_COOLDOWN_MS = 120_000;
   let prevStart: number | null = null;
+  // parallel mode's merge queue: the first rebase conflict of a lap buys one
+  // free repair round (the cap grows by one, so every attempt keeps its own
+  // artifacts); the second re-plans on fresh main at a normal attempt's cost
+  let bonusAttempts = 0;
+  let rebaseConflicts = 0;
 
-  outer: for (let attempt = startAttempt; attempt <= cfg.attempts; attempt++) {
+  outer: for (let attempt = startAttempt; attempt <= cfg.attempts + bonusAttempts; attempt++) {
     if (
       prevStart !== null &&
       Date.now() - prevStart < RAPID_FAIL_MS &&
@@ -477,7 +490,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     phase = "plan";
     if (plan === null) {
       const models = resolveModels(cfg, "plan");
-      const planPrompt = buildPlanPrompt(cfg, issue, { previousFailure: findings });
+      const planPrompt = buildPlanPrompt(cfg, issue, { previousFailure: findings, siblings: opts.lane?.siblings() });
       const res = await runStage("plan", attempt, models, async (): Promise<PiStageResult> => {
         if (machineMode) {
           machine ??= openMachine();
@@ -595,7 +608,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     if (machine) {
       await withSourceLock(cfg.slug, () => fetchBranch(stateDir, cfg, n));
       const src = sourceDir(stateDir, cfg.slug);
-      const ahead = await commitsAheadRef(src, cfg.default_branch, branchName(n));
+      // ref reads under the source lock too: parallel lanes fetch into the
+      // same source/.git, and a read racing a fetch's ref update misjudges
+      const ahead = await withSourceLock(cfg.slug, () => commitsAheadRef(src, cfg.default_branch, branchName(n)));
       if (ahead === 0) {
         lastError = "machine pushed no commits ahead of base — nothing was implemented";
         findings = keepFindings("The changed gate rejected your previous attempt: no commit was pushed on top of " + cfg.default_branch + " — nothing was implemented. Your clone persists in the machine at " + repoDirFor(cfg) + ": implement the issue per the plan and COMMIT the changes (git add -A && git commit). The stage driver pushes for you once the tree is clean.");
@@ -603,7 +618,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at changed gate: ${lastError}`);
         continue outer;
       }
-      paths = await changedPathsFromRef(src, cfg.default_branch, branchName(n));
+      paths = await withSourceLock(cfg.slug, () => changedPathsFromRef(src, cfg.default_branch, branchName(n)));
     } else {
       const dirty = await uncommitted(worktree!);
       if (dirty.length > 0) {
@@ -750,6 +765,10 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       const parentIsDiscovery = (issue.labels ?? []).includes(DISCOVERY_LABEL);
       if (parentIsDiscovery) {
         repoReceipt(cfg.slug, stateDir, `discoveries from discovery lap #${n} withheld (recursion gate): ${discoveries.map((d) => d.title).join("; ").slice(0, 200)}`);
+      } else if (opts.lane) {
+        // parallel mode files at lap end, deduped against what sibling lanes
+        // filed this tick (their reviews often report the same bug)
+        pendingDiscoveries.push(...discoveries.map((d) => ({ issue: n, attempt, ...d })));
       } else
         try {
           const filed = await fileDiscoveries(stateDir, cfg.slug, deps.gh, discoveries.map((d) => ({ issue: n, attempt, ...d })));
@@ -771,23 +790,81 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
     // ---- MERGE (all gates green + APPROVE)
     phase = "merge";
-    // TOCTOU guard: merge exactly the sha verify probed. No anchor (verify
-    // could not read the PR head) now holds the merge — it used to skip the
-    // check and merge whatever the head was — and GitHub enforces the sha
-    // itself (--match-head-commit), closing the window between this re-read
-    // and the merge call. (archon-steal #6; a gh blip here costs one
-    // attempt, not a wrong merge)
-    const probedHead = v.provenance?.prHead ?? null;
-    const nowHead = probedHead ? await deps.gh.prHeadSha(pr).catch(() => null) : null;
-    if (!probedHead || nowHead !== probedHead) {
-      lastError = probedHead
-        ? `merge refused: PR #${pr} head moved after verify (${probedHead.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`
-        : `merge refused: verify could not read PR #${pr}'s head sha, so there is no anchor to merge against`;
-      deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
-      repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
-      continue outer;
+    if (opts.lane && machine) {
+      // parallel mode: land through the repo's merge queue — one merge at a
+      // time, each on a branch that contains the CURRENT main and was
+      // verified there (docs/parallel-mode.md, "Merge queue")
+      const landing = await opts.lane.mergeQueue.run(n, lapId, (set) =>
+        landViaQueue({ cfg, stateDir, deps, n, pr: pr!, machine: machine!, verified: v, attempt, set })
+      );
+      if (landing.kind === "merged") {
+        opts.lane.mergeQueue.noteMerged(n, issue.title);
+      } else if (landing.kind === "refused") {
+        lastError = landing.error;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
+        continue outer;
+      } else if (landing.kind === "verify") {
+        findings = keepFindings(landing.findings);
+        lastError = `verification failed after rebasing onto ${cfg.default_branch}:\n${landing.summary}`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed re-verify after the merge-queue rebase: ${landing.summary.replace(/\n/g, " ; ")}`);
+        continue outer;
+      } else {
+        rebaseConflicts++;
+        const ahead = opts.lane.mergeQueue.mergedSince(prevStart ?? 0).filter((m) => m.issue !== n);
+        const aheadText = ahead.length ? ahead.map((m) => `#${m.issue} "${m.title}"`).join(", ") : `other work on ${cfg.default_branch}`;
+        if (rebaseConflicts === 1) {
+          bonusAttempts++;
+          findings = keepFindings(
+            `The merge queue could not rebase your branch onto the current origin/${cfg.default_branch}: ${aheadText} merged first and conflicts with your change in ${landing.files.join(", ") || "(paths not reported)"}.\n` +
+              `Your clone persists in the machine at ${repoDirFor(cfg)}. Run \`git fetch origin && git rebase origin/${cfg.default_branch}\`, resolve every conflict so BOTH changes survive (keep their behavior and yours), \`git add\` the files, \`git rebase --continue\`, and make sure the project still builds and its tests pass. The stage driver force-pushes the result.`
+          );
+          lastError = `rebase conflict with ${cfg.default_branch} in ${landing.files.join(", ")}`;
+          deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+          repoReceipt(cfg.slug, stateDir, `rebase conflict on #${n} (${landing.files.join(", ").slice(0, 200)}) after ${aheadText.slice(0, 200)} — one free repair round (the attempt cap grows by one)`);
+        } else {
+          // second conflict: the plan itself is stale — re-plan on fresh main
+          supersedeIssueFiles(stateDir, cfg.slug, n, ["plan.md"]);
+          plan = null;
+          const reset = await machine.bash(
+            buildMachineEnvFile(cfg, { gates: false, branch: branchName(n), base: cfg.default_branch }) + "\n" + resetToBaseScriptFor(cfg, branchName(n)),
+            { timeoutMs: 5 * 60_000 }
+          );
+          if (reset.code !== 0 || !reset.stdout.includes("PDFRESET_OK")) {
+            const detail = (reset.stderr.trim() || reset.stdout.trim()).slice(0, 300);
+            if (reset.code === 255 || reset.code === 125 || isInfraTransportText(detail))
+              throw new InfraUnavailableError(`machine unavailable while resetting #${n} to ${cfg.default_branch}: ${detail}`, "ssh");
+            throw new Error(`could not reset the branch to ${cfg.default_branch} in the machine: ${detail}`);
+          }
+          findings = keepFindings(
+            `Re-planned on a fresh origin/${cfg.default_branch} after two rebase conflicts (last: ${landing.files.join(", ")}; merged ahead: ${aheadText}). The previous plan and branch were retired: plan against the code as it is NOW.`
+          );
+          lastError = `two rebase conflicts with ${cfg.default_branch} — re-planning on fresh ${cfg.default_branch}`;
+          deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+          repoReceipt(cfg.slug, stateDir, `second rebase conflict on #${n} — plan retired, branch reset to ${cfg.default_branch}, re-planning (normal attempt)`);
+        }
+        continue outer;
+      }
+    } else {
+      // TOCTOU guard: merge exactly the sha verify probed. No anchor (verify
+      // could not read the PR head) now holds the merge — it used to skip the
+      // check and merge whatever the head was — and GitHub enforces the sha
+      // itself (--match-head-commit), closing the window between this re-read
+      // and the merge call. (archon-steal #6; a gh blip here costs one
+      // attempt, not a wrong merge)
+      const probedHead = v.provenance?.prHead ?? null;
+      const nowHead = probedHead ? await deps.gh.prHeadSha(pr).catch(() => null) : null;
+      if (!probedHead || nowHead !== probedHead) {
+        lastError = probedHead
+          ? `merge refused: PR #${pr} head moved after verify (${probedHead.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`
+          : `merge refused: verify could not read PR #${pr}'s head sha, so there is no anchor to merge against`;
+        deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
+        repoReceipt(cfg.slug, stateDir, `attempt ${attempt} failed at merge: ${lastError}`);
+        continue outer;
+      }
+      await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, probedHead);
     }
-    await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, probedHead);
     // the delivery landed: nothing after this line may route the lap into the
     // error path (a failed cleanup would leave a merged issue booked as an error)
     phase = "post-merge";
@@ -913,8 +990,133 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // The destroy never overrides the lap's outcome: a platform outage must
     // not out-throw a MERGED verdict.
     if (machine) await machine.destroy().catch(() => {});
+    if (opts.lane && pendingDiscoveries.length > 0) {
+      try {
+        const filed = await fileDiscoveries(stateDir, cfg.slug, deps.gh, pendingDiscoveries, { alsoSeen: opts.lane.filedThisTick });
+        opts.lane.filedThisTick.push(...filed.map((f) => f.title));
+        const skipped = pendingDiscoveries.length - filed.length;
+        repoReceipt(cfg.slug, stateDir, `discoveries auto-filed ${filed.length} at the end of lap #${n}${skipped > 0 ? ` (${skipped} duplicate${skipped === 1 ? "" : "s"} of open issues or sibling filings skipped)` : ""}${filed.length ? `: ${filed.map((f) => f.title).join("; ").slice(0, 200)}` : ""}`);
+      } catch (e) {
+        repoReceipt(cfg.slug, stateDir, `discoveries auto-file errored (harvest preserved): ${e instanceof Error ? e.message : e}`);
+      }
+    }
   }
   return outcome;
+}
+
+type Landing =
+  | { kind: "merged" }
+  | { kind: "verify"; summary: string; findings: string }
+  | { kind: "conflict"; files: string[] }
+  | { kind: "refused"; error: string };
+
+/** GitHub's PR head follows a force-push with a lag; re-verify must anchor
+ *  on the rebased head, never on the pre-rebase one */
+async function waitForPrHead(gh: GhApi, pr: number, sha: string, timeoutMs = 90_000): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const head = await gh.prHeadSha(pr).catch(() => null);
+    if (head === sha) return true;
+    if (Date.now() >= until) return false;
+    await new Promise((r) => setTimeout(r, Number(process.env.PDF_PR_HEAD_POLL_MS ?? 3000)));
+  }
+}
+
+/**
+ * One merge-queue turn (parallel mode). Runs while the lap holds the queue,
+ * so main cannot move between the verify that proved the branch and the
+ * merge:
+ *  - the branch already contains origin/<base>: merge on verify's anchor;
+ *  - main moved: rebase in the lap's machine, force-push, wait for GitHub to
+ *    see the new head, re-run verify (changed gate, CI, scenarios) on it,
+ *    merge on the NEW anchor — no second review: the agent changed nothing;
+ *  - the rebase conflicts: abort it and hand the paths back to the lap.
+ */
+async function landViaQueue(a: {
+  cfg: RepoConfig;
+  stateDir: string;
+  deps: TickDeps;
+  n: number;
+  pr: number;
+  machine: LapMachineLike;
+  verified: VerifyOutcome;
+  attempt: number;
+  set: (state: MergeQueueState, detail?: string) => void;
+}): Promise<Landing> {
+  const { cfg, stateDir, deps, n, pr, machine, set } = a;
+  const src = sourceDir(stateDir, cfg.slug);
+  const base = cfg.default_branch;
+  const branch = branchName(n);
+  const fetched = await withSourceLock(cfg.slug, () =>
+    sh(["git", "fetch", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`, `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { cwd: src, timeoutMs: 300_000 })
+  );
+  if (fetched.code !== 0) throw new Error(`merge queue: git fetch failed: ${fetched.stderr.trim().slice(0, 200)}`);
+  const contains = await withSourceLock(cfg.slug, () =>
+    sh(["git", "merge-base", "--is-ancestor", `origin/${base}`, `origin/${branch}`], { cwd: src })
+  );
+  let anchor: string | null;
+  if (contains.code === 0) {
+    anchor = a.verified.provenance?.prHead ?? null;
+  } else if (contains.code === 1) {
+    set("rebasing");
+    repoReceipt(cfg.slug, stateDir, `merge queue: ${base} moved since #${n} was verified — rebasing it in the machine`);
+    const res = await machine.bash(
+      buildMachineEnvFile(cfg, { gates: false, branch, base }) + "\n" + rebaseScriptFor(cfg, branch),
+      { timeoutMs: 10 * 60_000 }
+    );
+    const rebased = /PDFREBASED:([0-9a-f]{7,40})/.exec(res.stdout);
+    if (!rebased) {
+      if (res.stdout.includes("PDFCONFLICT:")) {
+        const files = res.stdout.split("PDFCONFLICT:")[1].split("\n").map((l) => l.trim()).filter(Boolean);
+        set("bounced", `rebase conflict: ${files.join(", ").slice(0, 300)}`);
+        return { kind: "conflict", files };
+      }
+      const detail = (res.stderr.trim() || res.stdout.trim()).slice(0, 300);
+      if (res.code === 255 || res.code === 125 || isInfraTransportText(detail))
+        throw new InfraUnavailableError(`machine unavailable during the merge-queue rebase of #${n}: ${detail}`, "ssh");
+      throw new Error(`merge-queue rebase of #${n} failed in the machine (exit ${res.code}): ${detail}`);
+    }
+    const sha = rebased[1];
+    if (!(await waitForPrHead(deps.gh, pr, sha))) {
+      set("bounced", "GitHub never showed the rebased head");
+      return { kind: "refused", error: `merge refused: PR #${pr} never showed the rebased head ${sha.slice(0, 10)}` };
+    }
+    set("reverifying");
+    const v2 = await runVerify(cfg, deps.gh, { stateDir, issue: n, machine, pr, attempt: a.attempt });
+    if (!v2.pass) {
+      const summary = v2.failures.map((f) => `[${f.gate}] ${f.detail}`).join("\n");
+      set("bounced", `re-verify failed: ${summary.slice(0, 300)}`);
+      return {
+        kind: "verify",
+        summary,
+        findings:
+          `Your branch was rebased onto the current origin/${base} (other laps merged first) and the re-verify failed:\n\n` +
+          v2.failures.map((f) => `[${f.gate}] ${f.detail}${f.repair ? "\n" + f.repair : ""}`).join("\n\n"),
+      };
+    }
+    anchor = v2.provenance?.prHead ?? null;
+    if (anchor !== sha) {
+      set("bounced", "head moved during re-verify");
+      return { kind: "refused", error: `merge refused: PR #${pr} head moved during re-verify (${sha.slice(0, 10)} -> ${anchor?.slice(0, 10) ?? "unknown"})` };
+    }
+  } else {
+    throw new Error(`merge queue: git merge-base failed (exit ${contains.code}): ${contains.stderr.trim().slice(0, 200)}`);
+  }
+  // the same TOCTOU guard as the serial merge
+  const nowHead = anchor ? await deps.gh.prHeadSha(pr).catch(() => null) : null;
+  if (!anchor || nowHead !== anchor) {
+    set("bounced", "head moved after verify");
+    return {
+      kind: "refused",
+      error: anchor
+        ? `merge refused: PR #${pr} head moved after verify (${anchor.slice(0, 10)} -> ${nowHead?.slice(0, 10) ?? "unknown"})`
+        : `merge refused: verify could not read PR #${pr}'s head sha, so there is no anchor to merge against`,
+    };
+  }
+  set("merging");
+  await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, anchor);
+  set("merged");
+  return { kind: "merged" };
 }
 
 /** one lap, single-issue convenience (used by tests and single-lap debugging) */
@@ -942,9 +1144,21 @@ export async function tickRepo(cfg: RepoConfig, stateDir: string, deps: TickDeps
   }
 }
 
+/** the fleet-wide daily spend ceiling (PDF_FLEET_DAILY_ATTEMPTS, 0 = off):
+ *  implement runs across every repo since 00:00 UTC. Returns the receipt
+ *  reason when reached, null otherwise. */
+export function fleetCeilingReached(ledger: Ledger): string | null {
+  const cap = Number(process.env.PDF_FLEET_DAILY_ATTEMPTS ?? 0);
+  if (!Number.isFinite(cap) || cap <= 0) return null;
+  const used = ledger.countStagesAll("implement", new Date().toISOString().slice(0, 10) + "T00:00:00.000Z");
+  return used >= cap
+    ? `fleet daily attempt ceiling reached: ${used}/${cap} implement attempts today (UTC) across every repo; work resumes after 00:00 UTC (PDF_FLEET_DAILY_ATTEMPTS lifts it)`
+    : null;
+}
+
 /** one lane's slot request with the repo's scheduling settings; null when
  *  the repo paused while waiting or the wait window ran out (parked) */
-export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: TickDeps, lane: number): Promise<SlotLease | null> {
+export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: TickDeps, lane: number, extraLane = lane > 0): Promise<SlotLease | null> {
   return acquireSlot(
     deps.ledger,
     {
@@ -953,7 +1167,7 @@ export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: T
       lane,
       pools: lanePools(cfg),
       priority: cfg.scheduling?.priority ?? "normal",
-      extraLane: lane > 0,
+      extraLane,
     },
     {
       log: (m) => repoReceipt(cfg.slug, stateDir, m),
@@ -1252,6 +1466,12 @@ export async function runChain(cfg: RepoConfig, stateDir: string, deps: TickDeps
         break;
       }
     }
+    const fleet = fleetCeilingReached(deps.ledger);
+    if (fleet) {
+      repoReceipt(cfg.slug, stateDir, `${fleet} — stopping ${cfg.slug} before #${issue.number}`);
+      endedQuietly = true;
+      break;
+    }
     // chained laps re-sync main first: prepareRepo's fetch + hard reset runs
     // once per tick, so laps 2..N used to plan in a checkout missing the
     // merges made earlier in the SAME chain — exactly the dependent issues a
@@ -1421,6 +1641,12 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // repo (that ordering is what keeps main conflict-free), and
           // MAX_LAPS bounds a pathological loop — the chain continues next tick.
           if (claimable.length === 0) return;
+          // parallel mode (machine modes only, config-validated): lanes run
+          // independent issues at once and land through the merge queue
+          if (cfg.scheduling?.parallel && (cfg.env.mode === "instabox" || cfg.env.mode === "boxd")) {
+            await runParallel(cfg, opts.stateDir, deps);
+            return;
+          }
           await runChain(cfg, opts.stateDir, deps, claimable);
         } catch (e: any) {
           repoReceipt(cfg.slug, opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);

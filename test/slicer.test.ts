@@ -81,6 +81,15 @@ describe("filterNew (dedup by normalized title)", () => {
 });
 
 describe("buildSlicerPrompt", () => {
+  test("the foundation-issue rule appears only in parallel mode", () => {
+    expect(buildSlicerPrompt("MY PRD", 25)).not.toContain("foundation issue");
+    const p = buildSlicerPrompt("MY PRD", 25, { parallel: true });
+    expect(p).toContain("goes in an early foundation issue the features depend on");
+    expect(p).toContain("runs several laps at once");
+    expect(p).not.toContain("claims the oldest unclaimed issue per lap");
+    // dependency honesty stays
+    expect(p).toContain("is not a dependency");
+  });
   test("carries the six brief elements and the bootstrap invariant", () => {
     const p = buildSlicerPrompt("MY PRD", 25);
     expect(p).toContain("PROBLEM:");

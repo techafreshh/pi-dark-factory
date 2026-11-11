@@ -44,12 +44,14 @@ export function parseSlicerOutput(text: string): SlicedIssue[] {
   return out;
 }
 
-export function buildSlicerPrompt(prd: string, maxIssues: number): string {
+export function buildSlicerPrompt(prd: string, maxIssues: number, opts: { parallel?: boolean } = {}): string {
   return [
     "You are the backlog slicer of an unattended software factory — an engineering lead decomposing the product document below into a build order that autonomous implementation laps can execute one issue at a time.",
     "",
     "PROBLEM: this product needs to be built end-to-end by autonomous laps, each working from exactly one issue, with no human available to answer questions mid-build.",
-    "WHY: the factory claims the oldest unclaimed issue per lap and must always have safe, self-contained work available.",
+    opts.parallel
+      ? "WHY: the factory runs several laps at once, each on an issue whose dependencies are closed, and lands them one at a time; independent issues that edit the same files turn into merge conflicts."
+      : "WHY: the factory claims the oldest unclaimed issue per lap and must always have safe, self-contained work available.",
     "WHY NOW: this slicing runs once per project onboarding; re-runs dedupe by title, so the first cut defines the whole build.",
     "OUTCOME: at most " + maxIssues + " issues, ordered so dependencies come first.",
     "",
@@ -58,6 +60,11 @@ export function buildSlicerPrompt(prd: string, maxIssues: number): string {
     "- Every issue is independently implementable from its own text alone: its body carries the full context.",
     "- An issue must be small enough for one implementation session; split anything bigger.",
     "- Dependencies only reference EARLIER issues, by their 1-based index in your output. Dependency honesty: list a DEPENDS only when this issue cannot be implemented or demonstrated without an earlier one — wanting a tidy build order is not a dependency.",
+    ...(opts.parallel
+      ? [
+          "- Shared groundwork that several features would otherwise each edit (routing, schema, dependencies, app shell, navigation) goes in an early foundation issue the features depend on; independent features then touch separate files.",
+        ]
+      : []),
     "- The final issue delivers the complete product described in the document.",
     "- Nothing new is a valid slice: only what the product document asks for.",
     "",

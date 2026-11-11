@@ -163,3 +163,16 @@ export async function changedPathsFromRef(dir: string, baseBranch: string, ref: 
   const out = await gitIn(dir, ["diff", "--name-only", `origin/${baseBranch}...origin/${ref}`]);
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
+
+/**
+ * Per-repo git mutex (in-process): parallel lanes share one source checkout,
+ * and git is not fond of concurrent `worktree add` / `fetch && reset` / ref
+ * reads on the same .git. Lives here so verify's ref gates take it too.
+ */
+const sourceLocks = new Map<string, Promise<unknown>>();
+export async function withSourceLock<T>(slug: string, fn: () => Promise<T>): Promise<T> {
+  const prev = sourceLocks.get(slug) ?? Promise.resolve();
+  const task = prev.then(fn, fn);
+  sourceLocks.set(slug, task.catch(() => {}));
+  return task;
+}

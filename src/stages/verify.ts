@@ -5,7 +5,7 @@ import { waitChecks } from "../gh";
 import { buildStageCmd } from "../env";
 import { sh } from "../sh";
 import { branchName } from "./intake";
-import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir } from "../gitws";
+import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir, withSourceLock } from "../gitws";
 import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
 import { repoDirFor } from "../machine";
 import type { RepoConfig } from "../types";
@@ -125,7 +125,7 @@ export async function runVerify(
   // Machine mode judges the fetched pushed branch — same diff, another side
   // of the tunnel.
   const paths = opts.machine
-    ? await changedPathsFromRef(sourceDir(opts.stateDir, cfg.slug), cfg.default_branch, branchName(opts.issue))
+    ? await withSourceLock(cfg.slug, () => changedPathsFromRef(sourceDir(opts.stateDir, cfg.slug), cfg.default_branch, branchName(opts.issue)))
     : await changedPaths(opts.worktree!, cfg.default_branch);
   if (paths.length === 0) {
     failures.push({

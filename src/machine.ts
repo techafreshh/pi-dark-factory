@@ -268,6 +268,49 @@ export function originUrlFor(cfg: RepoConfig): string {
   return cfg.origin_url ?? `https://github.com/${cfg.repo}.git`;
 }
 
+/** The merge queue's in-box rebase (parallel mode, src/tick.ts): replay the
+ *  lap's branch onto the CURRENT base and force-push it (factory branches
+ *  are factory-owned, same rule as the stage driver). Prints
+ *  `PDFREBASED:<sha>` on success; on a conflict prints `PDFCONFLICT:` and the
+ *  unmerged paths, aborts the rebase (the clone is left as it was) and exits
+ *  3. Run after buildMachineEnvFile (credentials + git identity). */
+export function rebaseScriptFor(cfg: RepoConfig, branch: string): string {
+  const rd = escapeSh(repoDirFor(cfg));
+  const br = escapeSh(branch);
+  const base = escapeSh(cfg.default_branch);
+  return [
+    `set -u`,
+    `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
+    `cd ${rd} || { echo "PDFREBASEFAIL: no clone"; exit 4; }`,
+    `git checkout -q ${br} || { echo "PDFREBASEFAIL: no branch"; exit 4; }`,
+    `git fetch -q origin ${base} || { echo "PDFREBASEFAIL: fetch"; exit 4; }`,
+    `if git rebase -q origin/${base} > /tmp/.pdfrebase.$$ 2>&1; then`,
+    `  if git push -q --force origin "HEAD:refs/heads/"${br}; then echo "PDFREBASED:$(git rev-parse HEAD)"; exit 0; fi`,
+    `  echo "PDFREBASEFAIL: push"; exit 5`,
+    `fi`,
+    `echo "PDFCONFLICT:"`,
+    `git diff --name-only --diff-filter=U`,
+    `git rebase --abort 2>/dev/null || true`,
+    `exit 3`,
+  ].join("\n");
+}
+
+/** After a second rebase conflict the lap re-plans on fresh main: the box's
+ *  branch is reset to the current base (the old commits stay on GitHub only
+ *  until the next implement round force-pushes over them). */
+export function resetToBaseScriptFor(cfg: RepoConfig, branch: string): string {
+  const rd = escapeSh(repoDirFor(cfg));
+  return [
+    `set -eu`,
+    `cd ${rd}`,
+    `git rebase --abort 2>/dev/null || true`,
+    `git fetch -q origin ${escapeSh(cfg.default_branch)}`,
+    `git checkout -q -f -B ${escapeSh(branch)} origin/${escapeSh(cfg.default_branch)}`,
+    `git clean -fdq`,
+    `echo PDFRESET_OK`,
+  ].join("\n");
+}
+
 /** Idempotent: clone once, fetch after; keep a repair round's local branch.
  *  `from: "branch"` starts the branch at origin/<branch> (the scenario TEST
  *  BENCH: the branch's tree must be what's under test — the default

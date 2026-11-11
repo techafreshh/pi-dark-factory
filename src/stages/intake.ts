@@ -103,7 +103,7 @@ export async function listClaimableDetailed(
   ledger: Ledger,
   gh: GhApi,
   dependsCache: Map<number, boolean> = new Map()
-): Promise<{ claimable: IssueLite[]; skips: IntakeSkips }> {
+): Promise<{ claimable: IssueLite[]; skips: IntakeSkips; open: IssueLite[] }> {
   // gh lists newest first, so a cap of 100 hid a big backlog's OLDEST issues
   // — the very ones intake must take first. 1000 costs nothing below 100 open
   // (gh stops paging when a page comes back short).
@@ -160,7 +160,9 @@ export async function listClaimableDetailed(
 
     claimable.push(issue);
   }
-  return { claimable, skips };
+  // the whole open set rides along: parallel mode ranks the claimable by the
+  // dependency chains still waiting behind them (src/critpath.ts)
+  return { claimable, skips, open: issues };
 }
 
 /** One-line human answer to "why is nothing ticking on this repo" — numbers

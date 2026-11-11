@@ -3,6 +3,7 @@
  * (local) and factoryd (remote HTTP). Functions return data; the surfaces
  * decide how to print it.
  */
+import { isDuplicateTitle } from "./dedupe";
 import { poolStatus, type PoolStatus, type SlotRequestRow } from "./allocator";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
@@ -595,13 +596,19 @@ export async function fileDiscoveries(
   stateDir: string,
   slug: string,
   gh: GhApi,
-  deduped: { issue: number; attempt: number; title: string; claim: string; why: string; severity?: "major" | "minor" }[]
+  deduped: { issue: number; attempt: number; title: string; claim: string; why: string; severity?: "major" | "minor" }[],
+  opts: { alsoSeen?: string[] } = {}
 ): Promise<{ issue: number; title: string }[]> {
   const open = await gh.issueList("open", 100);
   const filed: { issue: number; title: string }[] = [];
+  // duplicates by normalized title or heavy word overlap (src/dedupe.ts),
+  // against open issues, titles parallel siblings filed this tick, and this
+  // batch itself
+  const seen = [...open.map((i) => i.title), ...(opts.alsoSeen ?? [])];
   for (const d of deduped) {
     const title = `[discovery] ${d.title}`;
-    if (open.some((i) => i.title === title)) continue;
+    if (seen.some((t) => isDuplicateTitle(t, title))) continue;
+    seen.push(title);
     const body = [
       d.claim,
       "",
@@ -835,7 +842,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
     reasoning_effort: "low",
     messages: [
       { role: "system", content: "You decompose PRDs into build orders for an unattended software factory. Answer ONLY in the requested block format." },
-      { role: "user", content: buildSlicerPrompt(prdText, max) },
+      { role: "user", content: buildSlicerPrompt(prdText, max, { parallel: !!cfg.scheduling?.parallel }) },
     ],
   });
   const scratch = join(tmpdir(), "pdf-slicer");

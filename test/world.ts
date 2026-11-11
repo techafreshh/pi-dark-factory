@@ -85,8 +85,17 @@ export class FakeGh implements GhApi {
     return Promise.resolve([]);
   }
   prHeadSha(n: number): Promise<string | null> {
-    return Promise.resolve(this.heads[n] ?? "f".repeat(40));
+    if (this.heads[n]) return Promise.resolve(this.heads[n]);
+    // like GitHub: the PR head is the branch tip on the remote right now
+    const head = this.prs.find((p) => p.number === n)?.headRefName;
+    if (!head || !this.origin) return Promise.resolve("f".repeat(40));
+    try {
+      return Promise.resolve(execSync(`git --git-dir=${this.origin} rev-parse refs/heads/${head}`).toString().trim());
+    } catch {
+      return Promise.resolve(null);
+    }
   }
+  origin = "";
   prMerge(n: number): Promise<void> {
     this.onMerge(n);
     this.merged.push(n);
@@ -154,6 +163,7 @@ export function makeMachineWorld(opts: { mode?: "instabox" | "boxd"; attempts?: 
   };
   writeFileSync(join(cfgDir, "config.json"), JSON.stringify(cfg));
   const gh = new FakeGh();
+  gh.origin = origin;
   // "GitHub" squash-merges the PR's branch into main when the factory merges
   gh.onMerge = (pr) => {
     const head = gh.prs.find((p) => p.number === pr)?.headRefName;
@@ -193,6 +203,7 @@ export class FakeMachine implements LapMachineLike {
   rounds = 0;
   reviews = 0;
   stages: string[] = [];
+  prompts: string[] = [];
 
   constructor(private w: World, private cfg: RepoConfig, public issue: number, lapId: number, private b: MachineBehavior) {
     this.name = `pdf-${cfg.slug}-i${issue}-g${lapId}`;
@@ -221,6 +232,7 @@ export class FakeMachine implements LapMachineLike {
 
   async callStage(stage: "plan" | "implement" | "review", _o: MachineStageOpts): Promise<MachineStageResult & { stage: typeof stage }> {
     this.stages.push(stage);
+    this.prompts.push(_o.prompt);
     if (stage === "plan") {
       await this.bootstrap();
       return { ...ok(this.b.plan?.(this.issue) ?? `PLAN: implement issue ${this.issue}.`), stage };
