@@ -1,0 +1,21 @@
+{
+  "models": {
+    "default":   { "provider": "<provider>", "model": "<model-id>", "thinking": "high",
+                   "fallback": ["<provider>/<model-id>:high"] },
+    "plan":      { "provider": "<provider>", "model": "<model-id>", "thinking": "low",
+                   "fallback": ["<provider>/<model-id>:low"] },
+    "implement": { "provider": "<provider>", "model": "<model-id>", "thinking": "high",
+                   "fallback": ["<provider>/<model-id>:high"] },
+    "review":    { "provider": "<provider>", "model": "<model-id>", "thinking": "high",
+                   "fallback": ["<provider>/<model-id>:high"] }
+  },
+  "merge": { "method": "squash", "required_checks": ["*"], "delete_branch": true },
+  "attempts": 3,
+  "limits": { "daily_attempts": 60 },
+  "trusted_authors": [],
+  "discoveries": { "auto_file": true },
+  "env": {
+    "mode": "instabox",
+    "instabox": { "snapshot": "shared-base" }
+  }
+}

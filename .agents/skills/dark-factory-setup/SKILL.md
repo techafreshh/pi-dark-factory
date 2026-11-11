@@ -1,325 +1,247 @@
 ---
 name: dark-factory-setup
 description: >-
-  Install / provision pi-dark-factory ON ITS DEDICATED SERVER (VPS): the full
-  first-time setup — factory user, runtimes (bun, pi, gh, optional docker +
-  optional InstaBox machine mode), GitHub + provider auth, pi provisioning
-  (models.json provider entries, packages/extensions, thinking levels), code
-  clone + state dir, systemd timer + factoryd API (optional ClinePass key
-  router), Caddy block, and an optional first smoke lap. Use when the user
-  says things like "set up the factory", "bootstrap/provision/install the
-  factory on this server", "wire up factoryd", "get the factory running here",
-  or is starting an agent session in a fresh clone of pi-dark-factory on a
-  server. NOT for day-2 operation from the user's laptop (that is the
-  dark-factory skill, which talks over HTTPS and never SSHes) — this skill runs
-  direct commands on the box itself.
+  Install or repair pi-dark-factory ON ITS SERVER: factory user, runtimes (bun,
+  pi, gh), GitHub and model-provider auth, pi provisioning (models.json,
+  packages, thinking levels), code + state dirs, the factoryd API with its
+  built-in scheduler, optional machine lanes (InstaBox, boxd), container mode,
+  ClinePass key router, web grounding, dashboard, backups, the Caddy block, and
+  a smoke lap. Use when the user says "set up the factory", "install /
+  provision / bootstrap the factory on this server", "wire up factoryd", or
+  starts an agent session in a fresh clone of pi-dark-factory on a server. Not
+  for day-2 operation from a laptop; that is the dark-factory skill.
 ---
 
 # dark-factory-setup (server installer)
 
-> Runs ON THE FACTORY SERVER, inside the cloned repo checkout. The sibling
-> skill `dark-factory` is day-2 remote operation from the user's machine — this
-> one produces the state that skill assumes. Replaces the old `bootstrap.sh`
-> (retired): the same steps, but per-step verification and judgment instead of
-> a one-shot script. `DEPLOYMENT.md` is the reference this skill executes —
-> when a step needs the "why", read the section it cites.
+Runs on the factory server, from a checkout of this repo. It produces
+everything the `dark-factory` skill assumes. The factory's own copy of the
+code lives at `/home/factory/pi-dark-factory`, and its state at
+`/home/factory/state`, outside the checkout, so `git pull` never touches it.
+Reference docs: `DEPLOYMENT.md` (troubleshooting in §9) and
+`docs/operations.md`.
 
-**Done means**: `pi-factory.timer` armed (fires every 15 min) with its
-`pi-factory.service` green; `pi-factoryd` healthy on :8077 with the API key in
-`factoryd.env` (600); optionally `pi-keyrouter` healthy on :8099; pi fully
-provisioned for the factory user (provider auth, custom `models.json` entries,
-packages/extensions) with every `provider/model:thinking` string smoke-tested;
-if InstaBox machine mode was chosen, `INSTABOX_API_KEY` is in the service env
-and `/v1/me` + `/v1/usage` prove the account (machines/snapshots/storage
-quota); if the TinyFish key was chosen, the 5g web-grounding smoke returned
-`COUNT=<n>`; optionally a first smoke lap ran its gates;
-the user's laptop can `doctor` in over HTTPS.
+**Done means:**
+- `pi-factoryd` is healthy on :8077 and its scheduler starts repo ticks every
+  15 minutes (`scheduler_minutes: 15` in `/health`).
+- The API key is in `/home/factory/factoryd.env` (600).
+- pi is provisioned for the factory user, and every model string a repo
+  config will use returned text in a smoke call.
+- Each optional piece the user chose passed its own check.
+- A laptop can run `dark-factory doctor` over HTTPS.
 
-## Operating rules
+## Rules
 
-- **One decision batch, up front** (Phase 0), then run the phases without
-  further surprises. A one-line "doing X" before each sudo/system mutation,
-  no extra ceremony.
-- **Verify each phase; fail-stop.** A phase's verify command failing means
-  report + diagnose (see `DEPLOYMENT.md` §9 troubleshooting table), not push
-  past red.
-- **Idempotent.** Detect what already exists before installing (`id`,
-  `command -v`, `systemctl status`) and skip completed work — a re-run
-  resumes, it never re-does.
-- **Secrets never echo into the transcript.** The factoryd API key, GH token,
-  ClinePass keys: write them to 600-mode files and show only the first 4
-  chars + length, never the value. The Caddy block embeds the API key —
-  write it to a 600-mode file and name the path; don't cat it into chat.
-- **The factory user ≠ your user.** Everything factory-owned runs as
-  `factory` (`sudo -u factory -H bash -lc '…'`); only system bits (user,
-  units, `/etc/hosts`) are touched with sudo.
-- The agent session's checkout may live anywhere; **the factory's copy of
-  the repo lives at `/home/factory/pi-dark-factory`** — that is what the
-  systemd units run from, and state lives OUTSIDE it at `/home/factory/state`
-  so `git pull` never touches factory memory.
+- **Ask all decisions in one batch up front** (Phase 0), then run the phases.
+  Say one line before each sudo or system change.
+- **Verify every phase, and stop on red.** Diagnose with DEPLOYMENT.md §9
+  instead of pushing on.
+- **Idempotent.** Detect what exists (`id`, `command -v`, `systemctl
+  status`, file checks) and skip it. A re-run resumes; it never reinstalls
+  or regenerates a key.
+- **Never echo a secret** (API keys, GH token, provider keys). Write them
+  into 600-mode files owned by `factory`, and show at most the first 4 chars
+  and the length.
+- **Factory-owned work runs as `factory`:** `sudo -u factory -H bash -lc '…'`.
+  Only system pieces (user, units, `/etc/hosts`) use plain sudo.
+- **Never enable the scheduler before Phase 4 passes.** An unauthed factory
+  burns provider errors on a loop.
 
-## Phase 0 — orientation + decisions
-
-Read-only ground truth first:
+## Phase 0 — orientation and decisions
 
 ```sh
-head -2 /etc/os-release                       # Ubuntu is the tested shape
-systemctl --version >/dev/null 2>&1 || echo "NO SYSTEMD — stop, this runbook is Linux+systemd"
-grep '"name"' package.json                    # confirm you are in the factory checkout
-id factory 2>/dev/null                        # already created?
-command -v git gh curl ssh bun pi docker      # what's installed
-systemctl status pi-factory.timer pi-factoryd.service 2>&1 | head -5
-test -f /home/factory/factoryd.env && echo "factoryd.env exists (key already generated)"
+head -2 /etc/os-release                      # Ubuntu + systemd is the tested shape
+systemctl --version >/dev/null || echo "NO SYSTEMD: stop"
+grep '"name"' package.json                   # inside the factory checkout?
+id factory 2>/dev/null
+command -v git gh curl bun pi docker ssh
+systemctl status pi-factoryd pi-keyrouter pi-factory-dashboard 2>&1 | grep -E "●|Active"
+sudo test -f /home/factory/factoryd.env && echo "factoryd.env exists: keep its key"
 ```
 
-Then ask the user, **in one batch** (defaults noted — accept defaults on a
-plain "just set it up"):
+Ask in one batch. The defaults hold on "just set it up".
 
-1. **Factory user name** — default `factory`.
-2. **GitHub auth** — interactive `gh auth login` as the factory user (device
-   flow), or a `GH_TOKEN` to put in `factoryd.env`?
-3. **Model lineup** — pi ships empty (no auth, no custom providers, no
-   packages/extension). Which **providers + models** will repo configs use,
-   per stage (plan/implement/review), with which **thinking levels** and
-   fallback chains (`"provider/model[:level]"`)? Phase 4 auths every named
-   provider and smoke-tests every exact `provider/model:thinking` string —
-   a level like `max` only works if the provider's model entry maps it.
-4. **Pi packages/extensions** — anything the stages must have loaded
-   (extra tools, MCP bridges...)? A missing one never fails loudly — the
-   stage just runs bare without it.
-5. **Remote control** (default: yes) — generate the API key and run factoryd
-   on :8077. If yes: which **domain** serves it (Caddy block)?
-6. **ClinePass key router** — only if they have ClinePass API keys (how many?).
-   Otherwise skip step 5c only; if yes, the `clinepass-rotator` provider
-   entry goes into `models.json` in Phase 4.
-7. **Container-mode repos planned?** (default: not now) — if yes, Phase 1
-   installs docker (fresh VPSes have none) and adds the factory user to its
-   group.
-8. **InstaBox machine-mode repos planned?** (default: not now) — repos whose
-   implement+review stages run in disposable InstaBox microVMs
-   (https://instabox.sh, snapshot-booted, not your VPS's problem). If yes:
-   the `INSTABOX_API_KEY` goes into `factoryd.env` (Phase 5a), `ssh` presence
-   is ensured (Phase 1), and Phase 5f proves the account + quota live via the
-   API. Per-repo golden snapshots are built later at first-project time
-   (`foreman bake <slug>` — Phase 7). Docker is NOT needed for instabox-only
-   repos.
-9. **TinyFish web grounding** (default: on) — lap agents get `web_search` +
-   `web_fetch` tools (read-only, from the repo's bundled
-   `pi-extensions/pdf-tinyfish.ts` extension). Needs a `TINYFISH_API_KEY`
-   (agent.tinyfish.ai/api-keys) in `factoryd.env` (Phase 5a) and a live
-   `web_search` smoke call (Phase 4 smoke step). If the user skips the key,
-   the factory still works — stages just run without web grounding.
-9. **Smoke lap after install?** (recommended; spends a few cents of tokens on
-   a toy repo) — vs. going straight to a real project via the `dark-factory`
-   wizard.
+1. **GitHub auth:** `gh auth login` as factory (device flow), or a token for
+   `factoryd.env`.
+2. **Model lineup:** which providers and models per stage (plan, implement,
+   review), the thinking levels, and the fallback chains. pi ships with no
+   providers, so Phase 4 auths and smoke-tests every exact
+   `provider/model:thinking` string.
+3. **pi packages or extensions** the stages must load (default none).
+4. **Domain** for the API (default: the user's factory subdomain) and how
+   Caddy runs (host or container).
+5. **Lanes** for the repos planned now (default `instabox`, the fleet's main
+   lane):
+   - `instabox` needs `INSTABOX_API_KEY` and a stack-base snapshot.
+   - `boxd` needs `BOXD_API_KEY` and the `factory-base-boxd-r1` snapshot in
+     the boxd org.
+   - `compose` needs docker on the host.
+   - `host` needs nothing.
+6. **TinyFish web grounding** (default on): needs `TINYFISH_API_KEY`.
+   Without it, stages simply run without web tools.
+7. **ClinePass key router** (default off): only if they have ClinePass keys.
+8. **Dashboard** (default on): needs an auth layer in front, such as SSO.
+9. **Backups** (default on): needs an S3-compatible bucket and keys.
+10. **Smoke lap** after install (recommended; a few cents on a toy repo).
 
 ## Phase 1 — factory user
 
 ```sh
 id factory &>/dev/null || sudo useradd -m -s /bin/bash -c "pi dark factory" factory
-sudo loginctl enable-linger factory            # user services survive logout
-# container mode planned? fresh VPSes have no docker — install it, then group:
-command -v docker &>/dev/null || sudo apt-get update -qq
-command -v docker &>/dev/null || sudo apt-get install -y docker.io
-sudo systemctl enable --now docker
-id -nG factory | grep -qw docker || sudo usermod -aG docker factory
-# instabox machine mode planned? every machine stage + scenario server runs
-# through InstaBox's ssh gateway, so the host needs an ssh client:
-command -v ssh &>/dev/null || sudo apt-get install -y openssh-client
+sudo loginctl enable-linger factory
+# instabox lane: machine stages run over ssh
+command -v ssh >/dev/null || sudo apt-get install -y openssh-client
+# compose lane only: docker + group membership
+command -v docker >/dev/null || sudo apt-get install -y docker.io
+sudo systemctl enable --now docker && sudo usermod -aG docker factory
 ```
 
-Verify: `id factory` and `loginctl show-user factory -p Linger`.
+Membership in the docker group is root-equivalent, and any agent on a
+host-mode or compose-mode repo runs as `factory`. Add it only when a compose
+repo is planned, and tell the user so.
 
-## Phase 2 — runtimes (as the factory user)
+Verify with `id factory` and `loginctl show-user factory -p Linger`.
 
-Install only what's missing (`command -v` guards). Host needs `git gh curl`
-(`sudo apt-get update && sudo apt-get install -y git gh curl`), then as
-factory:
+## Phase 2 — runtimes
 
 ```sh
-# bun (official installer; needs unzip)
-sudo -u factory -H bash -lc 'command -v bun || (curl -fsSL https://bun.sh/install | bash)'
-# pi coding agent (npm -g if node is present, else bun -g)
-sudo -u factory -H bash -lc 'command -v pi || npm i -g @earendil-works/pi-coding-agent'
+sudo apt-get update -qq && sudo apt-get install -y git gh curl unzip
+sudo -u factory -H bash -lc 'command -v bun || curl -fsSL https://bun.sh/install | bash'
 sudo -u factory -H bash -lc 'command -v pi || ~/.bun/bin/bun add -g @earendil-works/pi-coding-agent'
-```
-
-If `pi` ended up in `/home/factory/.bun/bin`, the systemd units must carry
-that on PATH — the unit templates in Phase 5 already do (`Environment=PATH=…`,
-first entry `/home/factory/.bun/bin`). Verify:
-
-```sh
 sudo -u factory -H bash -lc 'bun --version && pi --version && gh --version | head -1'
 ```
 
-## Phase 3 — code + state
+If node is installed for the factory user (`~/.local/node/bin`), that
+directory goes first on the units' `PATH`, as in Phase 5.
+
+## Phase 3 — code and state
 
 ```sh
+URL=$(git remote get-url origin)
 sudo -u factory -H test -d /home/factory/pi-dark-factory/.git \
   && sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && git pull --ff-only' \
-  || sudo -u factory -H git clone <REPO_URL> /home/factory/pi-dark-factory
-sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && ~/.bun/bin/bun install || bun install'
-sudo mkdir -p /home/factory/state && sudo chown -R factory: /home/factory/state
+  || sudo -u factory -H git clone "$URL" /home/factory/pi-dark-factory
+sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && ~/.bun/bin/bun install --frozen-lockfile'
+sudo install -d -o factory -g factory /home/factory/state
+sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && ~/.bun/bin/bun src/foreman.ts help' | head -3
 ```
 
-Verify: `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && ls node_modules | wc -l'` > 0,
-`sudo -u factory -H bash -lc 'bun src/foreman.ts help'` prints usage.
-Fetch `<REPO_URL>` from the current checkout's `git remote get-url origin`.
+## Phase 4 — pi provisioning (the gate for Phase 5)
 
-## Phase 4 — pi provisioning (it ships empty: auth, providers, packages)
-
-pi installs bare: no credentials, no custom providers, no packages. This
-phase provisions the factory user's entire `~/.pi/agent/` surface and is
-**the gate for Phase 5** — nothing gets enabled until every step passes.
-
-**4a. GitHub** — either have the user complete
-`sudo -u factory -H gh auth login` (device flow: relay the code), or append
-`GH_TOKEN=<token>` to `/home/factory/factoryd.env` (600). Verify:
+**4a. GitHub.** Run `sudo -u factory -H gh auth login` (relay the device
+code), or put the token in `factoryd.env` in Phase 5. Verify with
 `sudo -u factory -H gh api user -q .login`.
 
-**4b. Provider auth** — for every provider in the Phase 0 lineup
-(`zai`, `openrouter`, `anthropic`, `clinepass-rotator`, …):
-`sudo -u factory -H bash -lc 'pi auth login'` (OAuth device flows — hand the
-user the URLs/codes), or keys into `~/.pi/agent/auth.json`, or env vars
-(models.json `apiKey` interpolates `"$ENV_VAR"`).
+**4b. Provider auth.** For each provider in the lineup, run
+`sudo -u factory -H bash -lc 'pi auth login'` (an OAuth device flow; relay
+the URL and code), or add keys to `~/.pi/agent/auth.json`.
+`models.json` `apiKey` fields can also interpolate `"$ENV_VAR"`.
 
-**4c. Custom providers (`models.json`)** — non-builtin providers (the
-`clinepass-rotator` router, self-hosted gateways) live in the factory user's
-`~/.pi/agent/models.json` — pi installs **without one**, so create it.
-Structure: `{"providers": {"<id>": {"name", "baseUrl", "apiKey", "api",
-"models": [...]}}}` (`api` is e.g. `"openai-completions"`; model entries
-need `id`, optionally `reasoning: true`, `contextWindow`, `maxTokens`,
-`cost`). When the key router was chosen in Phase 0, merge the shipped
-template's `providers` object into that file — preserving any existing
-entries — and trim its model ids to what the provider actually serves.
+**4c. Custom providers.** Non-built-in providers go in the factory user's
+`~/.pi/agent/models.json`. pi installs without one, so create it. The shape
+is `{"providers": {"<id>": {"name", "baseUrl", "apiKey", "api", "models":
+[{"id", "reasoning", "contextWindow", "maxTokens", "thinkingLevelMap"}]}}}`.
 
-**4d. Packages & extensions** — pi's distributed extensions are *packages*,
-installed as the factory user:
+- **Thinking levels.** A model's `thinkingLevelMap` decides which levels
+  work: `xhigh` and `max` need an entry, and a level mapped to `null` runs
+  with no reasoning. Remote config writes validate against this same file
+  (`dark-factory models` shows it).
+- **Key router.** If the router was chosen, merge the `providers` object from
+  `templates/pi-models.clinepass-router.json` into this file, keeping what is
+  already there.
 
-```sh
-sudo -u factory -H bash -lc 'pi install npm:<scope>/<pkg>@<ver>'   # or git:org/repo@ref
-sudo -u factory -H bash -lc 'pi list'   # every promised package must appear
-```
+**4d. Packages and extensions.**
+`sudo -u factory -H bash -lc 'pi install npm:<pkg>@<ver>'`, then `pi list`.
+Loose `.ts` extensions can go into `~/.pi/agent/extensions/`. A missing
+package never fails loudly (the stage just runs without it), so confirm every
+promised one appears in `pi list`.
 
-Personal installs are declared in `~/.pi/agent/settings.json` and load into
-_every_ session (including container-mode stages — the `~/.pi` bind mount
-carries it all). Loose extensions can also be dropped as `.ts` files into
-`~/.pi/agent/extensions/` (auto-loaded, no compile step). A missing package
-or extension never fails loudly — stages just run bare — so confirm each one
-in `pi list` (or its own verify step) before moving on.
-
-**4e. Smoke every model:thinking string** — the exact strings Phase 7 will
-write into repo configs, thinking level included (`--thinking` level: the
-default ladder maps through `high`; `xhigh`/`max` only work when the
-provider's model entry defines a `thinkingLevelMap` for them):
+**4e. Smoke every exact model string the repo configs will use:**
 
 ```sh
 sudo -u factory -H bash -lc \
-  'pi --mode json --no-tools --provider <provider> --model <model> --thinking <level> "say OK" </dev/null'
+  'pi --mode json --no-tools --provider <provider> --model <model> --thinking <level> "say OK" </dev/null' | tail -c 400
 ```
 
-If a project-trust prompt ever appears here or on stage runs, set default
-trust in `~/.pi/agent/settings.json` (or pass flags via repo configs'
-`pi.extra_args`) — no unattended run may ever block on a question nothing
-can answer. A lineup entry is not "done" until its smoke returned assistant
-text: the winners are exactly what config.json `models` gets.
+- **Pass condition.** A string passes only when the call returns assistant
+  text. The passing strings are what repo configs may use.
+- **Trust prompts.** If a project-trust prompt appears, set default trust in
+  `~/.pi/agent/settings.json`. No unattended run may block on a question.
 
-**4f. Container launcher wrapper** (skip if no container-mode repos are
-planned). Compose stages exec `/usr/local/bin/pi`, bind-mounted from
-`~/.pi/agent/bin/pi` — a fresh install has NO such file and every
-container stage dies instantly without it. It must also be
-libc-agnostic: product compose services may be musl-based
-(`node:22-alpine`), where the factory's glibc Node cannot exec
-("not found"). Discover the pi cli.js path, then write the launcher:
+**4f. Container launcher** (compose lane only). Compose stages run
+`/usr/local/bin/pi`, bind-mounted from `~/.pi/agent/bin/pi`. The launcher has
+to work in glibc and musl images (for example `node:22-alpine`, where the
+host's glibc node can't run):
 
 ```sh
-# pi's self-managed runtime layout first, npm/bun global installs second:
 CLI=$(sudo -u factory -H bash -lc 'ls ~/.pi/host-runtimes/pi-coding-agent/dist/bundle/cli.js 2>/dev/null || find ~/.local/node ~/.bun /usr/lib/node_modules -path "*pi-coding-agent/dist/bundle/cli.js" 2>/dev/null | head -1')
-test -n "$CLI" || echo "NO cli.js FOUND — stop, resolve the pi install"
+test -n "$CLI" || echo "NO cli.js FOUND: stop and resolve the pi install"
 sudo -u factory -H mkdir -p /home/factory/.pi/agent/bin
 sudo -u factory -H bash -c 'cat > /home/factory/.pi/agent/bin/pi <<WRAP
 #!/bin/sh
-# libc-agnostic launcher: stage containers may be musl-based (e.g. a product
-# compose worker on node:22-alpine) where the mounted host node — a glibc
-# build — cannot exec ("not found"). Prefer the container'"'"'s own node when it
-# ships one; fall back to the mounted host runtime for node-less images.
+# prefer the container'"'"'s own node (musl images); else the mounted host runtime
 if command -v node >/dev/null 2>&1; then
   exec node '"$CLI"' "\$@"
 fi
 exec /root/.pi/host-runtimes/node/bin/node '"$CLI"' "\$@"
 WRAP'
 sudo -u factory -H chmod 775 /home/factory/.pi/agent/bin/pi
-# the fallback leg needs the factory node binary inside .pi (the pre-stage
-# sweep re-copies it if it ever goes missing; ensure it exists once here):
 SEED=/home/factory/.pi/host-runtimes/node/bin/node
 sudo -u factory -H mkdir -p "$(dirname $SEED)"
 sudo -u factory -H test -x "$SEED" || sudo -u factory -H bash -lc "cp \$(command -v node) $SEED"
-```
-
-Verify BOTH libcs — alpine proves the launcher's image-node leg, plain
-node:22 proves the mounted-runtime fallback leg:
-
-```sh
 for IMG in node:22-alpine node:22; do
   sudo -u factory -H docker run --rm -v /home/factory/.pi:/root/.pi \
-    -v /home/factory/.pi/agent/bin/pi:/usr/local/bin/pi:ro $IMG \
-    /usr/local/bin/pi --version || echo "FAILED on $IMG"
+    -v /home/factory/.pi/agent/bin/pi:/usr/local/bin/pi:ro $IMG /usr/local/bin/pi --version || echo "FAILED on $IMG"
 done
 ```
 
-## Phase 5 — systemd (units, env file, enable)
+## Phase 5 — services
 
-**5a. factoryd.env** — skip key generation if it exists (a re-run keeps the
-old key); otherwise generate and assemble in one sudo heredoc, never echoing
-the value: `PI_FACTORY_STATE=/home/factory/state`, `FACTORYD_PORT=8077`,
-`FACTORY_API_KEY=$(openssl rand -hex 32)`, `GH_TOKEN=…` if Phase 4 used the
-token form — **also write `GITHUB_TOKEN=` with the same value**: machine-mode
-stages and `pass_env` use that name (the code resolves either, but carrying
-both removes the whole mismatch class; it cost todos-api a full day,
-2026-10-23→24) — and `INSTABOX_API_KEY=…` if Phase 0 machine mode was chosen
-(secrets never echo into the transcript — pass them straight into the
-heredoc from the place the user handed them over).
-`chown factory: /home/factory/factoryd.env`, `chmod 600`. If Phase 0
-web-grounding was chosen, **also write `TINYFISH_API_KEY=…`** here (same
-no-echo rule).
+**5a. `/home/factory/factoryd.env`** (600, owned by factory). If it already
+exists, keep the key and only add missing lines. Write it in one sudo
+heredoc with secrets passed straight in, never printed:
 
-**5b. Units** — write `/etc/systemd/system/pi-factory.service`:
+| var | value |
+|---|---|
+| `PI_FACTORY_STATE` | `/home/factory/state` |
+| `FACTORYD_PORT` | `8077` |
+| `FACTORY_API_KEY` | `$(openssl rand -hex 32)` |
+| `DARK_FACTORY_LAPTOP_KEY` | optional second key, `openssl rand -hex 32`, so the laptop key can be revoked on its own |
+| `GH_TOKEN` and `GITHUB_TOKEN` | both, same value, if the token route was chosen (machine stages read `GITHUB_TOKEN`) |
+| `INSTABOX_API_KEY` / `BOXD_API_KEY` / `TINYFISH_API_KEY` | per Phase 0 |
+
+**5b. `/etc/systemd/system/pi-factoryd.service`.** The daemon serves the API
+and schedules the ticks: every 15 minutes it starts one `foreman tick --repo`
+process per idle repo. `KillMode=process` lets a restart leave running laps
+alone.
 
 ```ini
 [Unit]
-Description=pi-dark-factory lap
+Description=pi-dark-factory remote API + scheduler
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
 User=factory
 WorkingDirectory=/home/factory/pi-dark-factory
-Environment=PI_FACTORY_STATE=/home/factory/state
-# .bun/bin first so a bun-installed `pi` resolves from systemd's default PATH
-Environment=PATH=/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/factory/.bun/bin/bun src/foreman.ts tick
-# unlimited parallel laps can run long — never time out the tick itself;
-# only the per-stage watchdogs kill anything. The cgroup reaps leaks.
-TimeoutStartSec=infinity
-KillMode=control-group
-```
-
-`pi-factory.timer`:
-
-```ini
-[Unit]
-Description=run pi-dark-factory every 15 minutes
-
-[Timer]
-OnCalendar=*-*-* *:00/15:00
-Persistent=true
+EnvironmentFile=/home/factory/factoryd.env
+Environment=PATH=/home/factory/.local/node/bin:/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PDF_SCHEDULER_MINUTES=15
+KillMode=process
+ExecStart=/home/factory/.bun/bin/bun src/factoryd.ts
+Restart=always
 
 [Install]
-WantedBy=timers.target
+WantedBy=multi-user.target
 ```
 
-**5c. pi-keyrouter.service** (only if chosen in Phase 0):
+- **Optional cap.** `PI_FACTORY_CONCURRENCY=N` limits how many repo ticks run
+  at once. On machine lanes, the platform's machine quota is the real cap.
+- **Old timer.** The legacy `pi-factory.timer` fleet tick must not run
+  alongside the scheduler: `systemctl disable --now pi-factory.timer` if it
+  exists.
+
+**5c. Key router** (optional) — `/etc/systemd/system/pi-keyrouter.service`:
 
 ```ini
 [Unit]
@@ -331,198 +253,193 @@ Wants=network-online.target
 User=factory
 WorkingDirectory=/home/factory/pi-dark-factory
 Environment=CRPASS_KEYS_FILE=/home/factory/state/clinepass.keys
-Environment=CRPASS_PORT=8099
 Environment=CRPASS_STATE_FILE=/home/factory/state/clinepass.keys.state.json
-Environment=PATH=/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CRPASS_PORT=8099
+Environment=CRPASS_UPSTREAM=https://api.cline.bot/api
+EnvironmentFile=/home/factory/keyrouter.env
+Environment=PATH=/home/factory/.local/node/bin:/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/factory/.bun/bin/bun src/keyrouter.ts
 Restart=always
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-```sh
-sudo touch /home/factory/state/clinepass.keys   # one key per line, live-reloaded
-sudo chmod 600 /home/factory/state/clinepass.keys && sudo chown factory: /home/factory/state/clinepass.keys
-grep -q host.docker.internal /etc/hosts || echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
-```
+- **`keyrouter.env`** (600) holds `CRPASS_ROUTER_TOKEN=<random>`. The same
+  value is the `clinepass-rotator` `apiKey` in `models.json`; without it the
+  router is open to every local container (`docs/keyrouter.md`).
+- **Keys** go in `/home/factory/state/clinepass.keys` (600): one per line,
+  live-reloaded.
+- **Hosts entry.**
+  `grep -q host.docker.internal /etc/hosts || echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts`.
+- Machine lanes can't reach this router, so their fallback chains skip it.
 
-**5d. pi-factoryd.service** (only if remote control chosen):
-
-```ini
-[Unit]
-Description=pi-dark-factory remote API
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=factory
-WorkingDirectory=/home/factory/pi-dark-factory
-EnvironmentFile=/home/factory/factoryd.env
-Environment=PATH=/home/factory/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/home/factory/.bun/bin/bun src/factoryd.ts
-Restart=always
-```
-
-**5e. Enable** — service unit + timer only after Phase 4's smoke passed
-(no timer may fire against an unauthed install; idle ticks before repos exist
-are harmless):
+**5d. Enable and verify**, only after Phase 4 passed:
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable --now pi-factory.service pi-factory.timer
-sudo systemctl enable --now pi-factoryd.service      # if remote control
-sudo systemctl enable --now pi-keyrouter.service     # if key router
+sudo systemctl enable --now pi-factoryd
+sudo systemctl enable --now pi-keyrouter                 # if chosen
+curl -fsS http://127.0.0.1:8077/health                   # ok:true, scheduler_minutes:15
+curl -fsS http://127.0.0.1:8099/health                   # if the router was chosen
 ```
 
-Verify:
+**5e. Machine lanes.**
+
+*InstaBox:* prove the key and read the quota without printing the key:
 
 ```sh
-systemctl list-timers pi-factory.timer --no-pager              # armed, next in ≤15 min
-curl -fsS http://127.0.0.1:8077/health                         # {"ok":true,service:…}
-curl -fsS http://127.0.0.1:8099/health && curl -s :8099/pool   # key router: keys present
-tail -5 /home/factory/state/laps.log                           # timer already ticked? expect idle receipts
-```
-
-**5f. InstaBox account check** (only if machine mode was chosen in Phase 0).
-The key lives in `factoryd.env` (600 — same no-echo rule as every other
-secret); source it without printing and prove both identity and quota:
-
-```sh
-sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
-  curl -fsS https://api.instabox.sh/v1/me -H "X-API-Key: $INSTABOX_API_KEY"' \
-  | head -c 300    # an identity object — never echo the key itself
-sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
+sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a
+  curl -fsS https://api.instabox.sh/v1/me -H "X-API-Key: $INSTABOX_API_KEY" | head -c 200; echo
   curl -fsS https://api.instabox.sh/v1/usage -H "X-API-Key: $INSTABOX_API_KEY"'
 ```
 
-`usage.limits` shows the account's ceilings (entry tier: 5 machines,
-10 snapshots, 200 GiB) — that machine quota is the instabox-mode counterpart
-of `--concurrency`, worth telling the user verbatim. A 401/failed curl here
-fails the phase: fix the key before any machine-mode repo is onboarded.
+- **Quota.** Tell the user the machine limit from `usage.limits`; it caps
+  concurrent machine laps.
+- **Stack base.** Repos boot from an alias in
+  `/home/factory/state/base-snapshot.json`:
 
-**5g. Web-grounding smoke** (only if the Phase 0 TinyFish key was set). One
-live `web_search` through the bundled extension proves key + extension +
-tool routing together:
+  ```json
+  {"shared-base": {"snapshot": "<snapshot-name>", "contents": "<what is installed>"}}
+  ```
+
+  On a fresh install there is no base yet. Bake one from the smoke repo
+  (Phase 7):
+  1. Set its `env.instabox.snapshot` to `""`.
+  2. Set its `env.instabox.bake` to a script that installs what stages need
+     on top of the template. pi at least, e.g.
+     `sudo npm i -g @earendil-works/pi-coding-agent`.
+  3. Run `foreman bake <slug>`. It saves `<slug>-base` and writes that name
+     into the config.
+  4. Add a `shared-base` entry pointing at that snapshot, so other repos can
+     use the alias.
+
+*boxd:* `BOXD_API_KEY` is in `factoryd.env`, and the org must have the
+`factory-base-boxd-r1` snapshot (or a repo sets `env.boxd.snapshot`). The
+first smoke lap is the check.
+
+**5f. Web grounding** (if `TINYFISH_API_KEY` is set):
 
 ```sh
-sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; \
-  cd /home/factory/pi-dark-factory && \
-  pi --mode json --no-session --tools read,web_search,web_fetch \
-     --extension pi-extensions/pdf-tinyfish.ts \
-     -p "Call web_search with query \"tinyfish api\" and reply COUNT=<n> only."' \
-  | grep -o 'COUNT=[0-9]*'
+sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; cd ~/pi-dark-factory &&
+  pi --mode json --no-session --tools read,web_search,web_fetch --extension pi-extensions/pdf-tinyfish.ts \
+     -p "Call web_search with query \"tinyfish api\" and reply COUNT=<n> only."' | grep -o 'COUNT=[0-9]*'
 ```
 
-`COUNT=<n>` with n ≥ 1 passes the phase; a missing tools section or
-`isError` on the tool result fails it — check the key first, then that
-`pi-extensions/pdf-tinyfish.ts` is readable as the factory user.
+It passes when the output is `COUNT=n` with n ≥ 1.
 
-## Phase 6 — Caddy block (if remote control + domain)
+**5g. Dashboard** (optional). This is a read-only sidecar, `bin/dashboard.ts`.
+It must sit behind an auth layer, because it shows agent sessions.
+1. Create `/home/factory/dashboard.env` (600) with `INSTABOX_API_KEY=` and
+   `BOXD_API_KEY=` for the machine panel.
+2. Create `/etc/systemd/system/pi-factory-dashboard.service` with:
+   - `User=factory`;
+   - `ExecStart=/home/factory/.bun/bin/bun /home/factory/pi-dark-factory/bin/dashboard.ts`;
+   - `Environment=DASHBOARD_STATE_DIR=/home/factory/state`;
+   - `DASHBOARD_HOST=<address Caddy reaches, never a public interface>`;
+   - `DASHBOARD_PORT=8787`;
+   - `Restart=always`;
+   - `[Install] WantedBy=multi-user.target`.
+3. Enable it, then check with `curl -fsS http://<host>:8787/health`.
 
-Write it to a 600-mode file and give the user the path — do not print the
-API key into the transcript:
+**5h. Backups** (optional). `bin/backup.ts` snapshots the ledger and the
+small state hourly to an S3 bucket. Use a dedicated bucket and a user scoped
+to it.
+1. Create `/home/factory/backup.env` (600) with `S3_ENDPOINT`, `S3_BUCKET`,
+   `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`.
+2. Create the units:
+   - `pi-factory-backup.service`: `Type=oneshot`, `User=factory`,
+     `EnvironmentFile=/home/factory/backup.env`,
+     `Environment=PI_FACTORY_STATE=/home/factory/state`,
+     `ExecStart=/home/factory/.bun/bin/bun /home/factory/pi-dark-factory/bin/backup.ts`.
+   - `pi-factory-backup.timer`: `OnCalendar=*-*-* *:07:00`, `Persistent=true`,
+     `[Install] WantedBy=timers.target`.
+3. Enable the timer, run the service once, and check `bun bin/backup.ts list`
+   as factory.
 
-```sh
-# generate with the key from /home/factory/factoryd.env substituted, then:
-sudo tee /home/factory/caddy-snippet.txt   # chmod 600, chown factory
-```
+A bucket on the same server protects against corruption, not disk loss, so
+say so.
+
+## Phase 6 — Caddy
+
+Route the API through Caddy with an edge key check, in addition to the
+daemon's own check. Write the block to a 600-mode file and give the user the
+path; never print the keys.
 
 ```
 <domain> {
   @health path /health
-  handle @health { reverse_proxy 127.0.0.1:8077 }
-  @unauthorized not header X-Api-Key <KEY>
+  handle @health { reverse_proxy <daemon-addr>:8077 }
+  @unauthorized {
+    not header X-Api-Key <FACTORY_API_KEY>
+    not header X-Api-Key <DARK_FACTORY_LAPTOP_KEY>
+  }
   handle @unauthorized { respond 401 }
-  reverse_proxy 127.0.0.1:8077
+  reverse_proxy <daemon-addr>:8077
 }
 ```
 
-The user adds it to their Caddyfile and reloads. If the laptop-side
-`doctor` (Phase 8) fails with non-401 auth errors, the block/reload is the
-first suspect.
+- **Host vs container Caddy.** With Caddy on the host, `<daemon-addr>` is
+  `127.0.0.1`. With Caddy in a container, it is the docker bridge gateway
+  (for example `10.0.1.1`). Allow the port from that subnet only, e.g.
+  `ufw allow from 10.0.1.0/24 to any port 8077`.
+- **Dashboard.** It goes in the same site block under
+  `/dashboard/*` (`handle_path`, so the prefix is stripped), behind the SSO
+  `forward_auth`. Put it before the `@unauthorized` handler.
 
-## Phase 7 — first smoke lap (optional; small token spend)
+Verify from outside:
+- `curl -s -o /dev/null -w '%{http_code}' https://<domain>/status` gives
+  `401`;
+- `/health` gives `200`.
 
-Follow `DEPLOYMENT.md` §5: `onboard <owner/name>` (auto-writes config +
-scenario templates + reserves two scenario ports), edit
-`/home/factory/state/repos/<slug>/config.json`:
+## Phase 7 — smoke lap (optional; small token spend)
 
-- **models** gets the Phase 4 lineup — per-stage provider/model with
-  `"thinking"` levels and `"provider/model[:level]"` fallback strings
-  (disciplined model for implement/review, cheaper for plan).
-- **Container mode** (if Phase 0 planned it): a repo with a
-  `docker-compose.yml` gets `env.mode: "compose"` + `env.service` per the §7
-  worker contract (the compose must publish the scenario ports on
-  `127.0.0.1`); repos without one stay on the fallback `env.image` and pick
-  compose up automatically once it lands as an issue deliverable. First
-  container repo: run the in-container smoke before the first lap — BOTH
-  libcs (`node:22` and `node:22-alpine`), proving the launcher's fallback
-  leg and its image-node leg (Phase 4f's verify does exactly this).
-- **InstaBox machine mode** (if Phase 0 planned it): the repo's config gets
-  `env.mode: "instabox"` + an `env.instabox.bake` shell (what to install
-  after the clone: deps, caches — write it with the user). Then bake the
-  golden snapshot once and watch the ceiling:
-
-  ```sh
-  sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake <slug>'
-  # → snapshot <slug>-base ready (root GiB reported; budget it against /v1/usage)
-  ```
-
-  During instabox laps machines appear and disappear
-  (name `pdf-<slug>-i<issue>`); the platform auto-suspends idle boxes and
-  the factory resumes them — a suspended machine in a status readout is
-  normal, not an outage. Credentials never live in the snapshot: the
-  factory ships its own pi auth/models and the GitHub token into the box
-  over ssh on every stage (clone AND push authed; requires `GITHUB_TOKEN`
-  or `GH_TOKEN` in the service env). The ClinePass rotator is host-local,
-  so in-box fallback chains effectively run river → deepseek.
-  `foreman cleanup` reaps any machine a crashed lap left parked.
-
-Then write real `runtime.json` + `holdout.json` probes with the user,
-then:
+Use a toy repo with a tiny PRD. Run it through the `dark-factory` skill from
+this server, or with `foreman` directly:
 
 ```sh
-sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts backlog <slug> --prd <path> --dry-run'  # review the slice
-sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts backlog <slug> --prd <path>'
-sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts tick --repo <slug>'
+F='sudo -u factory -H bash -lc'
+$F 'cd ~/pi-dark-factory && bun src/foreman.ts onboard <owner>/<name>'
+# edit /home/factory/state/repos/<slug>/config.json: models from Phase 4e, env.mode,
+# and for instabox: env.instabox.snapshot "shared-base", or "" plus env.instabox.bake to bake one (5e)
+$F 'cd ~/pi-dark-factory && bun src/foreman.ts bake <slug>'          # instabox, only when baking its own snapshot
+# write real runtime.json + holdout.json probes (dark-factory skill, Stage 3)
+$F 'cd ~/pi-dark-factory && bun src/foreman.ts backlog <slug> --prd <path> --dry-run'
+$F 'cd ~/pi-dark-factory && bun src/foreman.ts backlog <slug> --prd <path>'
+$F 'cd ~/pi-dark-factory && bun src/foreman.ts tick --repo <slug>'
 tail -f /home/factory/state/laps.log
-sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts status'
 ```
 
-Read the result honestly: `merged` in the ledger is confirmed by the merged
-PR on GitHub (`gh pr view` — the PR closes the issue). A blocked issue gets a
-GitHub comment with the receipt + its unblock command; never auto-retried.
-A full lap takes tens of minutes — report and stop polling after the first
-few status checks.
+- **Confirm on GitHub.** A `merged` ledger row is confirmed by the merged PR
+  (`gh pr view`).
+- **If it blocks.** A blocked issue gets a GitHub comment and revives by
+  itself on later ticks (3 times a day at most). Fix the cause rather than
+  waiting.
+- **Machine names.** Machine laps show up as `pdf-<slug>-i<issue>-g<lapId>`,
+  and each machine is deleted when its lap ends.
 
-## Phase 8 — handoff (day-2 = the dark-factory skill)
+## Phase 8 — handoff
 
-Tell the user exactly this, in their own terminal (the agent never prints
-the key):
+Tell the user to run these themselves; the agent never prints the key:
 
-- On the **server**, read the key once: `sudo cat /home/factory/factoryd.env`
-- On the **laptop**:
+- **On the server**, read the key once:
+  `sudo grep -E '^(DARK_FACTORY_LAPTOP_KEY|FACTORY_API_KEY)=' /home/factory/factoryd.env`.
+- **On the laptop:**
   ```sh
-  export FACTORY_URL=https://<domain>
-  export FACTORY_API_KEY=<key from factoryd.env>
-  python3 bin/factory-remote doctor     # from any checkout of the factory repo
+  npx @techafresh/dark-factory setup https://<domain> <key>
+  dark-factory doctor
   ```
-- Stored config: `~/.config/factory-remote/` (url + key files), used by the
-  `dark-factory` skill automatically.
 
-From now on everything (onboarding, backlog, laps, unblock, cleanup) is
-remote over HTTPS — **zero SSH**. Updating the factory later:
-`git pull && bun install` in `/home/factory/pi-dark-factory` — state is
-external, nothing else changes. If the user mirrors repo skills into their
-global skills dir, re-copy after updates (the in-repo copies are the source
-of truth).
+From then on, everything runs remotely through the `dark-factory` skill.
 
-## Hard rules
+**Updating the factory later:**
+```sh
+cd /home/factory/pi-dark-factory && sudo -u factory git pull --ff-only
+# plus bun install when package.json changed
+sudo systemctl restart pi-factoryd
+```
+A restart is safe while laps run. Restart `pi-factory-dashboard` after
+dashboard changes.
 
-- **Never echo a secret** (API key, GH token, ClinePass keys) — 600 files,
-  fingerprints only. Never commit any of them.
-- **Never arm the timer before Phase 4's smoke call passed** — a timer
-  against an unauthed install burns provider errors on a loop.
-- **Never run laps as root or as the session user** — laps belong to the
-  `factory` user and its cgroup.
-- **Never re-do existing work** — re-runs resume; installing twice is a bug.
-- Report skipped/failed phases honestly in the final "definition of done"
-  summary — a half-verified install must never be called done.
+Final report: list every phase as done, skipped (by choice) or failed. A
+half-verified install is not "done".

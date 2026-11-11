@@ -1,391 +1,429 @@
 ---
 name: dark-factory
 description: >-
-  Operate the pi-dark-factory (unattended build loop on the VPS) remotely —
-  onboard a new project end-to-end (PRD check → config → scenarios → backlog
-  slice → first lap), check status/logs, fire ticks, unblock or clean up. Use
-  whenever the user mentions the factory, onboarding a project to it, slicing
-  a PRD into issues, firing a lap, factory status/receipts, blocked issues, key
-  rotation, or says things like "add this repo to the factory", "is the factory
-  running", "why is issue #N blocked" — even casually ("get X built by the factory").
-  Talks to the factory over HTTPS via the dark-factory CLI (npm: @techafresh/dark-factory);
-  server-side operations are named for the operator, never improvised.
+  Operate pi-dark-factory remotely through the dark-factory CLI (npm
+  @techafresh/dark-factory) and GitHub: onboard a repo (PRD check, config,
+  scenarios, backlog, first lap), read status, logs and live sessions, fire
+  ticks, pause, unblock, clean up, and diagnose blocked or stuck issues. Use
+  whenever the user mentions the factory or dark factory, adding a repo or PRD
+  to it, slicing a backlog, firing a lap, why an issue is blocked, provider
+  credit or billing holds, factory machines, or says things like "get X built
+  by the factory" or "is the factory running".
 ---
 
 # dark-factory (remote operator)
 
-> Source of truth lives in the factory repo (`.agents/skills/dark-factory/`);
-> installed copies are re-synced from it. Deep dives: the repo's `docs/`.
+pi-dark-factory is an unattended loop on a VPS that turns GitHub issues into
+merged PRs. You drive it with the `dark-factory` CLI over HTTPS and check its
+work with a local `gh`. You never SSH to the server. Anything that exists only
+server-side is handed to the operator as an exact command (see
+[Server-side operations](#server-side-operations)).
 
-The factory is an unattended loop on the VPS: a scheduler **starts a tick
-every 15 minutes** (the daemon's scheduler, one tick process per repo; older
-installs use the `pi-factory.timer` fleet tick), and each tick **chains laps
-down the dependency chain** —
-after a merge or block it re-intakes and runs the next claimable issue
-(bounded at 6 laps/repo/tick), auto-revives blocked issues (fresh attempt
-budget; fuses: max 3 revive rounds/issue/day, plus a stagnation breaker when
-the identical failure signature repeats), and waits out one 10-min in-tick
-cooldown to retry its own recovery. Every lap takes the oldest claimable
-GitHub issue through intake → plan → implement → verify (CI + black-box
-runtime/holdout scenarios) → review → squash-merge → close. The **claim
-ledger** is the source of truth — a delivered issue is never re-claimed.
-Manual `tick` is always safe: the per-repo pidfile no-ops it while that
-repo's scheduled tick is live.
+## How the factory works
 
-**This skill's entire factory interface is the remote client + GitHub.** For
-code-level truth (diffs, checks, files, issue bodies) query GitHub directly
-with a local `gh` — the PR is the truth; the factory's claim about it is a
-claim. Operations that only exist server-side (systemd edits, VPS files,
-`foreman bake`, a small set of infra fixes) are NEVER improvised here: name
-the exact command and hand it to the operator — the how-to lives in the
-repo's `docs/operations.md`.
+- **Scheduling.** Every 15 minutes the daemon starts one tick process per
+  onboarded repo, unless that repo's previous tick still runs. A per-repo
+  pidfile arbitrates, so a manual `tick` can never double-run a lap.
+- **Chain.** A tick works one issue at a time and chains to the next claimable
+  one after each lap. It stops after 6 laps or 12 minutes, whichever comes
+  first; the in-flight lap always finishes, and the next tick continues.
+- **Intake.** An issue is claimable when all of these hold:
+  - it is open and its author is trusted: the repo owner, the factory's own
+    GitHub account, or a login in `trusted_authors`;
+  - it has no `skip_labels` label and no `factory:needs-info` label;
+  - it has no ledger row, or an `in_progress` row below the attempt cap;
+  - no foreign open PR claims it (`closes #N`);
+  - every issue in its `Depends on: #a, #b` line is closed.
 
-## Hard rules (they gate everything below)
+  Oldest first. Major `discovery` issues jump the queue; `minor` discoveries
+  wait until no product issue is claimable.
+- **Lap.** plan → implement → verify (CI checks + runtime and holdout scenarios)
+  → review → squash-merge → close the issue. Each issue gets `attempts`
+  (default 3); a failed attempt writes findings that the next attempt repairs.
+- **Where stages run** (`env.mode`):
 
-- **Never spend the user's tokens without a yes** — `tick`, `backlog --create`,
-  `onboard`, scenario writes: show the exact payload/file first.
-- **Never approve what you can't see**: before reporting a lap succeeded,
-  cross-check GitHub (PR merged, issue closed).
-- **Secrets are never echoed** — the API key lives in env or the 600-mode
-  config file; provider keys live server-side. Print names, never values.
-- **Never edit factory state files by hand** — the ledger and receipts are
-  the factory's memory; mutations go through the verbs only.
-- **Scenario files are the verifier**: their contents never travel to the
-  implementer's context and never move into the product repo.
-- **One repo, one slug.** `unblock <slug>` takes the slug — never touch
-  another repo's rows.
-- Every tick runs as its own process and loads the code on disk, so a
-  `git pull` on the server reaches the next tick. The daemon itself (API,
-  scheduler) keeps its start-time code until restarted. With the daemon
-  scheduler set up (`docs/operations.md`, "Daemon scheduler"), a restart
-  leaves running laps alone; on an install still on the timer, a restart
-  kills the tick processes the daemon started, so it waits for idle. This
-  discipline is the operator's: when `factoryd.ts`, `ops.ts` or
-  `scheduler.ts` changed, TELL the operator a daemon restart is required.
+  | mode | where the agent runs |
+  |---|---|
+  | `instabox` | one disposable InstaBox VM per lap (`pdf-<slug>-i<issue>-g<lapId>`), all stages |
+  | `boxd` | the same, on a boxd microVM |
+  | `compose` | root inside the product's docker-compose worker service |
+  | `host` | plain processes on the VPS |
+
+  In machine modes, plan and review keep bash, and the clone is reset after
+  each of them. The machine is deleted when the lap ends; a janitor reaps
+  leftovers every scheduler pass.
+- **Ledger.** The ledger is the source of truth; a delivered issue is never
+  re-claimed. Issue states are `in_progress`, `merged`, `blocked` and
+  `no_action`.
+- **Blocked issues revive by themselves.** Each tick gives a blocked issue a
+  fresh attempt budget. Two fuses stop this:
+  - at most 3 revives per issue per UTC day;
+  - a stagnation breaker when the same failure repeats.
+
+  When a fuse trips, the factory posts a FAILURE SUMMARY comment on the issue.
+  Any `config` or `scenario` write resets both fuses for that repo (the
+  "inputs epoch").
+
+### Lap outcomes
+
+| outcome | meaning | attempt |
+|---|---|---|
+| `merged` | PR merged, issue closed | — |
+| `blocked` | attempts exhausted; GitHub comment with the last error | spent |
+| `error` | an unexpected throw (git/gh/network); retried next tick | spent |
+| `interrupted` | the process died mid-lap; the next tick reconciles the row | the spent ones carry over |
+| `no_action` | the planner found nothing to change; commented on the issue | — |
+| `needs_context` | the planner asked a question; issue parked under `factory:needs-info`, row dropped | fresh budget on return |
+| `infra_deferred` | machine platform down or at its cap; claim dropped, chain deferred | not spent |
+| `billing_hold` | every model in the chain failed on billing (402/401); repo paused | refunded |
+
+Other stops show up only in receipts:
+- **Daily ceiling.** `limits.daily_attempts` (default 60) caps implement runs
+  per repo per UTC day. Reaching it stops the chain until 00:00 UTC.
+- **Connection-blip cooldown.** An attempt that dies within 2 minutes to a
+  connection error waits 120 s before the next attempt.
+
+## Rules
+
+- **Get a yes before anything that spends tokens or writes:** `tick`, `backlog`
+  (the preview runs the LLM slicer too), `backlog --create`, `onboard`,
+  `config --json`, scenario writes, `discoveries --file`, `unblock --prune`.
+  Show the exact payload or file first.
+- **Confirm results on GitHub.** A `merged` row is real once `gh pr view`
+  shows the PR merged and the issue closed.
+- **Never echo a secret.** The API key lives in `~/.dark-factory/config.json`
+  (600) or env; provider keys stay on the server. Print names, never values.
+- **Never edit the ledger or receipts.** They change only through verbs.
+  Config goes through `config`; the one exception is a key outside the
+  allowlist, which the operator edits server-side.
+- **Scenarios are the verifier.** Never show their contents to the implementer
+  and never move them into the product repo.
+- **A slug names one repo.** Never touch another repo's rows.
+- **Don't busy-poll.** A lap takes tens of minutes. Check once after a few
+  minutes, report, and wait.
+- **After a server-side fix, prove it once.** Watch one green run of the fixed
+  path before re-driving laps.
 
 ## Connect
 
-One-time, from the machine you drive from (any OS with Node ≥ 18; zero deps):
+From any machine with Node ≥ 18:
 
 ```bash
-npx @techafresh/dark-factory setup https://pi-factory.techa.pro <KEY>
+npx @techafresh/dark-factory setup https://<factory-domain> <KEY>
 dark-factory doctor
 ```
 
-`<KEY>` = the `FACTORY_API_KEY` value from `/home/factory/factoryd.env` on the
-server (the operator reads it there once; never echo it into chat). Config
-lands in `~/.dark-factory/config.json`; `DARK_FACTORY_URL` /
-`DARK_FACTORY_API_KEY` env vars override it; inline `--url`/`--key` override
-everything. `dark-factory where` shows what's active (key masked), and every
-verb takes `dark-factory <verb> --help`.
+- **The key.** `FACTORY_API_KEY` or `DARK_FACTORY_LAPTOP_KEY` from
+  `/home/factory/factoryd.env`. The operator reads it on the server once; it
+  never goes into chat.
+- **Precedence.** `--url/--key` flags beat the `DARK_FACTORY_URL` /
+  `DARK_FACTORY_API_KEY` env vars, which beat the config file. `where` shows
+  the active connection with the key masked (`where` and `session` ignore the
+  flags).
+- **`doctor` reports:**
+  - the daemon version;
+  - web-tools readiness;
+  - which snapshot each stack base alias (`shared-base`, …) maps to, and its
+    contents;
+  - onboarded repos.
+- **Errors.** A 401 means a wrong key. A connection error that is not a 401
+  means the daemon or the edge proxy is down: hand it to the operator.
 
-If `doctor` cannot reach the factory at all (connection refused/timeout —
-not a 401), the factory is not provisioned: the operator clones this repo on
-the server and runs the in-repo `dark-factory-setup` skill there. Never
-improvise around a missing factory.
+The human-facing dashboard is `https://<factory-domain>/dashboard/`. It sits
+behind SSO, so agents use the CLI.
 
-## Onboarding a new project (the wizard — gate every write)
+## Reading the factory
 
-Work the stages in order; **show what will be written and get an explicit yes
-before every mutating step**. Never skip a failed preflight: report and stop.
-
-### Stage 0 — precheck (local `gh`, read-only)
-
-1. `gh repo view <owner>/<name> --json name,owner,defaultBranchRef,primaryLanguage`
-   — repo exists; capture the default branch (never assume `main`).
-2. **PRD check**: search the tree for a product document
-   (`gh api repos/<o>/<r>/git/trees/HEAD?recursive=1`; `.agents/PRDs/PRD.md`
-   is the convention). **If none exists: stop and offer to draft one** from
-   the conversation — show the draft, get approval, commit it. No PRD, no backlog.
-3. Backlog sanity: `gh issue list` — empty of work, or already sliced?
-   (Slices are title-deduped: re-running is safe but pointless.)
-4. `gh` auth has issue-write scope on this repo.
-
-### Stage 1 — remote preflight
-
-`doctor` (alive + auth + bases), then `status` — the repo must NOT already be
-onboarded; if it is, skip to ops mode.
-
-### Stage 2 — config gate
-
-`onboard <owner>/<name>` — the API discovers the branch, reserves two
-scenario ports, writes `config.json` + scenario templates server-side; the
-slug it echoes is the repo's identity in every other verb. Then
-surface the decisions the user must confirm.
-
-**Config writes are LOUDLY validated, and the shape rules came from real
-failures — a wrong shape once cost ~6 attempts:**
-
-- `models` entries are OBJECTS: `{ "provider", "model",
-  "thinking": "low|medium|high|max" }` plus optional
-  `"fallback": ["provider/model:thinking", …]` — fallback arrays are the
-  ONLY place the `provider/model:thinking` string form is valid.
-- **Never** a dotted string as a stage value, **never** a thinking suffix
-  inside `model` — both reject at write time now, and the errors name the rule.
-- The POST response echoes the merged config — **always re-read the echo**
-  and verify every `models.*` renders as an object with a `provider`.
-- A `{}` patch silently writes defaults; don't probe with it. Config writes
-  deep-merge — two writers can interleave, LAST write wins per key; after any
-  disagreement, re-echo once.
-
-**Discover the model lineup FIRST — never assume one.** `dark-factory models`
-prints the factory's LIVE provider roster (the same file every lap routes
-through — it cannot drift): every provider, model id, reasoning flag, context
-window, and which thinking levels each model actually supports (`NOT: …`).
-Pick the lineup with the user from THAT output. Config writes validate against
-the same roster: unknown providers reject, unsupported thinking levels reject
-(with the supported list), never-run model ids warn.
-
-**Shape references ship in this skill's `templates/`**: `config.skeleton.json`
-(minimal) and `config.example.instabox.full.json` — every allowlisted field of
-a config that ran a whole 17-issue backlog machine-lane; pushing it verbatim is
-known-good, adjust its `_readme` decision markers. Fill provider/model + env
-from what `models` showed, then:
-
-```bash
-dark-factory config <slug> --json "$(cat .agents/skills/dark-factory/templates/config.skeleton.json)"
-```
-
-Decision points to walk with the user:
-
-- **models**: disciplined model for implement/review, cheaper for plan;
-  fallback chains as `provider/model[:thinking]` (provider errors fail over;
-  timeouts don't — a hung stream is an upstream problem, not the model's).
-  Billing surfaces are distinct: a model id's first segment picks the billing
-  program (a pooled/routed provider pings a different budget than bare vendor
-  ids) — if receipts show `402 insufficient_credits` while a weekly cap looks
-  untouched, the ids are on the wrong surface; ask the operator which pool the
-  provider fronts.
-- **required_checks**: `["*"]` default (autodetect: every check the PR reports
-  must pass; a repo with no workflows stays ungated). The factory bootstraps
-  CI itself — a PRD line "ship a CI workflow…" makes lap 1 deliver the workflow
-  and the gate engages from the next lap.
-- **env.mode** (ask at Stage 2): `host` (default; plain processes, no
-  isolation), `compose` (stages run root inside the product's own Docker
-  environment; offer when the repo has a `docker-compose.yml` or the PRD
-  ships one — fallback `env.image` must carry the toolchain, e.g. full
-  `node:22`, until lap 1 lands the compose file), `instabox` (disposable
-  Firecracker machines; see below), `boxd` (disposable hardware-isolated
-  microVMs over the boxd.sh gRPC SDK — see below).
-- **instabox prerequisite**: the golden snapshot is baked SERVER-SIDE before
-  the first lap; onboarding reminds you when.
-
-**boxd mode essentials** — `env.mode: "boxd"` + `env.boxd.repo_dir` (fail-fast
-if missing); machines boot from the org snapshot `factory-base-boxd-r1` by
-default (pi, bun, gh, git, python3 baked; NO node/Chrome yet — curl-only
-scenarios until an r2 bake adds them). Needs only `BOXD_API_KEY` in
-`factoryd.env` — the official SDK (`@boxd-sh/sdk`, the checkout's one contained
-dependency) owns machine lifecycle, everything in-box rides the hardened exec
-wrapper (in-box TERM→KILL deadline, frames, PATH). No ssh, no tunnels, no
-owner key-link step (account ops like linkSshKey are fenced to interactive
-logins and the dashboard has no key UI — the exec transport is why none is
-needed). Lap rhythm measured on the smoke repos: machine ready ~0.6 s, PR
-~25 s, full claim→merge→post-merge-regression ~5 min. Probes judge the box's
-OWN loopback over the same exec channel (identical to instabox's in-box
-scenario lane). Crash orphans: the janitor (every tick's tail and `cleanup`)
-deletes `factory=1`-labelled boxd boxes whose issue has no live lap.
-
-**Instabox snapshot essentials** — diff the PRD's runtime needs against what
-`doctor` prints for the base (`contents: …`) and SPEAK UP before the first
-lap: a missing toolchain never surfaces at onboarding, it surfaces as blocked
-laps burning the attempt budget. Snapshot quota is 5 concurrent — room for a
-shared base plus versioned enrichments, so nothing needs overriding. Two
-remedies, both server-side bakes the operator runs (you write the config,
-never the snapshot):
-
-- *Small additive deps*: deep-merge an `env.instabox.bake` script into the
-  repo config, then the operator bakes. For a re-bake of the SHARED base,
-  the operator pauses instabox repos first (new boots fail in the
-  delete→re-save window).
-- *Heavy/exotic deps*: point the repo at its own snapshot name
-  (`{"env":{"instabox":{"snapshot":"<slug>-base"}}}`) and bake that — a fresh
-  name leaves the shared base untouched.
-- Preferred fleet upgrade path: bake under a NEW versioned name and flip the
-  `shared-base` token VPS-side; keep the old name alive as an alias until
-  tick turnover, because a long-running tick holds its loaded config (and
-  snapshot name) for the whole lap.
-
-A `suspended` machine in status is the platform auto-suspending an idle box —
-the factory resumes it on the next attempt; normal, not an outage.
-
-### Stage 3 — scenario gate (the acceptance contract)
-
-Scenarios live OUTSIDE the product repo so the implementer can never tune code
-against its own verifier — never relocate them, never share contents with the
-implementer. Derive assertions from the PRD and user answers — **never invent
-endpoints**. `"port": "first"` (runtime) / `"second"` (holdout), resolved
-against the repo's reserved pair; probes use `$PORT`, never numbers. **Size
-probes to the currently claimable issue** — day-one probes covering the PRD's
-final contract burn attempt caps on repair churn; grow them per issue as laps
-merge.
-
-Walk the user through drafting `runtime.json` (positive path) and
-`holdout.json` (adversarial: malformed input → 4xx never 500, unknown
-resource, boundaries) as local files, show both in full, get a yes, then
-**lint → test → write**:
-
-```bash
-dark-factory scenario <slug> runtime --file runtime.json --lint   # validate, nothing written
-dark-factory scenario <slug> runtime --test                        # execute vs main, zero tokens
-dark-factory scenario <slug> runtime --file runtime.json           # write (bumps inputs-epoch)
-dark-factory scenario <slug> runtime --test --branch factory/issue-7   # vs an open lap's branch
-```
-
-Full schemas ship in this skill's `templates/` (`scenario.runtime.json`,
-`scenario.holdout.json`) — read and adapt; don't rediscover the shape by
-probing the validator (that burned ~8 attempts once). The contract in short:
-
-- Schema: `port` (first|second), `start` (ONE foreground command — the harness
-  owns its life and kills it authoritatively), `readiness_path`, optional
-  `setup`/`teardown`, `probes[{id, description, command, expect, timeout_ms}]`.
-- `$PORT` is injected into every command's env. **Never single-quote it**
-  (`'$PORT'` stays literal → probes die as 000) and percent-encode parens in
-  URLs — both are REJECTED at lint/write.
-- Probe tokens (space-separated): `status:N` (last stdout line equals N — the
-  command must emit the code, e.g. `curl -s -o /dev/null -w '%{http_code}'`;
-  a bare `curl -s URL` puts the BODY on stdout and fails), `status_in:200,404`
-  (one-of; for optional resources), `json:path=value` (all of stdout is one
-  JSON doc; dot-walk + `[N]`), `body_contains:VAL` (VAL space-free), 
-  `body_matches:REGEX` (JS RegExp, unanchored — write your own `^…$`),
-  `exit:N` (implicit 0), `max_ms:N`. Unknown tokens fail closed.
-- `--lint` catches token/regex/quoting mistakes; **`--test` catches semantic
-  ones** (the probe asserts something the product doesn't do) by executing the
-  stored scenario vs a branch — minutes, ~10× cheaper than validating a
-  scenario fix by burning a lap. Three hours of blocked laps were once all
-  scenario bugs, each tested only by full laps.
-- `start` should be a STANDARD server (`node server.js`, `uvicorn …`). A
-  hand-written supervisor is the known source of **ghost servers** — binds the
-  socket, "alive", never accepts. If the PRD truly needs one: `--test` before
-  the first lap, always.
-- A write (and a config write) bumps the inputs-epoch — every blocked issue of
-  the repo revives fresh on the next tick.
-
-### Stage 4 — backlog gate
-
-```bash
-dark-factory backlog <slug> --prd-file PRD.md --max 40      # preview (dry run)
-dark-factory backlog <slug> --prd-file PRD.md --create      # on explicit yes
-```
-
-Show the slice (titles + depends) before `--create` (real GitHub issues wired
-with `Depends on: #n`). The first sliced issue is the walking skeleton — the
-preview must start with one. The graph is VALIDATED: `--create` refuses
-self/forward/out-of-range references naming each offender
-(`graph_problems` in previews) — LLM slicing is non-deterministic, so audit
-the preview; a refusal usually means re-slice. Steps needing the operator
-(secrets, deploys, external accounts) must NOT become issues — keep them in
-the PRD as an operator checklist.
-
-Slicer facts: it runs server-side on the **plan-stage model** with low
-reasoning — a broken `models.plan` shape fails it with the deterministic
-`empty streamed completion (check provider quota/max_tokens)`; fix the config
-shape first, it is almost never quota. Still failing with a valid config?
-Report to the operator with the exact config — don't blind-probe model
-permutations (six were burned on one onboarding).
-
-### Stage 5 — first lap (spends real tokens)
-
-Confirm: "fire the first lap now? plan → implement → verify → review → merge,
-unattended." Then `dark-factory tick <slug>` — returns immediately (queued).
-Check `status --repo <slug>` once after a few minutes, report, wait — no
-busy-polling (a full lap is tens of minutes).
-
-Watching live: `dark-factory session <slug> --follow` streams the agent's pi
-session (`▶ tool: cmd` / `⎸ result`, `⋯ thinking (N chars)` per turn — growing
-N is normal, many minutes of NO lines is a stalled stage — and `✔ FINAL` per
-stage). Add `--think` for reasoning text, `--issue N` to pin an issue; one-shot
-playback without `--follow`. The stream updates to the newest session for the
-repo and auto-reconnects on transport drops.
-
-## Ops mode (daily driving)
-
-| User says… | Do |
+| question | command |
 |---|---|
-| "is the factory running" | `doctor` + `status` — repos, chain depth, ledger states |
-| "why is #N blocked" | `status` (row + `last_error`) → `logs --repo <slug> --tail 300` → match [failure signatures](#failure-signatures) → propose the fix. Blocked rows auto-revive each tick (fresh budget, fused) — usually the FIX unblocks for free: any `scenario` or `config` write bumps the inputs-epoch, giving every blocked issue of that repo fresh revive budget + clean stagnation history. `unblock <slug> <n>` is for deliberate clearing (`--prune` closes PR + branch + worktree; it refuses an in_progress row without `--force` because a live lap would be orphaned — a crashed lap reconciles on the next tick by itself) |
-| "why only [discovery] issues" | The discovery policy working as set: majors drain-first; **minor**-labeled discoveries defer until the PRD backlog drains; a discovery lap NEVER auto-files (recursion gate — findings stay on the PR comment + sidecar). If the queue looks starved: `gh issue list -R <repo> --label discovery --state open --json number,title,labels` splits minor (waiting by design) vs major (outranking the roadmap on purpose) |
-| "run a lap now" | confirm (tokens), `tick <slug>` |
-| "add repo X" / "add this PRD" | the wizard from Stage 0 / Stage 4 (`status` first; dedup makes re-runs safe) |
-| "cleanup" | confirm, `cleanup` (worktree caches, stale workers) |
-| "remove repo X from the factory" | There is no remote delete verb, on purpose. Soft off-switch: `pause <slug>` (history and ledger stay; ticks skip it). Full removal is operator-side (server state `repos/<slug>/` + any leftover machines) — name the step, hand it over; never hand-delete ledger rows |
-| provider capped / rotating keys | keys live server-side (the operator manages them). Read the receipt: `402 insufficient_credits` = wrong billing surface (switch model ids) vs router `429` = the weekly pool's reset window (wait or add a key — operator). `provider_error` receipts carry the upstream message — read it before proposing unblock |
-| "which provider runs what" | `dark-factory models` is the live roster; stage rows in `status` show which provider/model each attempt ran on |
+| overall state | `status` (repos, claimable chain depth, in-flight, ledger, recent laps and stages) |
+| one repo | `status --repo SLUG` (`--format json` for scripts) |
+| what happened | `logs --repo SLUG --tail 300` (receipts: every claim, attempt, gate, revive, pause) |
+| what the agent is doing | `session SLUG --follow` (live), `--think` for reasoning text, `--issue N` to pin one |
+| the truth about code | `gh pr view`, `gh pr checks`, `gh issue view` |
 
-Reading results honestly: `terminal ≠ good` — a `merged` ledger row is
-confirmed by the merged PR on GitHub; a failed lap's story is `status`'s
-`last_error` + `logs`. Machine-mode implement stages emit no receipts until
-they finish — silence there is normal (watch `session`), NOT a hang; before
-pruning a "silent" lap, cross-check GitHub for a just-opened PR — receipts lag
-the work. `claimable chain: unknown (GitHub probe >5s)` = retry, don't
-interpret. When auto-revive stops (stagnation breaker / daily cap), the
-factory posts a FAILURE SUMMARY on the GitHub issue — the case file: failure
-signatures, verdict evidence, and classification hints (INFRASTRUCTURE vs
-verifier-owned vs app failure). Read it, fix, epoch-bump or unblock.
+Things that look wrong but aren't:
+- **Session lines.** `▶` is a tool call, `⎸` a result, `⋯ thinking (N chars)`
+  a turn, `✔ FINAL` a stage end, and `·` a heartbeat. Minutes of `·` with no
+  `⋯` means a stalled stage.
+- **Silent receipts.** Machine-mode stages write receipts only when they
+  finish, so silence mid-stage is normal. Watch `session`, and check GitHub
+  for a fresh PR before calling a lap stuck.
+- **`chain: unknown (GitHub probe >5s)`** in status means retry, not
+  "nothing to do".
+- **A `suspended` machine** is the platform's idle auto-suspend. The next
+  attempt resumes it.
+
+## Onboarding a repo
+
+Work the stages in order and stop at any failure.
+
+### 0. Precheck (local `gh`, read-only)
+
+1. `gh repo view OWNER/NAME --json name,owner,defaultBranchRef,primaryLanguage`.
+   Note the default branch.
+2. **Find a PRD.** Look for one in the tree; `.agents/PRDs/PRD.md` is the
+   convention. If none exists, offer to draft one, get approval, and commit
+   it. No PRD, no backlog.
+3. `gh issue list`: is the backlog empty or already sliced?
+4. Confirm the `gh` auth can write issues on the repo.
+
+### 1. Preflight
+
+`doctor`, then `status`. If the repo is already onboarded, switch to the ops
+playbook.
+
+### 2. Config
+
+`onboard OWNER/NAME` (idempotent):
+- It writes `config.json` plus runtime and holdout scenario templates
+  server-side.
+- It reserves two scenario ports and echoes the slug that every other verb
+  takes.
+- It sets `merge.required_checks: ["*"]`: every check the PR reports must
+  pass, and a repo with no workflows stays ungated.
+
+**Pick the models from `dark-factory models`, never from memory.** The
+roster shows each provider, model id, context window, and which thinking
+levels a model actually supports.
+
+**Write the config.** Start from `templates/config.example.json`: fill the
+models and pick `env.mode`. Show it, get a yes, then:
+
+```bash
+dark-factory config SLUG --json "$(cat config.json)"
+dark-factory config SLUG            # read back the effective config and check it
+```
+
+Config rules (all enforced at write time):
+- **Allowed top-level keys:** `models`, `env`, `timeouts`, `merge`,
+  `default_branch`, `attempts`, `skip_labels`, `trusted_authors`, `pi`,
+  `discoveries`, `limits`. Anything else is rejected, including `_readme`,
+  `repo`, `scenario` and `ui`. `ui.enabled:false` is a server-side edit.
+- **Models are objects:** `{"provider", "model", "thinking", "fallback": []}`.
+  - `model` is the bare id; the level goes in `thinking`.
+  - `fallback` entries are `"provider/model[:thinking]"` strings, the only
+    place that form is valid.
+  - Stages `plan`, `implement` and `review` inherit from `default`.
+- **Roster checks:** an unknown provider is rejected, and so is a thinking
+  level the model doesn't support. An unknown model id only warns, and the
+  CLI doesn't print the warning, so use ids that appear in `models`.
+- **Merging:** the patch deep-merges, but arrays (`fallback`, `pass_env`,
+  `trusted_authors`, `required_checks`) replace whole.
+  - Last writer wins.
+  - A `{}` patch is not a no-op read: it still writes the file and resets
+    the revive fuses. Read with `config SLUG` instead.
+- Every successful write resets the revive fuses (the inputs epoch).
+
+Decisions to walk with the user:
+- **Models.** A strong model for implement and review, a cheaper one or a
+  lower thinking level for plan.
+  - Provider errors advance down the fallback chain; timeouts don't.
+  - A model's provider decides which credit pool it bills: `402
+    insufficient_credits` with an untouched quota means the ids are on the
+    wrong pool, so ask the operator.
+- **`env.mode`.**
+  - `instabox` (needs a stack base, see below).
+  - `boxd` (needs `env.boxd.repo_dir`; the default snapshot
+    `factory-base-boxd-r1` has bun, git, gh and python3, but no node or Chrome).
+  - `compose` (stages run as root in the repo's own `docker-compose.yml`
+    worker; until one exists, `env.image` must carry the toolchain, e.g.
+    `node:22`).
+  - `host` (no isolation; avoid for repos with outside contributors).
+- **`trusted_authors`.** Anyone besides the owner who may file work. Issue
+  text becomes agent prompt, so keep it short.
+- **`limits.daily_attempts`.** The cost ceiling; 0 means none.
+- **`discoveries.auto_file`.** On by default: reviewer findings become
+  `[discovery]` issues. Set false for a quiet repo.
+- **`pi.web.search` / `pi.web.fetch`.** Web tools for the agent, on by default.
+- **`attempts`, `timeouts.stage_minutes`** (60), **`timeouts.readiness_seconds`**
+  (120).
+
+**Stack bases (instabox).** `env.instabox.snapshot` names a base alias, and
+`doctor` prints what each alias contains. Compare the PRD's runtime needs
+against that list before the first lap. A missing toolchain doesn't fail at
+onboarding; it fails later as blocked laps.
+- **Small extras:** install them in the scenario `setup` or the repo's own
+  scripts.
+- **A real gap:** ask the operator for a new stack base (an operator bake).
+- **Never point a repo at a snapshot name that doesn't exist.** Laps and
+  `foreman bake` both fail on it.
+- **Never re-bake a shared alias for one repo.**
+
+### 3. Scenarios (the acceptance contract)
+
+Two files live server-side, outside the product repo:
+- **`runtime.json`:** the positive path.
+- **`holdout.json`:** adversarial. Malformed input gets a 4xx and never a 500;
+  test unknown resources and boundaries.
+
+Derive every assertion from the PRD; never invent endpoints. **Size the probes
+to the issue that is claimable now** and grow them as laps merge. Probes for
+the whole PRD on day one only burn attempts on repair churn. Start from
+`templates/scenario.runtime.json` and `templates/scenario.holdout.json`, show
+both in full, get a yes, then:
+
+```bash
+dark-factory scenario SLUG runtime --file runtime.json --lint    # validate, writes nothing
+dark-factory scenario SLUG runtime --file runtime.json           # write (resets revive fuses)
+dark-factory scenario SLUG runtime --test                         # run vs the default branch, no lap, no tokens
+dark-factory scenario SLUG runtime --test --branch factory/issue-7
+dark-factory scenario SLUG runtime --dump                         # print what is stored
+dark-factory prove-gates SLUG                                     # every probe vs a stub that answers 200 to everything
+```
+
+**Schema.**
+
+| field | rule |
+|---|---|
+| `port` | `"first"` (runtime) or `"second"` (holdout) |
+| `start` | one foreground command; the harness owns and kills it |
+| `readiness_path` | path the harness polls until the server is up |
+| `setup`, `teardown` | optional |
+| `probes` | `[{id, description, command, expect, timeout_ms}]` |
+
+**Rules for `$PORT`.**
+- `$PORT` is set in every command's environment. Never hardcode a port.
+- Never single-quote `$PORT`, and percent-encode `(`/`)` in URLs. Lint
+  rejects both.
+
+**Expect tokens** are space-separated, and a value can't contain a space.
+
+| token | passes when |
+|---|---|
+| `status:N` | the last stdout line equals N; use `curl -s -o /dev/null -w '%{http_code}'` |
+| `status_in:200,404` | the last line is any of the codes |
+| `json:path=value` | all of stdout is one JSON document; dot path, `[N]` indexes |
+| `body_contains:VAL` | VAL appears in stdout |
+| `body_matches:REGEX` | a JS RegExp, unanchored; use `\s` for spaces |
+| `exit:N` | the exit code (default 0) |
+| `max_ms:N` | the command finishes within N ms |
+
+To check status and body in one probe, use `curl -s -w '\n%{http_code}'`.
+
+**Checking scenarios.**
+- **`--lint`** catches syntax mistakes.
+- **`--test`** catches probes that assert something the product doesn't do,
+  in minutes and for free. Use it before the first lap and after every fix.
+  - instabox repos test in a throwaway machine.
+  - host, compose **and boxd** repos test in a worktree on the VPS, so the
+    product's code runs there.
+- **`prove-gates`** exits 1 if no probe fails against the stub. Weak probes
+  are listed in `survived[]` even when the verdict is `healthy`. It needs the
+  repo idle.
+- **Use a standard server for `start`** (`node server.js`, `uvicorn …`). A
+  hand-written supervisor that binds the port but never accepts connections
+  is the classic "ghost server".
+
+### 4. Backlog
+
+```bash
+dark-factory backlog SLUG --prd-file PRD.md --max 40           # preview (runs the slicer: spends tokens)
+dark-factory backlog SLUG --prd-file PRD.md --max 40 --create  # creates issues wired with "Depends on: #n"
+```
+
+- **Show the preview first.** Show titles and dependencies before
+  `--create`; the first issue must be a walking skeleton.
+- **Re-running is safe.** Titles dedupe against existing issues.
+- **The dependency graph is validated.** `--create` refuses self, forward or
+  out-of-range references; re-slice when it does. (The preview's
+  `graph_problems` field is not printed by the CLI.)
+- **Keep operator tasks out of issues.** Secrets, deploys and external
+  accounts stay in the PRD as an operator checklist.
+- **Slicer failures.** The slicer runs on the repo's plan model. An `empty
+  streamed completion` error usually means a broken `models.plan` shape, not
+  quota. Fix the config before retrying, and don't cycle through models.
+
+### 5. First lap (spends tokens)
+
+Confirm, then `dark-factory tick SLUG`. A 409 or `tick SKIPPED` means a tick
+is already live. Only a `queued: SLUG #N` receipt means a lap started. Follow
+with `session SLUG --follow`, check `status --repo SLUG` after a few minutes,
+and report.
+
+## Ops playbook
+
+| situation | what to do |
+|---|---|
+| "is it running?" | `doctor`, then `status`. `logs` shows a `scheduler: started N repo tick(s)` line every 15 min |
+| an issue isn't picked up | read the `idle after #N: K open, none claimable — …` receipt. It names each bucket: `untrusted-author` (add the login to `trusted_authors`), `skip-labeled`, `pr-claimed` (a foreign PR says closes #N), `dep-gated` (parents still open), `factory-closed` (ledger says done or blocked) |
+| work waits behind `chain budget … spent` or `lap cap (6) reached` | by design; the next tick resumes. `tick SLUG` drains it now |
+| `#N` blocked | `status --repo SLUG` (row + `last_error`) → `logs` → match a [failure signature](#failure-signatures). Fix the cause; the config or scenario write that fixes it also resets the revive fuses, so the issue revives on the next tick |
+| FAILURE SUMMARY on an issue | revive stopped (daily cap or stagnation). Read the summary's evidence and classification, fix, then write the fix (epoch reset) or `unblock` |
+| start an issue over | `unblock SLUG N --prune`: drops the row, closes the PR, deletes the branch, retires `plan.md` and `findings.md`. Without `--prune` only the row drops; the next lap reuses the plan and continues the existing branch |
+| good work blocked by a broken verdict | confirm on GitHub (checks green, diff right), squash-merge it yourself, then `unblock SLUG N --prune` |
+| `in_progress` but nothing happening | first rule out a live lap: `session SLUG --issue N`, `gh pr view`. A dead lap is reconciled by the next tick automatically. `unblock --force` only once verified dead |
+| `factory:needs-info` on an issue | the planner asked a question in a comment. The author edits the answer into the issue body and removes the label; the next tick claims it with fresh attempts |
+| repo paused with `billing hold: …` | every model failed on billing. Read which provider in `logs`. The operator tops up or fixes the key, or you switch models with `config`, then `unpause SLUG` |
+| `daily attempt ceiling reached` | the chain resumes after 00:00 UTC. To lift it, raise `limits.daily_attempts` with `config` (applies at once) |
+| `lap #N DEFERRED — platform unavailable` | the machine platform is down or at its cap. No attempt is spent; it self-heals. `pause SLUG` if you want quiet; report if it lasts > 1 h |
+| only `[discovery]` issues running | policy: major discoveries drain first; minor ones wait for the roadmap. `gh issue list -R REPO --label discovery` shows the split. Discovery laps never file new discoveries |
+| reviewer findings not filed | `discoveries SLUG` lists them; `discoveries SLUG --file yes` files deduped issues (see CLI quirks) |
+| stop a repo | `pause SLUG`; an in-flight lap finishes. `unpause SLUG` to resume. A manual pause overwrites a billing-hold reason |
+| remove a repo | there is no remote verb. `pause` it, then hand the operator the offboarding step |
+| leftover machines or disk | `cleanup`: deletes orphaned lap machines, kills pi workers older than 2 h, prunes dependency caches in blocked worktrees |
+| change models, provider down | `models`, then `config SLUG --json '{"models":{…}}'`; it applies from the next lap |
 
 ## Failure signatures
 
-Every row was paid for in real laps. Match the receipt, don't re-derive.
-
-| Receipt says | Meaning | What to do |
+| receipt or error | meaning | action |
 |---|---|---|
-| `pi exited 127 … node: not found` from a compose service | libc mismatch (musl image vs glibc launcher) — the launcher self-adapts, so seeing it means the server-side launcher was altered | report; operator restores the libc-agnostic launcher (factory-setup phase 4f) |
-| bare `pi exited 127:` with nothing after the colon | spawn ENOENT — the binary in the argv never existed; receipts name the actual path | read the named path; still empty → the daemon predates the path-naming fix, restart at idle |
-| `machine … never reached running (state: suspended)` | platform auto-suspend of an idle box; self-resumed next attempt | nothing; flag only if it repeats every lap |
-| `machine gate failed (git push of factory/issue-N failed): non-fast-forward` | fossil branch from an unmerged chained sibling (fixed: the gate force-pushes factory-owned branches) | should not recur; `unblock <slug> <n> --prune` kills the fossil |
-| `machine gate failed (git push …) could not read from remote` | GitHub credentials never reached the box (fixed via the token aliasing + machine env) | should not recur; check `factoryd.env` carries the token |
-| `channel 0: open failed: connect failed: machine unreachable` (exit 255) | transient gateway hiccup during a machine stage; a blip self-heals on the next attempt | nothing once; repeats every attempt → the machine or snapshot is sick |
-| readiness fails with `In-box socket state: LISTEN …` and a FULL Recv-Q | **GHOST SERVER** — start binds the socket, never accepts (classic: hand-written supervisor without its serve/accept loop). The verdict carries the kernel evidence | the `start` command is scenario-owned (the implementer cannot fix it): fix the script, `--lint`, `--test`, write — epoch bump revives it. When authoring any bespoke `start`: `--test` first, always |
-| `review verdict unparseable after 5 re-asks — failing closed` (REJECT, raw output embedded) | generation death mid-sentence on flash-tier models — probabilistic, NOT a product verdict (the verify gates already passed) | `status` stage row shows tokens even for failed stages (river-death = tokens stop; output-cap = ceiling). If the work is genuinely good: verify on GitHub, squash-merge, `unblock <slug> <n> --prune` (ledger row drops; GitHub becomes the record). A plain re-lap often recovers; escalate after the same lap fails this way twice |
-| `[runtime] server never became ready within 120s` | `start`/`readiness_path` mismatch, or the implementer's server exits/binds wrong | watch one repair round before touching the scenario or `timeouts.readiness_seconds` |
-| river/connector `provider_error` bursts | upstream flakiness; the fallback chain advances on its own | watch; worry when fallbacks also fail |
-| receipt `lap #N DEFERRED — platform unavailable: machine ssh transport unavailable (publickey/unreachable)` or `machine-slot queue …waiting for a slot` | The InstaBox transport/machine API is degraded or the org is at its box cap. These laps are DEFERRED by design: no attempt burned, the claim is dropped, the next tick re-claims fresh, and a deferred chain pauses itself instead of booting boxes into a dead platform (pre-2026-11-05 the failure burned 3 attempts in 3 minutes and parked 3 machines — reins #1) | nothing factory-side to fix — check the platform's status; laps self-heal on recovery. `pause <slug>` only if you want the wheel fully quiet meanwhile. If it persists >1h, ping the provider |
-| a fresh GitHub issue doesn't tick while other repos run laps | `chain budget (N min) spent for <slug> — remaining work (from #M) resumes on the next tick` = the repo's chain hit its 12-min-per-tick window and handed off by design (the in-flight lap always completes; bounded because the timer's re-arm waits for the whole tick to end); `idle after #N: K open, none claimable — dep-gated …` = the body's own `Depends on: #…` gate holds until its parents merge | read the receipts first: a budget handoff needs nothing; `Depends on:` gates resolve themselves as parents merge; to drain one repo NOW, `tick <slug>` fires a scoped tick (pidfile-arbitrated, never double-runs) |
-| boxd lap: `pi: command not found` (exit 127) in-box | the SDK exec transport starts NO login shell, so `~/.bun/bin` (where `bun i -g` put pi) is off PATH — instabox's sshd never had this because sshd sources the profile | fixed in the exec wrapper (exports the standard PATH before the payload); recurs → the snapshot lost the binary (`bun i -g @earendil-works/pi-coding-agent` on a bake box, re-snapshot) |
-| boxd verify: `server never became ready … (last code 000)` while the box answers fine out-of-band | fixed frame-parsing artifact (2026-11-07, both smoke repos, 9 attempts): `curl -w '%{http_code}'` emits NO trailing newline, the old capture frames fused the last output line with the END marker and the regex silently dropped it — the probes were answering 200 all along | fixed (wrapper emits a newline before each END marker; parser strips exactly one). Should not recur — if 000s appear again, FIRST probe the box directly through the SDK before blaming the server |
-| boxd: a parked `pdf-*` machine outlives its lap (a killed tick process) | only a killed process leaves one: every lap that ends in-process destroys its box, thrown laps included | the janitor reaps it at the next scheduler pass (or fleet tick) once the issue has no live lap; `dark-factory cleanup` forces a pass now |
+| `402 … insufficient_balance` / `insufficient_credits` on one model, others fine | that provider is out of credit; the chain fell back | tell the operator; switch the lineup if it persists |
+| every model `402`/`401` → `BILLING HOLD`, repo paused | no model can run | operator tops up or fixes keys, then `unpause` |
+| `429 … all clinepass keys are cooling` | the ClinePass weekly pool is spent | wait for the reset or have the operator add a key; fallbacks carry on |
+| `review verdict unparseable after 5 re-asks — failing closed` | the reviewer model died mid-output; verify already passed | a re-lap usually recovers. If it repeats on good work, merge by hand and `unblock --prune` |
+| `[runtime] server never became ready within 120s` | `start` or `readiness_path` wrong, or the app exits or binds wrong | watch one repair round; then `scenario --test` before touching the scenario or `readiness_seconds` |
+| readiness fails with `In-box socket state: LISTEN` and a full Recv-Q | ghost server: `start` binds but never accepts | fix `start` (scenario-owned; the implementer can't), `--lint`, `--test`, write |
+| verdict classified `INFRASTRUCTURE` | the transport or the host-side poll failed, not the app | retry the lap; don't repair the product |
+| `machine … never reached running (state: suspended)` | platform auto-suspend | nothing, unless it repeats every lap |
+| `machine unreachable` / ssh exit 255 once | gateway blip | nothing; repeated on every attempt means the machine or snapshot is sick, so report |
+| `attempt N died fast to a connection-class error — cooling down` | model API or edge hiccup | nothing; the cooldown is automatic |
+| `pi exited 127` | the pi binary is missing where the stage ran (machine snapshot or compose launcher) | report to the operator with the receipt; a server-side fix |
+| `skipping SLUG: its config.json does not load` | a hand edit broke the file | operator fixes the file; the rest of the fleet keeps running |
+| `machine gate failed (git push …)` | the box couldn't push the branch | `unblock --prune` once; if it recurs, report (token or credentials on the server) |
 
+## CLI reference
 
-Operator discipline paid for twice: after a server-side infra fix, wait for a
-positive canary (the fixed path proven green once) before re-driving laps —
-two full attempt cycles were once burned against a still-broken mount.
+Every verb takes `--help`. Exit codes: 0 ok, 1 error or failed verdict, 2 usage.
 
-### Machines and strays (instabox mode)
-
-One machine per issue's LAP, named `pdf-<slug>-i<issue>-g<lapId>` — unique per
-lap generation ON PURPOSE: platform deletes are eventually consistent (phantom
-listings observed ~2h late), and a reused name races the zombie — a unique
-name can never inherit a dead lap's routes or stale servers. The machine's
-clone IS the worktree; it survives repair rounds and dies when the lap books
-out (confirmed delete; platform lag receipts "delete not yet visible" and the
-janitor reaps it). Every tick's tail and `cleanup` reap any `pdf-*` machine
-whose issue has no in_progress row — a "running" machine long after its lap is
-the platform's stale listing until the janitor gets to it. `scenario --test`
-machines (`pdf-<slug>-scen-test`) are pid-marker-protected while live. When
-machine-mode verify fails readiness, the runner self-classifies: a transport
-or host-poll starvation reports `INFRASTRUCTURE` (retry the lap, don't repair
-the product); only host-poll AND in-box loopback both failing is an app
-failure.
-
-## Verb map (details in `dark-factory <verb> --help`)
-
-| verb | one line |
+| verb | effect |
 |---|---|
-| `health` / `doctor` | connectivity (open) / auth + readiness sweep incl. base snapshot contents |
-| `models` | the LIVE provider roster — model discovery, and what config writes validate against |
-| `status [--repo SLUG] [--raw \| --format json]` | ledger, laps, stages, chain depth, worktrees |
-| `logs [--repo SLUG] [--tail N]` | the receipt spine (`[slug]`-tagged lines) |
-| `session SLUG [-f] [--think] [--issue N]` | live or replayed agent-session view |
-| `onboard OWNER/NAME` | register a repo (idempotent) |
-| `config SLUG [--json PATCH]` | read the complete effective config / deep-merge a patch |
-| `scenario SLUG runtime\|holdout …` | `--lint` (dry-run) / `--dump` / `--test` (execute w/o a lap) / write `--file F` |
-| `backlog SLUG --prd-file F [--max N] [--create]` | slice the PRD (preview default) |
-| `tick` / `pause` / `unpause` / `unblock` / `cleanup` | drive the wheel |
-| `prove-gates SLUG` | plant every probe; gates must trip (exit 1 unless healthy) |
-| `discoveries SLUG [--file]` | list harvested findings / open deduped issues |
+| `setup URL KEY` / `where` | store / show the connection |
+| `health` / `doctor [--format json]` | open liveness / auth + readiness sweep |
+| `models [--format json]` | live provider roster |
+| `status [--repo SLUG] [--raw \| --format json]` | ledger, laps, stages, chain depth |
+| `logs [--repo SLUG] [--tail N] [--format json]` | receipts (default 200 lines) |
+| `session SLUG [--follow] [--think] [--issue N]` | rendered agent session; follow reconnects every 5 s, server caps a stream at 4 h |
+| `onboard OWNER/NAME` | **writes** config + scenario templates + ports |
+| `config SLUG [--json PATCH]` | read effective config / **write** a deep-merge patch |
+| `scenario SLUG runtime\|holdout --file F [--lint] \| --dump \| --test [--branch B]` | **write** / validate / print / run without a lap |
+| `prove-gates SLUG` | plant every probe on a 200-stub; exit 1 if gates are dead |
+| `discoveries SLUG [--file yes]` | list harvested findings / **file** issues |
+| `backlog SLUG --prd-file F [--max N] [--create]` | **spends tokens** to slice; `--create` files issues |
+| `tick SLUG` | **spends tokens**: start a lap now |
+| `pause SLUG` / `unpause SLUG` | stop / resume a repo's ticks |
+| `unblock SLUG N [--prune] [--force]` | drop the ledger row (± close PR, delete branch) |
+| `cleanup` | orphaned machines, stale workers, caches |
 
-Config allowlisted keys: `models`, `env`, `timeouts`, `merge`,
-`default_branch`, `attempts`, `skip_labels`, `pi` (incl. `pi.web` search/fetch
-toggles), `discoveries` (`auto_file` defaults TRUE), `ui` (`enabled` defaults
-TRUE — voids the `ui` skill for non-frontend repos). Validation is loud:
-dotted-string models, thinking suffixes inside `model`, malformed fallbacks,
-and roster mismatches all reject at write time (client errors, not 500s).
+CLI quirks (v0.1.2):
+- **`-f` does not follow.** Use `--follow`.
+- **`--file` takes a value.** On `discoveries`, write `--file yes`.
+- **Warnings and graph problems aren't printed.** `config --json` hides
+  roster warnings, and `backlog` hides `graph_problems`.
+
+## Server-side operations
+
+Name these to the operator with the exact command. Never improvise them. The
+details are in the repo's `docs/operations.md`.
+
+| need | operator command or action |
+|---|---|
+| deploy new factory code | `cd /home/factory/pi-dark-factory && sudo -u factory git pull --ff-only` (+ `bun install` if `package.json` changed), then `sudo systemctl restart pi-factoryd`. Restarts are safe mid-lap (`KillMode=process`); ticks load fresh code by themselves |
+| provider keys, top-ups, new models | edit the factory user's `~/.pi/agent/models.json` / `auth.json`; check with `dark-factory models` |
+| GitHub, InstaBox, boxd or TinyFish keys | `/home/factory/factoryd.env` (600), then restart `pi-factoryd` |
+| ClinePass keys | `/home/factory/state/clinepass.keys`, one per line, live-reloaded |
+| bake a repo snapshot (instabox) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.instabox.snapshot` empty it boots the plain template, runs `env.instabox.bake`, saves `<slug>-base` and writes that name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
+| upgrade a stack base | fresh-template bake under a new versioned name, then repoint the alias in `state/base-snapshot.json` |
+| `ui.enabled:false` or other non-allowlisted config | edit `state/repos/SLUG/config.json` |
+| offboard a repo | `pause` it, move `state/repos/SLUG` aside, `cleanup`. Ledger rows stay as history |
+| dashboard, backups, restore | `pi-factory-dashboard`, `pi-factory-backup.timer`, `bun bin/backup.ts list \| restore <id> <empty-dir>` |

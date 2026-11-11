@@ -1,18 +1,17 @@
 {
-  "_readme": "POSITIVE-path scenario. port = the repo's RESERVED pair via \"first\"/\"second\" (never a literal); $PORT is injected into every command's env — never hardcode a port. start is a single foreground command (the harness owns its life and kills it authoritatively). Probes: id unique, command shell, expect = space-separated tokens: status:N, json:path=value, body_contains:, body_matches:^regex$, exit:N, max_ms:N. Values must be space-free (use body_matches: with \\s patterns for spaces). Size probes to the currently claimable issue — grow per lap, never front-load the whole PRD.",
   "name": "runtime",
   "port": "first",
   "start": "node server.js",
-  "readiness_path": "/",
+  "readiness_path": "/health",
   "probes": [
-    { "id": "health-200", "description": "GET /health answers 200 — the command EMITS the code; the matcher judges stdout",
+    { "id": "health-200", "description": "GET /health answers 200 (the command prints the code; status: reads the last line)",
       "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health", "expect": "status:200" },
-    { "id": "health-body", "description": "GET /health body is JSON ok:true (json: needs ALL of stdout to be one JSON doc)",
+    { "id": "health-body", "description": "GET /health returns JSON with ok:true (json: needs all of stdout to be one document)",
       "command": "curl -s http://127.0.0.1:$PORT/health", "expect": "json:ok=true" },
-    { "id": "main-endpoint", "description": "the product's primary endpoint answers its contract (exit:0 is implicit)",
-      "command": "curl -s -X POST http://127.0.0.1:$PORT/ -H 'content-type: application/json' -d '{}'",
-      "expect": "body_matches:^\\{", "timeout_ms": 10000 },
-    { "id": "unknown-404", "description": "unknown paths answer 4xx, never 5xx",
+    { "id": "create-item", "description": "POST /items creates an item and echoes it",
+      "command": "curl -s -w '\\n%{http_code}' -X POST http://127.0.0.1:$PORT/items -H 'content-type: application/json' -d '{\"title\":\"a\"}'",
+      "expect": "status:201 body_contains:\"title\":\"a\"", "timeout_ms": 10000 },
+    { "id": "unknown-404", "description": "unknown paths answer 404, never 5xx",
       "command": "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/definitely-not-a-route",
       "expect": "status:404" }
   ]
