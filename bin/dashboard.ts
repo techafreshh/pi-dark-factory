@@ -388,7 +388,7 @@ function needsYou(db: Database, info: Map<string, RepoInfo>, health: ReturnType<
     if (failing || stale) {
       items.push({ kind: "backup", repo: null, slug: null, issue: null, title: null,
         detail: failing ? `state backup failing: ${b.last_error}` : `no successful state backup since ${b.last_ok_at ?? "ever"}`,
-        at: failing ? b.last_error_at : b.last_ok_at });
+        at: (failing ? b.last_error_at : b.last_ok_at) ?? null });
     }
   }
   return items;

@@ -173,3 +173,33 @@ key shows that provider as "no key".
 The UI is built into the committed `dashboard-ui/dist`: after a UI change run
 `cd dashboard-ui && bun run build` and commit `dist`. A deploy is `git pull` and
 `sudo systemctl restart pi-factory-dashboard`.
+
+### State backups
+
+`bin/backup.ts` copies the ledger (`VACUUM INTO`, integrity-checked) and the small state the
+factory can't rebuild from GitHub (`laps.log`, each repo's `config.json`, `runtime.json`,
+`holdout.json`, `revives.json`, `paused`) to the `pi-factory-backups` bucket on the VPS's MinIO
+(the Langfuse stack's). Session files, clones, worktrees and key files are not included.
+`pi-factory-backup.timer` runs it hourly at :07 as `factory`. Retention: every snapshot from
+the last 48 hours, then the first of each UTC day for 30 days. Each run writes
+`state/backup.json`; the dashboard's "Needs you" panel flags a failing backup or one older than
+3 hours.
+
+Credentials live in `/home/factory/backup.env` (mode 600): `S3_ENDPOINT`, `S3_BUCKET`,
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`. The MinIO user `pi-factory-backup` can only read and
+write that bucket. `S3_ENDPOINT` is MinIO's address on the `web_gateway` bridge
+(`http://10.0.1.21:9000`); if the container is recreated with a new IP, update it there
+(`docker inspect langfuse-vps-setup-minio-1`).
+
+```sh
+sudo -u factory bash -c 'set -a; . /home/factory/backup.env; set +a; cd /home/factory/pi-dark-factory
+  bun bin/backup.ts list                         # snapshot ids
+  bun bin/backup.ts restore <id> /tmp/restore    # into an EMPTY dir, never over live state'
+```
+
+To put a restored ledger back: stop the daemon and wait for running ticks to finish, move
+`state/factory.db*` aside, copy the restored `factory.db` in, start the daemon.
+
+This MinIO runs on the same disk as the factory, so it covers a corrupted ledger, a bad
+migration or a deleted file, not the loss of the VPS. Pointing `S3_ENDPOINT` at an off-site
+bucket (any S3-compatible store) covers that too.
