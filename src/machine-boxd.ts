@@ -1,5 +1,6 @@
 /**
- * boxd machine mode — the SDK-driven face of the implement-and-review stages.
+ * boxd machine mode — the SDK-driven face of the plan, implement and review
+ * stages.
  *
  * A lap machine is one disposable boxd microVM (https://boxd.sh) booted from
  * the org's golden snapshot via the official SDK's gRPC control plane. Machine
@@ -292,7 +293,7 @@ export class BoxdLapMachine {
   }
 
   async callStage(
-    stage: "implement" | "review",
+    stage: "plan" | "implement" | "review",
     o: {
       models: StageModels;
       prompt: string;
@@ -302,9 +303,11 @@ export class BoxdLapMachine {
       timeoutMs: number;
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
-    if (stage === "implement") await this.bootstrap();
+    // same rules as LapMachine.callStage: plan and implement bootstrap the
+    // clone, implement alone gates and pushes, plan and review are undone
+    if (stage === "plan" || stage === "implement") await this.bootstrap();
     const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
     const m = await this.ensure();
     const res = await callBoxdStage(this.client, m.id, {
       models: o.models,

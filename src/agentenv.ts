@@ -1,7 +1,7 @@
 /**
- * The environment handed to agent-run processes on the VPS: host-side pi
- * stages (plan in every mode, all stages in host mode, the docker client in
- * compose mode) and scenario commands (setup/start/probes/teardown run
+ * The environment handed to agent-run processes on the VPS: the pi stages of
+ * host-mode repos (machine modes run every agent stage in the lap's box), the
+ * docker client in compose mode, and scenario commands (setup/start/probes/teardown run
  * product code). An allowlist, not process.env: the factory's own service
  * env carries FACTORY_API_KEY, the laptop key, the InstaBox and boxd keys and
  * a GitHub token, and an agent that reads issue text or fetched web pages

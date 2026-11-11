@@ -384,7 +384,7 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(readdirSync(idir).some((f) => f.startsWith("plan.superseded-"))).toBe(true);
   }, 60000);
 
-  test("machine-mode lap: implement+review run in a fake instabox machine, gates judge the pushed branch", async () => {
+  test("machine-mode lap: plan, implement and review run in a fake instabox machine, gates judge the pushed branch", async () => {
     const w = makeWorld();
 
     // fake control plane (the instabox API): create → operation → ssh token → delete.
@@ -428,18 +428,25 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
       '#!/usr/bin/env bash\nfor a in "$@"; do CMD="$a"; done\nexec bash -c "$CMD"\n'
     );
     chmodSync(sshPath, 0o755);
-    // fake pi: review verdict when the reviewer contract is present, else commit work
+    // fake pi: one stdin read, then a verdict for the reviewer contract, a
+    // plan for the planner (which also misbehaves: it commits and edits, and
+    // the stage driver's reset must keep that off the branch), else implement
     const piPath = join(w.stateDir, "fake-pi");
     writeFileSync(
       piPath,
       [
         "#!/usr/bin/env bash",
-        `if grep -q "Judge in this order" /dev/stdin; then`,
-        `  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"VERDICT: APPROVE\\nCoverage MET."}],"usage":{"input_tokens":3,"output_tokens":4}}}'`,
-        "else",
-        `  echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"implemented"}]},"usage":{"input_tokens":10,"output_tokens":5}}'`,
-        `  echo hello >> implemented.txt && git add implemented.txt && git commit -q -m "machine implement"`,
-        "fi",
+        "P=$(cat)",
+        `case "$P" in`,
+        `  *"Judge in this order"*)`,
+        `    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"VERDICT: APPROVE\\nCoverage MET."}],"usage":{"input_tokens":3,"output_tokens":4}}}' ;;`,
+        `  *"Plan the next implementation lap"*)`,
+        `    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"## Problem\\nplanned inside the box"}]},"usage":{"input_tokens":7,"output_tokens":2}}'`,
+        `    echo planner-was-here >> README.md && git add README.md && git -c user.email=p@p -c user.name=planner commit -q -m "planner commit" && echo stray > stray.txt ;;`,
+        "  *)",
+        `    echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"implemented"}]},"usage":{"input_tokens":10,"output_tokens":5}}'`,
+        `    echo hello >> implemented.txt && git add implemented.txt && git commit -q -m "machine implement" ;;`,
+        "esac",
         "exit 0",
       ].join("\n") + "\n"
     );
@@ -460,6 +467,17 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
       // stage forensics landed host-side despite the remote run
       const implJsonl = readFileSync(join(issueDir(w.stateDir, "toy", 1), "implement-1.jsonl"), "utf8");
       expect(implJsonl).toContain("implemented");
+      // the plan ran in the box (its forensics beside implement's), never on the host
+      expect(readFileSync(join(issueDir(w.stateDir, "toy", 1), "plan-1.jsonl"), "utf8")).toContain("planned inside the box");
+      expect(readFileSync(join(issueDir(w.stateDir, "toy", 1), "plan.md"), "utf8")).toContain("planned inside the box");
+      expect(w.calls.some((c) => c.stage === "plan")).toBe(false);
+      // the planner's commit and edits never reached the pushed branch
+      const branchLog = execSync(`git --git-dir=${w.origin} log --format=%s factory/issue-1`).toString();
+      expect(branchLog).toContain("machine implement");
+      expect(branchLog).not.toContain("planner commit");
+      const tree = execSync(`git --git-dir=${w.origin} ls-tree -r --name-only factory/issue-1`).toString();
+      expect(tree).not.toContain("stray.txt");
+      expect(execSync(`git --git-dir=${w.origin} show factory/issue-1:README.md`).toString()).not.toContain("planner-was-here");
       // the fake control plane saw one lifecycle: create and delete of the lap machine
       expect(deleted.length).toBe(1);
       // no host worktree was ever created

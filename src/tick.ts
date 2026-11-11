@@ -62,9 +62,9 @@ const QUIET_KILL_MS = 15 * 60_000;
 export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
   return async (stage, a) => {
     // every host-side stage gets the factory skills tree synced into
-    // ~/.pi/agent/skills first — this covers instabox plan (host-side by
-    // design) and all stages of host/compose repos; instabox implement and
-    // review take the machine channel instead (PDF_PI_SKILLS_B64)
+    // ~/.pi/agent/skills first. Only host- and compose-mode repos reach this
+    // path: machine modes run plan, implement and review in the lap's box and
+    // take the machine channel instead (PDF_PI_SKILLS_B64)
     syncHostSkills();
     // container mode: pi runs inside the product's worker environment
     const envBuild = buildStageCmd(cfg, a.cwd, stateDir, a.name);
@@ -81,8 +81,8 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
     };
     // "where am I" brief: prepended to the prompt (zero tool calls to see
     // it) and — where the working tree is local — written to disk beside it.
-    // Machine-mode stages (implement/review in-box) get it prompt-only; the
-    // box clone holds no host-side file.
+    // Machine-mode stages run in the box and get it prompt-only; the box
+    // clone holds no host-side file.
     if (a.runtimeContext) {
       if (cfg.env?.mode !== "instabox" && cfg.env?.mode !== "boxd") {
         try {
@@ -321,11 +321,17 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     return f;
   };
   let lastError = "attempts exhausted";
-  // machine modes (instabox/boxd): one machine per lap, created lazily at the
-  // first implement attempt and kept across this lap's repair rounds; the
-  // finally below destroys it however the lap ends (a reclaimed lap boots a
-  // fresh -g<lapId> machine, so nothing is ever parked for reuse)
+  // machine modes (instabox/boxd): one machine per lap, created lazily by the
+  // first stage that needs it (plan, or implement when a reclaimed lap reuses
+  // its saved plan) and kept across this lap's repair rounds; the finally
+  // below destroys it however the lap ends (a reclaimed lap boots a fresh
+  // -g<lapId> machine, so nothing is ever parked for reuse)
   let machine: LapMachine | BoxdLapMachine | null = null;
+  const machineMode = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
+  const openMachine = (): LapMachine | BoxdLapMachine =>
+    cfg.env.mode === "boxd"
+      ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
+      : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
 
   const recordStage = (
     stage: StageName,
@@ -364,8 +370,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
 
   // "where am I" brief builder — the per-stage runtime context every agent
   // gets (prompt preamble; host/compose modes also write it to disk beside
-  // the work). The instabox branch keys the "where" on the stage: the plan
-  // runs host-side even in machine mode, implement/review run in the box.
+  // the work). Machine modes run every agent stage in the lap's box, plan
+  // included, so the brief no longer keys on the stage.
   const contextFor = (stage: StageName, attempt: number, cwd: string): string =>
     buildRuntimeContext(cfg, {
       repo: cfg.repo,
@@ -380,13 +386,9 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
       mode: cfg.env.mode,
       where:
         cfg.env.mode === "instabox"
-          ? stage === "plan"
-            ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
-            : `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n, lapId)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
+          ? `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n, lapId)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
           : cfg.env.mode === "boxd"
-            ? stage === "plan"
-              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's boxd machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
-              : `your own ephemeral boxd microVM "${machineNameFor(cfg.slug, n, lapId)}" — hardware-isolated, its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.boxd?.repo_dir}; git, gh, bun and the toolchain are preinstalled`
+            ? `your own ephemeral boxd microVM "${machineNameFor(cfg.slug, n, lapId)}" — hardware-isolated, its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.boxd?.repo_dir}; git, gh, bun and the toolchain are preinstalled`
             : cfg.env.mode === "compose"
             ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
             : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
@@ -434,41 +436,42 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const runTag = `${attempt}-${Date.now().toString(36)}`;
     repoReceipt(cfg.slug, stateDir, `lap #${n} attempt ${attempt}/${cfg.attempts}${findings ? " (repair)" : ""}`);
 
-    // ---- PLAN (once per issue; retries on later attempts if it failed)
+    // ---- PLAN (once per issue; retries on later attempts if it failed).
+    // Machine modes plan inside the lap's machine like every other agent
+    // stage, bash included: a planner misled by a page it fetched acts in a
+    // disposable box, not on the VPS next to every key the factory holds.
+    // The machine created here serves implement and review too, and the
+    // driver undoes whatever the planner changed in the clone (PDF_RESTORE).
     phase = "plan";
     if (plan === null) {
       const models = resolveModels(cfg, "plan");
-      const res = await deps.callStage("plan", {
-        models,
-        prompt: buildPlanPrompt(cfg, issue, { previousFailure: findings }),
-        systemPrompt: PLANNER_SYSTEM,
-        cwd: join(stateDir, "repos", cfg.slug, "source"),
-        tools: stageTools(cfg, "plan", ensureHostExtension()),
-        sessionDir: sessDir,
-        name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
-        runtimeContext: buildRuntimeContext(cfg, {
-          repo: cfg.repo,
-          slug: cfg.slug,
-          issue: n,
-          issueTitle: issue.title.slice(0, 120),
-          stage: "plan",
-          attempt,
-          attemptsMax: cfg.attempts,
-          branch: branchName(n),
-          base: cfg.default_branch,
-          mode: cfg.env.mode,
-          where:
-            cfg.env.mode === "instabox"
-              ? `on the factory VPS as plain processes — the plan stage stays host-side even in machine mode; the lap's InstaBox machine (${machineNameFor(cfg.slug, n, lapId)}) is created afterward for implement/review`
-              : cfg.env.mode === "compose"
-                ? `on the factory VPS as plain processes (no container)`
-                : `on the factory VPS as plain processes (no container)`,
-          cwd: join(stateDir, "repos", cfg.slug, "source"),
-          toolchain: "factory user environment on the VPS: node, bun, git, gh all on PATH",
-          webTools: webEnabled,
-          uiLibraries: cfg.ui?.enabled !== false,
-        }),
-      });
+      const planPrompt = buildPlanPrompt(cfg, issue, { previousFailure: findings });
+      let res: PiStageResult;
+      if (machineMode) {
+        machine ??= openMachine();
+        const machRes = (await machine.callStage("plan", {
+          models,
+          prompt: contextFor("plan", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + planPrompt,
+          systemPrompt: PLANNER_SYSTEM,
+          tools: stageTools(cfg, "plan", extensionPresent()),
+          extraArgs: cfg.pi.extra_args,
+          timeoutMs: stageMinutes(cfg, "plan") * 60_000,
+        })) as PiStageResult & { raw?: string };
+        if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `plan-${attempt}.jsonl`), machRes.raw);
+        res = machRes;
+      } else {
+        const src = join(stateDir, "repos", cfg.slug, "source");
+        res = await deps.callStage("plan", {
+          models,
+          prompt: planPrompt,
+          systemPrompt: PLANNER_SYSTEM,
+          cwd: src,
+          tools: stageTools(cfg, "plan", ensureHostExtension()),
+          sessionDir: sessDir,
+          name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
+          runtimeContext: contextFor("plan", attempt, src),
+        });
+      }
       recordStage("plan", attempt, models, res);
       if (res.outcome.kind !== "ok") {
         lastError = `plan stage failed: ${"error" in res.outcome ? res.outcome.error : res.outcome.kind}`;
@@ -512,10 +515,8 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
     let worktree: string | null = null;
     let implRes: PiStageResult;
-    if (cfg.env.mode === "instabox" || cfg.env.mode === "boxd") {
-      machine ??= cfg.env.mode === "boxd"
-        ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
-        : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
+    if (machineMode) {
+      machine ??= openMachine();
       // a platform failure (transport down, machine cap) throws
       // InfraUnavailableError — the lap-level catch defers it, wherever the
       // lap meets it (here, verify's in-box scenario, or review)

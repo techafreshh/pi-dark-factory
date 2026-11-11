@@ -1,5 +1,6 @@
 /**
- * InstaBox machine mode — the remote face of the implement-and-review stages.
+ * InstaBox machine mode — the remote face of the plan, implement and review
+ * stages.
  *
  * A lap machine is one disposable InstaBox microVM per issue, booted from the
  * repo's golden snapshot (or a template until it's baked). Stages run INSIDE
@@ -17,9 +18,10 @@
  * The ssh command string itself is a fixed bootstrap; prompts and keys never
  * appear in it.
  *
- * Machine lifetime: created lazily at the first implement attempt, reused
- * across repair rounds and reclaimed laps (its clone is the worktree), deleted
- * when the lap books out. An infra crash leaves it parked for the janitor.
+ * Machine lifetime: created lazily by the lap's first machine stage (plan, or
+ * implement when a reclaimed lap reuses its saved plan), reused across repair
+ * rounds (its clone is the worktree), deleted when the lap ends. Only a
+ * killed tick process leaves one behind, for the janitor.
  */
 import { killTree, sh } from "./sh";
 import { readGitIdentity } from "./env";
@@ -139,6 +141,10 @@ export const STAGE_DRIVER = [
   `if [ -n "\${PDF_PI_SKILLS_B64:-}" ]; then rm -rf "$AD/skills"; mkdir -p "$AD/skills"; printf %s "$PDF_PI_SKILLS_B64" | base64 -d | tar xzf - -C "$AD/skills"; fi`,
   `cd "$REPO_DIR" || { echo "PDFRC=94" >&2; echo "cd $REPO_DIR failed" >&2; exit 94; }`,
   `mapfile -d '' PI_ARGS < "$D/args.bin"`,
+  // plan and review stages (PDF_RESTORE=1) are read-only by contract but keep
+  // bash: remember where the clone stands, so whatever the agent changes is
+  // undone before the next stage inherits the tree
+  `if [ "\${PDF_RESTORE:-0}" = "1" ]; then BEFORE=$(git rev-parse HEAD 2>/dev/null || true); fi`,
   `"$PI_BIN" "\${PI_ARGS[@]}" < "$D/prompt.md" > "$D/pi.jsonl" 2> "$D/pi.err"`,
   `RC=$?`,
   `MARK="PDFRC=$RC"`,
@@ -162,21 +168,31 @@ export const STAGE_DRIVER = [
   `    fi`,
   `  fi`,
   `fi`,
+  // the undo for read-only stages: edits, new files, commits and a branch
+  // switch all go (ignored files such as node_modules stay, as a warm cache)
+  `if [ "\${PDF_RESTORE:-0}" = "1" ] && [ -n "\${BEFORE:-}" ]; then`,
+  `  git checkout -q -f "$PDF_BRANCH" 2>/dev/null || true`,
+  `  git reset -q --hard "$BEFORE" 2>/dev/null || true`,
+  `  git clean -fdq 2>/dev/null || true`,
+  `fi`,
   `echo "$MARK"`,
   `if [ "$RC" -ne 0 ]; then tail -c 1200 "$D/pi.err" >&2; fi`,
   `cat "$D/pi.jsonl"`,
 ].join("\n");
 
-/** Which host env vars ride into the machine for every stage (keys, GH token). */
+/** Which host env vars ride into the machine for every stage (keys, GH token).
+ *  `restore` marks a read-only stage (plan, review): the driver undoes its
+ *  changes to the clone. */
 export function buildMachineEnvFile(
   cfg: RepoConfig,
-  stage: { gates: boolean; branch: string; base: string },
+  stage: { gates: boolean; branch: string; base: string; restore?: boolean },
   identity: { name: string; email: string } | null = readGitIdentity()
 ): string {
   const lines = [
     `export PI_BIN=${escapeSh(cfg.pi.binary)}`,
     `export REPO_DIR=${escapeSh(repoDirFor(cfg))}`,
     `export PDF_GATES=${stage.gates ? "1" : "0"}`,
+    `export PDF_RESTORE=${stage.restore ? "1" : "0"}`,
     `export PDF_BRANCH=${escapeSh(stage.branch)}`,
     `export PDF_BASE=${escapeSh(stage.base)}`,
   ];
@@ -631,11 +647,14 @@ export class LapMachine {
   }
 
   /**
-   * Run plan-less stages (implement/review) in the machine. Returns the same
-   * shape the host stages produce, plus the raw JSONL for forensics.
+   * Run an agent stage (plan, implement or review) in the machine. Returns
+   * the same shape the host stages produce, plus the raw JSONL for forensics.
+   * Plan and implement bootstrap the clone first (plan is usually the lap's
+   * first stage); only implement runs the gates and pushes; whatever plan or
+   * review change in the clone is undone after them (PDF_RESTORE).
    */
   async callStage(
-    stage: "implement" | "review",
+    stage: "plan" | "implement" | "review",
     o: {
       models: StageModels;
       prompt: string;
@@ -646,9 +665,9 @@ export class LapMachine {
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
     const conn = await this.ssh();
-    if (stage === "implement") await this.bootstrap();
+    if (stage === "plan" || stage === "implement") await this.bootstrap();
     const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
     const res = await callMachineStage(conn, {
       models: o.models,
       gates,

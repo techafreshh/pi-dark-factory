@@ -24,7 +24,7 @@ if [ -n "\${FAKE_SSH_OUT:-}" ]; then cat "$FAKE_SSH_OUT"; exit "\${FAKE_SSH_EXIT
 exec bash -c "$CMD"
 `;
 
-function fakePiScript(mode: "ok" | "provider_fail" | "no_commit" | "dirty"): string {
+function fakePiScript(mode: "ok" | "provider_fail" | "no_commit" | "dirty" | "messy_reader"): string {
   // a pi stand-in: prints the pi --mode json event stream; commits real work
   const lines: string[] = ["#!/usr/bin/env bash"];
   if (mode === "provider_fail") {
@@ -45,6 +45,19 @@ function fakePiScript(mode: "ok" | "provider_fail" | "no_commit" | "dirty"): str
   }
   if (mode === "dirty") {
     lines.push('echo "sneaky" >> uncommitted.txt');
+  }
+  if (mode === "messy_reader") {
+    // a "read-only" planner that touches everything bash lets it touch:
+    // a commit, a tracked edit, untracked files, then a branch switch
+    lines.push(
+      'echo \'{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"## Problem\\nthe plan"}]},"usage":{"input_tokens":10,"output_tokens":5}}\'',
+      'echo "planner edit" >> README.md',
+      "echo junk > planner-junk.txt",
+      `git add -A && git ${GIT_ID} commit -q -m "planner commit"`,
+      'echo "uncommitted planner edit" >> README.md',
+      "mkdir -p newdir && echo x > newdir/f.txt",
+      "git checkout -q -b planner-scratch"
+    );
   }
   lines.push("exit 0");
   return lines.join("\n") + "\n";
@@ -90,11 +103,11 @@ describe("machineBash", () => {
 interface StageWorld {
   origin: string;
   clone: string;
-  envFile: (gates: boolean) => string;
+  envFile: (gates: boolean, restore?: boolean) => string;
   cfg: RepoConfig;
 }
 
-function stageWorld(mode: "ok" | "provider_fail" | "no_commit" | "dirty"): StageWorld {
+function stageWorld(mode: "ok" | "provider_fail" | "no_commit" | "dirty" | "messy_reader"): StageWorld {
   const repoDir = join(worldDir, `clone-${mode}-${Math.random().toString(36).slice(2, 8)}`);
   const origin = join(worldDir, `origin-${mode}-${Math.random().toString(36).slice(2, 8)}.git`);
   execSync(`git init --bare ${origin}`);
@@ -126,7 +139,7 @@ function stageWorld(mode: "ok" | "provider_fail" | "no_commit" | "dirty"): Stage
     origin,
     clone: repoDir,
     cfg,
-    envFile: (gates: boolean) => buildMachineEnvFile(cfg, { gates, branch: "factory/issue-1", base: "main" }),
+    envFile: (gates: boolean, restore = false) => buildMachineEnvFile(cfg, { gates, restore, branch: "factory/issue-1", base: "main" }),
   };
 }
 
@@ -268,6 +281,28 @@ describe("LapMachine (fake control plane)", () => {
       expect(res.outcome.kind).toBe("ok");
       await machine.destroy();
       expect(deletes.some((d) => d.endsWith("/v1/machines/pdf-toy-i1") || d.endsWith("/m_1"))).toBe(true);
+    } finally {
+      delete process.env.INSTABOX_API_KEY;
+    }
+  }, 60000);
+
+  test("a plan stage bootstraps the clone itself (it is the lap's first stage) and pushes nothing", async () => {
+    process.env.INSTABOX_API_KEY = "test";
+    try {
+      const ib = new InstaBox(baseUrl, "test", { pollMs: 1 });
+      const w = stageWorld("messy_reader");
+      rmSync(w.clone, { recursive: true, force: true }); // a fresh box has no clone yet
+      const machine = new LapMachine(ib, w.cfg, 1);
+      const res = await machine.callStage("plan", { models: stageModels(), prompt: "plan it", systemPrompt: "sys", timeoutMs: 60000 });
+      expect(res.outcome.kind).toBe("ok");
+      if (res.outcome.kind === "ok") expect(res.outcome.text).toContain("the plan");
+      // bootstrap cloned and checked out the issue branch; the reset undid the planner
+      expect(execSync(`git -C ${w.clone} rev-parse --abbrev-ref HEAD`).toString().trim()).toBe("factory/issue-1");
+      expect(execSync(`git -C ${w.clone} status --porcelain`).toString()).toBe("");
+      expect(execSync(`git -C ${w.clone} log --format=%s`).toString()).not.toContain("planner commit");
+      // no gates for a plan: nothing reached the origin
+      expect(execSync(`git --git-dir=${w.origin} for-each-ref --format='%(refname:short)'`).toString()).not.toContain("factory/issue-1");
+      await machine.destroy();
     } finally {
       delete process.env.INSTABOX_API_KEY;
     }
@@ -464,5 +499,44 @@ describe("outcomeFromRun (empty-model gate classification)", () => {
         '{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":10,"output":0}}}\n'
     );
     expect(outcome.kind).toBe("provider_error");
+  });
+});
+
+// ── read-only stages: the driver undoes what plan and review touch ──────────
+
+describe("PDF_RESTORE (plan and review keep bash, the clone is reset after them)", () => {
+  test("a commit, a tracked edit, untracked files and a branch switch are all undone", async () => {
+    const w = stageWorld("messy_reader");
+    execSync(`git -C ${w.clone} checkout -q -b factory/issue-1`); // where bootstrap leaves the clone
+    const before = execSync(`git -C ${w.clone} rev-parse HEAD`).toString().trim();
+    const res = await callMachineStage(conn, {
+      models: stageModels(), gates: false, branch: "factory/issue-1", base: "main",
+      envFile: w.envFile(false, true), prompt: "plan it", systemPrompt: "sys", timeoutMs: 60000,
+    });
+    expect(res.outcome.kind).toBe("ok");
+    if (res.outcome.kind === "ok") expect(res.outcome.text).toContain("the plan");
+    expect(execSync(`git -C ${w.clone} rev-parse --abbrev-ref HEAD`).toString().trim()).toBe("factory/issue-1");
+    expect(execSync(`git -C ${w.clone} rev-parse HEAD`).toString().trim()).toBe(before);
+    expect(execSync(`git -C ${w.clone} status --porcelain`).toString()).toBe("");
+    expect(require("node:fs").readFileSync(join(w.clone, "README.md"), "utf8")).toBe("# toy\n");
+    expect(require("node:fs").existsSync(join(w.clone, "planner-junk.txt"))).toBe(false);
+    expect(require("node:fs").existsSync(join(w.clone, "newdir"))).toBe(false);
+  }, 60000);
+
+  test("without the flag (implement) the driver leaves the agent's work alone", async () => {
+    const w = stageWorld("messy_reader");
+    execSync(`git -C ${w.clone} checkout -q -b factory/issue-1`);
+    await callMachineStage(conn, {
+      models: stageModels(), gates: false, branch: "factory/issue-1", base: "main",
+      envFile: w.envFile(false, false), prompt: "plan it", systemPrompt: "sys", timeoutMs: 60000,
+    });
+    expect(execSync(`git -C ${w.clone} rev-parse --abbrev-ref HEAD`).toString().trim()).toBe("planner-scratch");
+    expect(execSync(`git -C ${w.clone} log --format=%s`).toString()).toContain("planner commit");
+  }, 60000);
+
+  test("the env file carries the flag: 1 for read-only stages, 0 otherwise", () => {
+    const cfg = stageWorld("ok").cfg;
+    expect(buildMachineEnvFile(cfg, { gates: false, restore: true, branch: "b", base: "main" }, null)).toContain("export PDF_RESTORE=1\n");
+    expect(buildMachineEnvFile(cfg, { gates: true, branch: "b", base: "main" }, null)).toContain("export PDF_RESTORE=0\n");
   });
 });

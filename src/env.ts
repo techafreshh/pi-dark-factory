@@ -45,15 +45,12 @@ export function buildStageCmd(
   opts: { passEnv?: string[]; extraEnv?: Record<string, string>; publishPorts?: boolean; machine?: string } = {}
 ): StageEnv {
   if (cfg.env.mode === "instabox") {
-    // The only stage that reaches buildStageCmd in instabox mode is plan —
-    // implement/review go through machine.callStage's own ssh bridge and
-    // scenarios through runScenarioInMachine, neither of which lands here.
-    // An earlier CLI-bridge design prefixed stages with `instabox ssh
-    // <machine> --`, deriving the machine name from the stage name — but that
-    // binary was never installed host-side, so every plan spawn died as an
-    // empty "pi exited 127" (spawn ENOENT, message discarded). Plan is
-    // host-side by design, exactly as the runtime-context brief tells the
-    // agent.
+    // No agent stage reaches buildStageCmd in machine mode: plan, implement
+    // and review all run in the lap machine (machine.callStage), scenarios
+    // through runScenarioInMachine. Kept non-containerized as the safe
+    // answer. An earlier CLI-bridge design prefixed stages with `instabox
+    // ssh <machine> --`, but that binary was never installed host-side, so
+    // every plan spawn died as an empty "pi exited 127" (spawn ENOENT).
     return { argvPrefix: [], containerized: false };
   }
   if (cfg.env.mode !== "compose") return { argvPrefix: [], containerized: false };

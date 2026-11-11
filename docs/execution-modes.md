@@ -46,9 +46,11 @@ perfect reproducibility instead of shared caches:
   written back into the repo config.
 - **The machine's clone IS the worktree.** The stage driver runs the same deterministic
   gates the host runs (clean tree, ≥1 real commit vs base) and pushes the branch itself;
-  the foreman fetches the pushed branch and re-judges it from its own git truth. Plan stays
-  host-side (read-only — no machine spend on `NO_ACTION`/failed-plan laps); merge and
-  receipts stay host-side.
+  the foreman fetches the pushed branch and re-judges it from its own git truth. Every
+  agent stage runs in the machine, plan included: the planner keeps bash, and the stage
+  driver resets the clone after plan and review, so nothing they change carries into the
+  next stage. A lap that ends at the plan (`NO_ACTION`, a needs-info question) still
+  boots a machine. Merge and receipts stay host-side.
 - **Scenarios stay black-box**: setup, the foreground server, readiness, probes and teardown
   all run inside the machine over its exec channel, against the machine's own `127.0.0.1`
   (`ssh -L` forwards black-holed readiness polls in October 2026, so nothing is forwarded any
@@ -64,8 +66,8 @@ perfect reproducibility instead of shared caches:
 
 ### `"boxd"` — disposable microVMs over the boxd SDK
 
-[boxd](https://boxd.sh) machines run the same lap shape as instabox (plan host-side;
-implement, review and scenarios in a per-lap box), driven differently:
+[boxd](https://boxd.sh) machines run the same lap shape as instabox (plan, implement,
+review and scenarios all in a per-lap box), driven differently:
 
 - **Lifecycle** rides the official SDK (`@boxd-sh/sdk`): create from a snapshot, wait until
   ready, delete. Config: `env.boxd.repo_dir` (the in-box clone, default `/home/boxd/repo`)

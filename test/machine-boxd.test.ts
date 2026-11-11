@@ -193,6 +193,44 @@ describe("stage protocol over exec env", () => {
   });
 });
 
+describe("BoxdLapMachine.callStage per stage", () => {
+  // the canned exec answer satisfies both the bootstrap (BOOTSTRAP_OK) and a stage (PDFRC + event)
+  const canned = `BOOTSTRAP_OK\nPDFRC=0\n${JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "PI_OK" }] } })}\n`;
+  const stageEnv = (exec: any) => Buffer.from(String(exec.env.PDF_L_ENV).replace(/^PDFENV /, ""), "base64").toString("utf8");
+  const run = async (stage: "plan" | "implement" | "review") => {
+    const { client, calls } = stubClient({ stdout: canned });
+    const m = new BoxdLapMachine(boxdCfg(), 11, () => {}, 3, undefined, client);
+    const r = await m.callStage(stage, { models: { base: { provider: "p", model: "p/m" }, fallback: [] }, prompt: "x", systemPrompt: "sys", timeoutMs: 9000 });
+    expect(r.outcome.kind).toBe("ok");
+    return calls.exec as any[];
+  };
+
+  test("plan bootstraps the clone (the lap's first stage), runs without gates, and is reset after", async () => {
+    const execs = await run("plan");
+    expect(execs.length).toBe(2); // bootstrap, then the stage
+    expect(execs[0].env).toBeUndefined();
+    const env = stageEnv(execs[1]);
+    expect(env).toContain("export PDF_GATES=0\n");
+    expect(env).toContain("export PDF_RESTORE=1\n");
+  });
+
+  test("implement bootstraps and gates, and keeps its work", async () => {
+    const execs = await run("implement");
+    expect(execs.length).toBe(2);
+    const env = stageEnv(execs[1]);
+    expect(env).toContain("export PDF_GATES=1\n");
+    expect(env).toContain("export PDF_RESTORE=0\n");
+  });
+
+  test("review reuses the clone as it stands and is reset after", async () => {
+    const execs = await run("review");
+    expect(execs.length).toBe(1);
+    const env = stageEnv(execs[0]);
+    expect(env).toContain("export PDF_GATES=0\n");
+    expect(env).toContain("export PDF_RESTORE=1\n");
+  });
+});
+
 describe("config + dispatch", () => {
   test("repoDirFor resolves per mode; boxd keeps instabox's path untouched", () => {
     const c: any = boxdCfg();

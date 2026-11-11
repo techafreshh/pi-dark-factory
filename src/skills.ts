@@ -80,10 +80,9 @@ function escapeArg(s: string): string {
 /**
  * Host-side twin of the machine channel: copy pi-skills/ into
  * $HOME/.pi/agent/skills so pi's discovery sees it in every host-side stage.
- * That is not an optimization — instabox laps run PLAN on the host (only
- * implement/review go through the machine driver), and host/compose stages
- * run entirely here (compose bind-mounts ~/.pi, so the sync reaches
- * containers too). Hash-gated like ensureHostExtension: stages re-sync
+ * Only host- and compose-mode repos run stages here (compose bind-mounts
+ * ~/.pi, so the sync reaches containers too); machine modes run every agent
+ * stage in the lap's box and get the tree through PDF_PI_SKILLS_B64. Hash-gated like ensureHostExtension: stages re-sync
  * constantly and an unchanged tree must not churn the install. A vanished
  * or emptied tree also clears the install, so retiring a skill retires it
  * everywhere. Returns true when a payload is installed.

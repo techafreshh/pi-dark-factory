@@ -10,8 +10,9 @@
  *   - host mode: ensureHostExtension() syncs it into ~/.pi/agent/extensions
  *     (pi auto-discovers user extensions there) — compose mode rides the same
  *     install because the stage container bind-mounts ~/.pi at /root/.pi
- *   - instabox mode: machine.ts embeds the file base64 into the stage env
- *     channel; the stage driver materializes it under the box's $HOME
+ *   - machine modes (instabox, boxd): machine.ts embeds the file base64 into
+ *     the stage env channel; the stage driver materializes it under the
+ *     box's $HOME, for plan, implement and review alike
  *
  * stageTools() gates the tool names into the --tools allowlist on BOTH the
  * per-repo `pi.web` config and the extension's presence in the checkout — a
@@ -101,9 +102,9 @@ export function webToggle(cfg: RepoConfig): WebToggle {
 /**
  * The --tools list for one stage: the stage's base list plus the web tool
  * names when the repo enables them and the extension will actually be there.
- * Plan + review are read-only stages and use the read-only base list;
- * implement uses the full list. Web tools are read-only network calls, so
- * they join both.
+ * Plan + review use the plan_tools list (no edit/write, but bash; in machine
+ * mode the stage driver undoes whatever they change in the clone); implement
+ * uses the full list. Web tools are read-only network calls, so they join both.
  */
 export function stageTools(cfg: RepoConfig, stage: StageName, hasExtension: boolean): string[] {
   const base = stage === "implement" ? cfg.pi.tools : cfg.pi.plan_tools;
