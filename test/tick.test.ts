@@ -269,6 +269,43 @@ describe("tickRepo (real git, fake GitHub, fake Pi stages)", () => {
     expect(impl.output_tokens).toBe(890);
   }, 60000);
 
+  test("a stage row is open while the stage runs and closes with the chain's trail", async () => {
+    const w = makeWorld();
+    const inner = makeCallStage(w);
+    const openDuring: Record<string, boolean> = {};
+    const outcome = await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: async (stage, a) => {
+        const row = w.ledger.recentStages(w.cfg.repo, 1)[0];
+        openDuring[stage] = row?.stage === stage && row.ended_at === null;
+        return inner(stage, a);
+      },
+    });
+    expect(outcome).toBe("merged");
+    expect(openDuring).toEqual({ plan: true, implement: true, review: true });
+    const rows = w.ledger.recentStages(w.cfg.repo, 10);
+    expect(rows.every((r) => r.ended_at !== null)).toBe(true);
+    expect(JSON.parse(rows[0].tried!)).toEqual([{ model: "x/y", outcome: "ok" }]);
+  }, 60000);
+
+  test("a stage call that throws still closes its row with exit=error", async () => {
+    const w = makeWorld({ attempts: 1 });
+    const inner = makeCallStage(w);
+    await tickRepo(w.cfg, w.stateDir, {
+      ledger: w.ledger,
+      gh: w.gh,
+      callStage: async (stage, a) => {
+        if (stage === "implement") throw new Error("transport exploded");
+        return inner(stage, a);
+      },
+    }).catch(() => {});
+    const impl = w.ledger.recentStages(w.cfg.repo, 10).find((s) => s.stage === "implement")!;
+    expect(impl.ended_at).not.toBeNull();
+    expect(impl.exit).toBe("error");
+    expect(impl.error).toContain("transport exploded");
+  }, 60000);
+
   test("review re-asks: unparseable verdicts are retried before failing closed as REJECT", async () => {
     const w = makeWorld({ attempts: 1 });
     const outcome = await tickRepo(w.cfg, w.stateDir, {

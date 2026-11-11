@@ -39,6 +39,8 @@ export interface StageRunRow {
   output_tokens: number | null;
   cost: number | null;
   error: string | null;
+  /** JSON [{model, outcome, error?}] — the fallback chain's trail */
+  tried: string | null;
 }
 
 const SCHEMA = `
@@ -99,6 +101,18 @@ export class Ledger {
     try {
       this.db.run("ALTER TABLE stage_runs ADD COLUMN cost REAL");
     } catch {}
+    // the stage's fallback-chain trail as JSON ([{model, outcome, error?}]):
+    // stage_runs.model is only the chain's base, so without this a fallback's
+    // 402 was charged to the base model
+    try {
+      this.db.run("ALTER TABLE stage_runs ADD COLUMN tried TEXT");
+    } catch {}
+    // the dashboard pages laps per repo and joins stages per lap
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_laps_repo ON laps(repo, id);" +
+        "CREATE INDEX IF NOT EXISTS idx_stage_runs_lap ON stage_runs(lap_id);" +
+        "CREATE INDEX IF NOT EXISTS idx_stage_runs_started ON stage_runs(started_at);"
+    );
   }
 
   /** Returns false if the issue was already claimed (row exists). */
@@ -150,9 +164,13 @@ export class Ledger {
   }
 
   /** Close every lap row of this issue that never got an outcome (its process
-   *  died mid-lap). Only reconcile calls it, under the repo's tick lock, when
-   *  no live lap for the repo can exist. Returns how many rows it closed. */
+   *  died mid-lap), and the stage rows it left open. Only reconcile calls it,
+   *  under the repo's tick lock, when no live lap for the repo can exist.
+   *  Returns how many lap rows it closed. */
   endDanglingLaps(repo: string, n: number, outcome: string, detail: string): number {
+    this.db
+      .query("UPDATE stage_runs SET ended_at = ?, exit = 'interrupted', error = ? WHERE repo = ? AND issue_number = ? AND ended_at IS NULL")
+      .run(now(), detail, repo, n);
     return this.db
       .query("UPDATE laps SET ended_at = ?, outcome = ?, detail = ? WHERE repo = ? AND issue_number = ? AND ended_at IS NULL")
       .run(now(), outcome, detail, repo, n).changes;
@@ -175,13 +193,14 @@ export class Ledger {
     id: number,
     exit: string,
     tokens?: { input_tokens: number; output_tokens: number; cost?: number } | null,
-    error?: string | null
+    error?: string | null,
+    tried?: string | null
   ) {
     this.db
       .query(
-        "UPDATE stage_runs SET ended_at = ?, exit = ?, input_tokens = ?, output_tokens = ?, cost = ?, error = ? WHERE id = ?"
+        "UPDATE stage_runs SET ended_at = ?, exit = ?, input_tokens = ?, output_tokens = ?, cost = ?, error = ?, tried = ? WHERE id = ?"
       )
-      .run(now(), exit, tokens?.input_tokens ?? null, tokens?.output_tokens ?? null, tokens?.cost ?? null, error ?? null, id);
+      .run(now(), exit, tokens?.input_tokens ?? null, tokens?.output_tokens ?? null, tokens?.cost ?? null, error ?? null, tried ?? null, id);
   }
 
   recentStages(repo?: string, limit = 20): StageRunRow[] {

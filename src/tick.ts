@@ -326,34 +326,52 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // its saved plan) and kept across this lap's repair rounds; the finally
   // below destroys it however the lap ends (a reclaimed lap boots a fresh
   // -g<lapId> machine, so nothing is ever parked for reuse)
-  let machine: LapMachine | BoxdLapMachine | null = null;
+  // (cast: the stage closures assign it, which control-flow narrowing can't see)
+  let machine = null as LapMachine | BoxdLapMachine | null;
   const machineMode = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
   const openMachine = (): LapMachine | BoxdLapMachine =>
     cfg.env.mode === "boxd"
       ? openBoxdLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir)
       : openLapMachine(cfg, n, (m) => repoReceipt(cfg.slug, stateDir, m), lapId, stateDir);
 
-  const recordStage = (
+  // a stage's ledger row opens BEFORE the stage runs (the dashboard's live
+  // stage and real durations read it) and closes however the stage ends:
+  // its outcome, or exit "error" when the stage call itself throws
+  const runStage = async <R extends PiStageResult>(
     stage: StageName,
     attempt: number,
     models: StageModels,
-    res: PiStageResult
-  ) => {
+    fn: () => Promise<R>
+  ): Promise<R> => {
     const id = deps.ledger.startStage(cfg.repo, n, lapId, stage, attempt, modelStr(models.base));
+    let res: R;
+    try {
+      res = await fn();
+    } catch (e) {
+      deps.ledger.endStage(id, "error", null, (e instanceof Error ? e.message : String(e)).slice(0, 500));
+      throw e;
+    }
     const outcome = res.outcome;
+    const tried = (res.modelsTried ?? []).map((t) => ({
+      model: modelStr(t.spec),
+      outcome: t.outcome,
+      ...(t.error ? { error: t.error.slice(0, 300) } : {}),
+    }));
     deps.ledger.endStage(
       id,
       outcome.kind,
       // usage from ANY outcome shape that carries it — a truncated/dead
       // stage recording tok=null is the diagnosis blind spot (P0-5)
       ("usage" in outcome ? outcome.usage : null) ?? null,
-      outcome.kind === "ok" ? null : "error" in outcome ? outcome.error : outcome.kind
+      outcome.kind === "ok" ? null : "error" in outcome ? outcome.error : outcome.kind,
+      tried.length ? JSON.stringify(tried) : null
     );
     // every model out of credit or its key dead: no attempt can succeed, so
     // stop the lap here instead of spending the attempt ladder and the
     // revive fuses on it (one usable model in the chain = a normal failure)
     const billing = billingHold(res);
     if (billing) throw new BillingHoldError(`${stage} stage, every model failed on billing — ${billing}`);
+    return res;
   };
 
   let outcome: string | null = null;
@@ -446,33 +464,33 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     if (plan === null) {
       const models = resolveModels(cfg, "plan");
       const planPrompt = buildPlanPrompt(cfg, issue, { previousFailure: findings });
-      let res: PiStageResult;
-      if (machineMode) {
-        machine ??= openMachine();
-        const machRes = (await machine.callStage("plan", {
-          models,
-          prompt: contextFor("plan", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + planPrompt,
-          systemPrompt: PLANNER_SYSTEM,
-          tools: stageTools(cfg, "plan", extensionPresent()),
-          extraArgs: cfg.pi.extra_args,
-          timeoutMs: stageMinutes(cfg, "plan") * 60_000,
-        })) as PiStageResult & { raw?: string };
-        if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `plan-${attempt}.jsonl`), machRes.raw);
-        res = machRes;
-      } else {
-        const src = join(stateDir, "repos", cfg.slug, "source");
-        res = await deps.callStage("plan", {
-          models,
-          prompt: planPrompt,
-          systemPrompt: PLANNER_SYSTEM,
-          cwd: src,
-          tools: stageTools(cfg, "plan", ensureHostExtension()),
-          sessionDir: sessDir,
-          name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
-          runtimeContext: contextFor("plan", attempt, src),
-        });
-      }
-      recordStage("plan", attempt, models, res);
+      const res = await runStage("plan", attempt, models, async (): Promise<PiStageResult> => {
+        if (machineMode) {
+          machine ??= openMachine();
+          const machRes = (await machine.callStage("plan", {
+            models,
+            prompt: contextFor("plan", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + planPrompt,
+            systemPrompt: PLANNER_SYSTEM,
+            tools: stageTools(cfg, "plan", extensionPresent()),
+            extraArgs: cfg.pi.extra_args,
+            timeoutMs: stageMinutes(cfg, "plan") * 60_000,
+          })) as PiStageResult & { raw?: string };
+          if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `plan-${attempt}.jsonl`), machRes.raw);
+          return machRes;
+        } else {
+          const src = join(stateDir, "repos", cfg.slug, "source");
+          return deps.callStage("plan", {
+            models,
+            prompt: planPrompt,
+            systemPrompt: PLANNER_SYSTEM,
+            cwd: src,
+            tools: stageTools(cfg, "plan", ensureHostExtension()),
+            sessionDir: sessDir,
+            name: `pdf-${cfg.slug}-${n}-plan-${runTag}`,
+            runtimeContext: contextFor("plan", attempt, src),
+          });
+        }
+      });
       if (res.outcome.kind !== "ok") {
         lastError = `plan stage failed: ${"error" in res.outcome ? res.outcome.error : res.outcome.kind}`;
         deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
@@ -514,37 +532,37 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     const implModels = resolveModels(cfg, "implement");
     const implPrompt = buildImplementPrompt(cfg, issue, plan, { attempt, findings });
     let worktree: string | null = null;
-    let implRes: PiStageResult;
-    if (machineMode) {
-      machine ??= openMachine();
-      // a platform failure (transport down, machine cap) throws
-      // InfraUnavailableError — the lap-level catch defers it, wherever the
-      // lap meets it (here, verify's in-box scenario, or review)
-      const machRes = (await machine.callStage("implement", {
-        models: implModels,
-        prompt:
-          contextFor("implement", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + implPrompt,
-        systemPrompt: IMPLEMENTER_SYSTEM,
-        tools: stageTools(cfg, "implement", extensionPresent()),
-        extraArgs: cfg.pi.extra_args,
-        timeoutMs: stageMinutes(cfg, "implement") * 60_000,
-      })) as PiStageResult & { raw?: string };
-      if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
-      implRes = machRes;
-    } else {
-      worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
-      implRes = await deps.callStage("implement", {
-        models: implModels,
-        prompt: implPrompt,
-        runtimeContext: contextFor("implement", attempt, worktree),
-        systemPrompt: IMPLEMENTER_SYSTEM,
-        cwd: worktree,
-        tools: stageTools(cfg, "implement", ensureHostExtension()),
-        sessionDir: sessDir,
-        name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
-      });
-    }
-    recordStage("implement", attempt, implModels, implRes);
+    const implRes = await runStage("implement", attempt, implModels, async (): Promise<PiStageResult> => {
+      if (machineMode) {
+        machine ??= openMachine();
+        // a platform failure (transport down, machine cap) throws
+        // InfraUnavailableError — the lap-level catch defers it, wherever the
+        // lap meets it (here, verify's in-box scenario, or review)
+        const machRes = (await machine.callStage("implement", {
+          models: implModels,
+          prompt:
+            contextFor("implement", attempt, repoDirFor(cfg)) + "\n\n---\n\n" + implPrompt,
+          systemPrompt: IMPLEMENTER_SYSTEM,
+          tools: stageTools(cfg, "implement", extensionPresent()),
+          extraArgs: cfg.pi.extra_args,
+          timeoutMs: stageMinutes(cfg, "implement") * 60_000,
+        })) as PiStageResult & { raw?: string };
+        if (machRes.raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `implement-${attempt}.jsonl`), machRes.raw);
+        return machRes;
+      } else {
+        worktree = await withSourceLock(cfg.slug, () => addWorktree(stateDir, cfg, n));
+        return deps.callStage("implement", {
+          models: implModels,
+          prompt: implPrompt,
+          runtimeContext: contextFor("implement", attempt, worktree),
+          systemPrompt: IMPLEMENTER_SYSTEM,
+          cwd: worktree,
+          tools: stageTools(cfg, "implement", ensureHostExtension()),
+          sessionDir: sessDir,
+          name: `pdf-${cfg.slug}-${n}-impl-${runTag}`,
+        });
+      }
+    });
     if (implRes.outcome.kind !== "ok") {
       lastError = `implement stage failed: ${"error" in implRes.outcome ? implRes.outcome.error : implRes.outcome.kind}`;
       deps.ledger.setIssue(cfg.repo, n, { last_error: lastError });
@@ -654,8 +672,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           name: `pdf-${cfg.slug}-${n}-rev-${runTag}`,
           runtimeContext: reviewContext,
         });
-    let revRes = await callReview();
-    recordStage("review", attempt, revModels, revRes);
+    let revRes = await runStage("review", attempt, revModels, callReview);
     {
       const raw = (revRes as PiStageResult & { raw?: string }).raw;
       if (raw) writeFileSync(join(issueDir(stateDir, cfg.slug, n), `review-${attempt}.jsonl`), raw);
@@ -668,8 +685,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     ) {
       reask++;
       repoReceipt(cfg.slug, stateDir, `lap #${n} review verdict unparseable — re-ask ${reask}/${REVIEW_REASKS}`);
-      revRes = await callReview();
-      recordStage("review", attempt, revModels, revRes);
+      revRes = await runStage("review", attempt, revModels, callReview);
     }
     if (revRes.outcome.kind !== "ok") {
       lastError = `review stage failed: ${"error" in revRes.outcome ? revRes.outcome.error : revRes.outcome.kind}`;

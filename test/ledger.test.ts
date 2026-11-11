@@ -50,6 +50,26 @@ describe("Ledger (claim ledger — the anti-wedge source of truth)", () => {
     expect(stage.output_tokens).toBe(50);
   });
 
+  test("endDanglingLaps also closes the stage rows a dead lap left open", () => {
+    const l = new Ledger(":memory:");
+    l.claim("r", 4);
+    const lapId = l.startLap("r", 4);
+    l.startStage("r", 4, lapId, "implement", 1, "zai/glm");
+    expect(l.endDanglingLaps("r", 4, "interrupted", "process died")).toBe(1);
+    const stage = l.recentStages("r", 5)[0];
+    expect(stage.ended_at).not.toBeNull();
+    expect(stage.exit).toBe("interrupted");
+    expect(stage.error).toBe("process died");
+  });
+
+  test("endStage records the fallback chain's trail", () => {
+    const l = new Ledger(":memory:");
+    const lapId = l.startLap("r", 5);
+    const id = l.startStage("r", 5, lapId, "plan", 1, "a/b");
+    l.endStage(id, "ok", null, null, JSON.stringify([{ model: "a/b", outcome: "provider_error" }, { model: "c/d", outcome: "ok" }]));
+    expect(JSON.parse(l.recentStages("r", 1)[0].tried!)[1].model).toBe("c/d");
+  });
+
   test("a write waits for another process's write lock instead of failing with 'database is locked'", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pdfledger-"));
     const path = join(dir, "factory.db");
