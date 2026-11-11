@@ -155,3 +155,21 @@ curl -s localhost:8077/health | grep scheduler_minutes   # 15
 From then on a deploy is `git pull` (plus `bun install` when `package.json` changed) and
 `sudo systemctl restart pi-factoryd`, at any time. `PI_FACTORY_CONCURRENCY` caps how many
 repo ticks run at once. To go back: remove the drop-in, `daemon-reload`, re-enable the timer.
+
+### Telemetry dashboard
+
+`bin/dashboard.ts` (unit `pi-factory-dashboard`, bound to `10.0.1.1:8787`, behind Caddy and
+Authelia at `pi-factory.techa.pro/dashboard/`) is a read-only sidecar: it opens `factory.db`
+readonly, reads `laps.log`, the paused markers and the per-issue session files, and imports
+nothing from `src/`. Pages: overview (needs-you, live laps, outcome and cost charts, model
+health, machines), projects, a paged/filtered/sorted lap list, and a lap view with its stages
+and the agent sessions (prompts, thinking, tool calls and results). Routes are hash routes
+(`#/laps/123`) because Caddy strips the `/dashboard` prefix.
+
+The machine panel reads its API keys from `/home/factory/dashboard.env` (mode 600, factory
+owned): `INSTABOX_API_KEY=` and `BOXD_API_KEY=`, never the whole `factoryd.env`. A missing
+key shows that provider as "no key".
+
+The UI is built into the committed `dashboard-ui/dist`: after a UI change run
+`cd dashboard-ui && bun run build` and commit `dist`. A deploy is `git pull` and
+`sudo systemctl restart pi-factory-dashboard`.

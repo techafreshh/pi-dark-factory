@@ -1,12 +1,46 @@
 @import "tailwindcss";
 
+/* the app is dark-only: <html class="dark"> drives beUI's dark: variants */
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
-  --color-background: #0d1117;
-  --color-foreground: #c9d1d9;
+  --color-background: #0b0d10;
+  --color-foreground: #e6e8eb;
+  --color-card: #111418;
+  --color-card-foreground: #e6e8eb;
+  --color-popover: #15191e;
+  --color-popover-foreground: #e6e8eb;
+  --color-primary: #e6e8eb;
+  --color-primary-foreground: #0b0d10;
+  --color-secondary: #1a1f25;
+  --color-secondary-foreground: #e6e8eb;
+  --color-muted: #1a1f25;
   --color-muted-foreground: #8b949e;
-  --color-border: #21262d;
+  --color-accent: #1a1f25;
+  --color-accent-foreground: #e6e8eb;
+  --color-destructive: #f85149;
+  --color-border: #232a31;
+  --color-input: #2b333b;
   --color-ring: #58a6ff;
-  --color-card: #010409;
+
+  --color-ok: #3fb950;
+  --color-warn: #d29922;
+  --color-bad: #f85149;
+  --color-info: #58a6ff;
+  --color-violet: #a371f7;
+  --color-orange: #f0883e;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-body { background: var(--color-background); color: var(--color-foreground); }
+html { color-scheme: dark; }
+html, body, #root { height: 100%; }
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: color-mix(in srgb, var(--color-info) 35%, transparent); }
+.tabular { font-variant-numeric: tabular-nums; }

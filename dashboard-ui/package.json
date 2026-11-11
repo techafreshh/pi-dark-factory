@@ -2,14 +2,20 @@
   "name": "factory-dashboard-ui",
   "private": true,
   "type": "module",
-  "scripts": { "build": "vite build", "dev": "vite" },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
   "dependencies": {
     "@floating-ui/dom": "^1.6.13",
+    "@shikijs/langs": "4.6.0",
+    "@shikijs/themes": "4.6.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",
     "motion": "^12.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "shiki": "^4.6.0",
     "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
