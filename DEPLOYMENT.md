@@ -1,5 +1,10 @@
 # VPS deployment runbook
 
+> **Docker is the other way to install.** To run the factory on a laptop, or on a VPS without
+> hand-built systemd units, use the Compose stack in [`docker/`](docker/README.md)
+> ([guide](docs/docker.md)). This runbook is the systemd path, the tested shape, and the one
+> compose-mode repos need (the Docker image has no Docker daemon inside).
+
 Tested shape: an Ubuntu VPS with systemd and a dedicated `factory` user. Laps run strictly
 one at a time per repo (a tick chains up to 6 of them inside a 12-minute budget), and repos
 run in parallel with each other. Where agent stages run is chosen per repo (`env.mode`, see
@@ -57,7 +62,7 @@ mkdir -p ~/state     # state lives OUTSIDE the checkout so `git pull` never touc
 ```
 
 **Model providers.** Authenticate pi as the `factory` user:
-- **OAuth:** `pi auth login` per provider.
+- **OAuth:** run `pi`, then `/login` and pick the provider, once per provider.
 - **API keys:** put them in `~/.pi/agent/auth.json`.
 - **Custom providers:** add them to `~/.pi/agent/models.json`.
 

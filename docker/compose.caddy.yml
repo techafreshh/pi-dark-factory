@@ -1,0 +1,36 @@
+# Override for a VPS where Caddy already fronts your apps on the external `web_gateway` network
+# (the hosting-guide layout). factoryd publishes nothing on the host and Caddy reaches it by name.
+#
+#   docker compose -f compose.yml -f compose.caddy.yml up -d --build
+#
+# Needs Docker Compose >= 2.24 (`!reset`). Put this block in the Caddyfile, with the real key
+# written by file, never pasted into a chat or a log:
+#
+#   factory.example.com {
+#     @health path /health
+#     handle @health { reverse_proxy factoryd:8077 }
+#     @unauthorized {
+#       not header X-Api-Key <FACTORY_API_KEY>
+#     }
+#     handle @unauthorized { respond 401 }
+#     reverse_proxy factoryd:8077
+#   }
+#
+# The dashboard keeps its loopback port here (reach it with an SSH tunnel). It has no login of
+# its own: to put it on the web, join it to web_gateway below AND put an auth layer
+# (Authelia or basic auth) in front of it in the Caddyfile.
+services:
+  factoryd:
+    ports: !reset []
+    networks:
+      - default
+      - web_gateway
+
+  # dashboard:
+  #   networks:
+  #     - default
+  #     - web_gateway
+
+networks:
+  web_gateway:
+    external: true

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { onboardedSlugs, schedulePass, spawnRepoTick } from "../src/scheduler";
+import { onboardedSlugs, schedulePass, spawnRepoTick, startScheduler } from "../src/scheduler";
 import { runTick } from "../src/tick";
 
 const dirs: string[] = [];
@@ -127,6 +127,66 @@ describe("spawnRepoTick (real child process)", () => {
     }
     expect(readFileSync(log, "utf8")).toContain("tick crashed (ghost)");
   }, 30000);
+});
+
+describe("startScheduler startup pass", () => {
+  const EVERY = 3_600_000; // an hour: the wall-clock timer never fires inside a test
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test("runOnStart runs one pass without waiting for the next quarter hour", async () => {
+    const st = stateWith([]);
+    let calls = 0;
+    const s = startScheduler(st, EVERY, 2, { runOnStart: true, startDelayMs: 0, pass: async () => (calls++, { started: [], running: [] }) });
+    await wait(100);
+    s.stop();
+    expect(calls).toBe(1);
+    expect(readFileSync(join(st, "laps.log"), "utf8")).toContain("scheduler: startup pass");
+  });
+
+  test("the startup pass gets the concurrency cap", async () => {
+    const st = stateWith([]);
+    let seen: number | undefined;
+    const s = startScheduler(st, EVERY, 3, {
+      runOnStart: true,
+      startDelayMs: 0,
+      pass: async (_s, o) => ((seen = o?.concurrency), { started: [], running: [] }),
+    });
+    await wait(100);
+    s.stop();
+    expect(seen).toBe(3);
+  });
+
+  test("without runOnStart nothing runs at start", async () => {
+    const st = stateWith([]);
+    let calls = 0;
+    const s = startScheduler(st, EVERY, 0, { startDelayMs: 0, pass: async () => (calls++, { started: [], running: [] }) });
+    await wait(100);
+    s.stop();
+    expect(calls).toBe(0);
+  });
+
+  test("a throwing pass is receipted as a failure and does not throw", async () => {
+    const st = stateWith([]);
+    const s = startScheduler(st, EVERY, 0, {
+      runOnStart: true,
+      startDelayMs: 0,
+      pass: async () => {
+        throw new Error("boom");
+      },
+    });
+    await wait(100);
+    s.stop();
+    expect(readFileSync(join(st, "laps.log"), "utf8")).toContain("scheduler pass failed: boom");
+  });
+
+  test("stop() before the delay elapses prevents the startup pass", async () => {
+    const st = stateWith([]);
+    let calls = 0;
+    const s = startScheduler(st, EVERY, 0, { runOnStart: true, startDelayMs: 80, pass: async () => (calls++, { started: [], running: [] }) });
+    s.stop();
+    await wait(200);
+    expect(calls).toBe(0);
+  });
 });
 
 describe("startAllocator (the daemon's grant heartbeat)", () => {

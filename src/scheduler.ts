@@ -108,27 +108,50 @@ export async function schedulePass(
 
 /** Run schedulePass on wall-clock multiples of `everyMs` (every 15 minutes =
  *  :00 :15 :30 :45, the timer's OnCalendar), so a daemon restart never
- *  shifts or skips the schedule. */
-export function startScheduler(stateDir: string, everyMs: number, concurrency = 0): { stop(): void } {
+ *  shifts or skips the schedule. With `runOnStart` one extra pass runs
+ *  `startDelayMs` after the call (default 10 s, so the API is up first): a
+ *  laptop that was asleep through the quarter hours catches up at boot. The
+ *  wall-clock arming is unchanged, and a startup pass near a quarter hour is
+ *  harmless because the per-repo pidfiles stop a double run. */
+export function startScheduler(
+  stateDir: string,
+  everyMs: number,
+  concurrency = 0,
+  opts: { runOnStart?: boolean; startDelayMs?: number; pass?: typeof schedulePass } = {}
+): { stop(): void } {
+  const pass = opts.pass ?? schedulePass;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let startTimer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  const run = async () => {
+    try {
+      await pass(stateDir, { concurrency });
+    } catch (e: any) {
+      receipt(stateDir, `scheduler pass failed: ${String(e?.message ?? e).slice(0, 300)}`);
+    }
+  };
   const arm = () => {
     if (stopped) return;
     const wait = everyMs - (Date.now() % everyMs);
     timer = setTimeout(async () => {
-      try {
-        await schedulePass(stateDir, { concurrency });
-      } catch (e: any) {
-        receipt(stateDir, `scheduler pass failed: ${String(e?.message ?? e).slice(0, 300)}`);
-      }
+      await run();
       arm();
     }, wait);
   };
   arm();
+  if (opts.runOnStart) {
+    startTimer = setTimeout(async () => {
+      startTimer = null;
+      if (stopped) return;
+      receipt(stateDir, "scheduler: startup pass");
+      await run();
+    }, opts.startDelayMs ?? 10_000);
+  }
   return {
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
+      if (startTimer) clearTimeout(startTimer);
     },
   };
 }
