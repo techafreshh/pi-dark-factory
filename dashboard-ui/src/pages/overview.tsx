@@ -1,7 +1,7 @@
 import { AlertTriangle, CircleDollarSign, Clock, DatabaseBackup, Gauge, Hourglass, PauseCircle } from "lucide-react";
 import { BarChart } from "@/components/charts/bar-chart";
 import { PageHeader } from "@/components/shell";
-import { Badge, Card, CardHeader, Empty, ErrorNote, EXIT_TONE, Kpi, Link, STATUS, Table, Td, Th, Tr } from "@/components/ui";
+import { Badge, Card, CardHeader, Empty, ErrorNote, EXIT_TONE, Kpi, Link, Table, Td, Th, Tr } from "@/components/ui";
 import { useApi, type NeedsYou, type Scheduling, type Summary } from "@/lib/api";
 import { href } from "@/lib/router";
 import { ago, dur, num, pct, since, usd } from "@/lib/format";
@@ -48,16 +48,12 @@ function NeedsYouCard({ items }: { items: NeedsYou[] }) {
   );
 }
 
-const OUTCOME_SERIES = ["merged", "blocked", "error", "billing_hold", "infra_deferred", "needs_context", "no_action", "interrupted", "unended", "running"];
-
 export function Overview() {
   const { data: d, error } = useApi<Summary>("api/summary", 15_000);
   const { data: sch } = useApi<Scheduling>("api/scheduling", 15_000);
   if (error && !d) return <ErrorNote>Dashboard failed to load: {error}</ErrorNote>;
   if (!d) return <div className="text-sm text-muted-foreground">loading…</div>;
   const k = d.kpis;
-  const days = d.outcomes_by_day;
-  const present = OUTCOME_SERIES.filter((s) => days.some((r) => (r[s] ?? 0) > 0));
   const sched = d.scheduler;
   const allMachines = d.machines.flatMap((p) => p.machines);
 
@@ -129,14 +125,17 @@ export function Overview() {
 
       <div className="mb-5 grid gap-5 xl:grid-cols-2">
         <Card>
-          <CardHeader title="Lap outcomes per day" description="Last 30 days, by the day the lap started." />
+          <CardHeader title="Tokens used per day" description="Last 30 days of input and output tokens, as recorded per stage." />
           <div className="p-4">
             <BarChart
-              label="Lap outcomes per day"
+              label="Tokens used per day"
               layout="stacked"
-              categories={days.map((r) => r.day.slice(5))}
-              series={present.map((s) => ({ id: s, name: STATUS[s]?.label ?? s, color: STATUS[s]?.color ?? "#888", values: days.map((r) => r[s] ?? 0) }))}
-              formatValue={(v) => String(v)}
+              categories={d.cost_by_day.map((r) => r.day.slice(5))}
+              series={[
+                { id: "input", name: "Input", color: "#58a6ff", values: d.cost_by_day.map((r) => r.i) },
+                { id: "output", name: "Output", color: "#a371f7", values: d.cost_by_day.map((r) => r.o) },
+              ]}
+              formatValue={(v) => num(v)}
             />
           </div>
         </Card>
