@@ -1,0 +1,2 @@
+# the entrypoint runs in a Linux container: a CRLF checkout on Windows breaks its shebang
+docker/*.sh text eol=lf

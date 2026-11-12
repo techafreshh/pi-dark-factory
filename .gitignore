@@ -11,3 +11,6 @@ skills-lock.json
 # dashboard-ui/dist/ is committed ON PURPOSE: bin/dashboard.ts serves it straight
 # from the checkout and deploys have no build step. After changing
 # dashboard-ui/src, rebuild (cd dashboard-ui && bun run build) and commit dist too.
+
+# the Docker stack's secrets file (docker/.env.example is the committed template)
+docker/.env

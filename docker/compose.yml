@@ -1,0 +1,71 @@
+# pi-dark-factory as a Docker Compose stack: factoryd (API + scheduler) and the dashboard.
+# Run from this directory:  cp .env.example .env  (fill it in)  &&  docker compose up -d --build
+# Guide: ../docs/docker.md
+name: pi-dark-factory
+
+services:
+  factoryd:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: pi-dark-factory:local
+    init: true
+    restart: unless-stopped
+    # tokens and model keys; the file stays out of the image (.dockerignore)
+    env_file: .env
+    environment:
+      # compose stops here with this message instead of starting a daemon that refuses to run
+      FACTORY_API_KEY: ${FACTORY_API_KEY:?set FACTORY_API_KEY in docker/.env (openssl rand -hex 32)}
+      PDF_SCHEDULER_MINUTES: ${PDF_SCHEDULER_MINUTES:-15}
+      # one tick shortly after start, so a laptop that slept through the quarter hours catches up
+      PDF_TICK_ON_START: ${PDF_TICK_ON_START:-1}
+      PI_FACTORY_CONCURRENCY: ${PI_FACTORY_CONCURRENCY:-1}
+    ports:
+      # loopback only: the API key is the sole protection, so nothing here is reachable from the LAN
+      - "127.0.0.1:${FACTORYD_HOST_PORT:-8077}:8077"
+      # Scenario ports (to open a product the factory is building in your browser) are per repo:
+      # see scenario.ports in the repo's config. Publish them on loopback the same way, e.g.
+      #   - "127.0.0.1:18080:18080"
+      #   - "127.0.0.1:18081:18081"
+    volumes:
+      - factory-state:/home/factory/state
+      - factory-pi:/home/factory/.pi
+    # a stop ends running laps (no systemd KillMode=process here); the next tick reconciles them
+    stop_grace_period: 30s
+    # resource limits, set FACTORY_CPUS / FACTORY_MEMORY in .env and uncomment:
+    # cpus: ${FACTORY_CPUS}
+    # mem_limit: ${FACTORY_MEMORY}
+
+  dashboard:
+    image: pi-dark-factory:local
+    init: true
+    restart: unless-stopped
+    # skip the factoryd entrypoint (git identity, gh login): the dashboard is read-only and
+    # gets only the two machine-panel keys below, never the GitHub token or model keys
+    entrypoint: ["/usr/bin/tini", "-s", "--"]
+    command: ["bun", "bin/dashboard.ts"]
+    environment:
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: "8787"
+      DASHBOARD_STATE_DIR: /home/factory/state
+      DASHBOARD_FACTORYD_HEALTH: http://factoryd:8077/health
+      INSTABOX_API_KEY: ${INSTABOX_API_KEY:-}
+      BOXD_API_KEY: ${BOXD_API_KEY:-}
+    ports:
+      # The dashboard has no login. The loopback bind is its only protection.
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-8787}:8787"
+    depends_on:
+      - factoryd
+    volumes:
+      # read-write on purpose: SQLite WAL readers need to open the -shm file
+      - factory-state:/home/factory/state
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  factory-state:
+  factory-pi:

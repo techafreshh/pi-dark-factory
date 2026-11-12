@@ -77,10 +77,15 @@ pi        # any coding agent session in the checkout works
 ```
 
 then tell the agent: **"Run the dark-factory-setup skill — set the factory up on this server."**
-The skill ships in this repo (`.agents/skills/dark-factory-setup/`) and walks the whole install —
+The skill asks first whether to install with **Docker** or on bare-metal **systemd**, and ships in this repo (`.agents/skills/dark-factory-setup/`). The systemd path walks the whole install —
 factory user, runtimes, auth, pi provisioning with every model string smoke-tested, the
 daemon with its scheduler, Caddy, and optionally the dashboard and backups — idempotently, with secrets going into 600-mode files and never into
 the transcript. The manual alternative is [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
+**Running it on your own computer? Use Docker.** No VPS, systemd or Caddy: `docker compose up -d --build`
+in [`docker/`](docker/README.md) runs the daemon, its scheduler and the dashboard on loopback.
+See [docs/docker.md](docs/docker.md). The VPS path below remains the tested shape and is the one
+that supports compose-mode repos.
 
 Then onboard a project (from any machine):
 
@@ -127,6 +132,7 @@ cli/                 the @techafresh/dark-factory npm client
 bin/dashboard.ts     read-only telemetry dashboard server (UI in dashboard-ui/)
 bin/backup.ts        hourly ledger + state backups to S3-compatible storage
 bin/factory-remote   the Python client (deprecated)
+docker/              Compose stack: the factory + dashboard on a laptop (or a VPS behind Caddy)
 templates/           repo config + scenario templates
 test/                bun test — parsers, ledger, probes, harnesses, full machine-mode laps
 docs/                deep dives (below)
@@ -139,6 +145,7 @@ docs/                deep dives (below)
 | [Design decisions](docs/design-decisions.md) | every failure class of the previous engine, answered structurally |
 | [Lap lifecycle](docs/lap-lifecycle.md) | the six stages of one lap, in detail |
 | [Execution modes](docs/execution-modes.md) | host · compose · instabox · boxd (disposable microVMs) |
+| [Docker install](docs/docker.md) | the factory on your own computer: Compose stack, auth, limits, updating |
 | [Operations](docs/operations.md) | guided install, remote clients, commands, state layout, models, safe deploys |
 | [Scenarios](docs/scenarios.md) | the black-box probe contract and its grammar |
 | [Web & skills](docs/web-and-skills.md) | TinyFish grounding and the factory skill channel |

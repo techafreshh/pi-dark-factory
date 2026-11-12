@@ -336,8 +336,14 @@ if (import.meta.main) {
   const every = Number(process.env.PDF_SCHEDULER_MINUTES ?? 0);
   if (Number.isFinite(every) && every > 0) {
     const cap = Number(process.env.PI_FACTORY_CONCURRENCY ?? 0);
-    startScheduler(stateDir, every * 60_000, Number.isFinite(cap) ? cap : 0);
-    console.log(`scheduler on: a tick process per idle repo every ${every} min${cap > 0 ? `, at most ${cap} at once` : ""}`);
+    // PDF_TICK_ON_START=1 adds a pass shortly after boot (a laptop that slept
+    // through the quarter hours); off by default so a VPS daemon restart does
+    // not start extra laps
+    const runOnStart = process.env.PDF_TICK_ON_START === "1";
+    startScheduler(stateDir, every * 60_000, Number.isFinite(cap) ? cap : 0, { runOnStart });
+    console.log(
+      `scheduler on: a tick process per idle repo every ${every} min${cap > 0 ? `, at most ${cap} at once` : ""}${runOnStart ? ", plus a startup pass" : ""}`
+    );
     // the slot allocator's own heartbeat: sweep dead lease holders and grant
     // waiting requests every 15 s (waiting laps also decide on their polls,
     // so a daemon restart never stalls one)

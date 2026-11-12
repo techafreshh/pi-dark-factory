@@ -144,7 +144,10 @@ The daemon schedules ticks: on the quarter hour it starts one tick process per i
 spaced `PDF_SCHEDULER_GAP_MS` apart (default 1 s), then runs the machine janitor once. A
 repo whose previous tick still runs is skipped, so a long lap delays only its own repo.
 `PI_FACTORY_CONCURRENCY` caps how many repo ticks run at once. The scheduler is off unless
-`PDF_SCHEDULER_MINUTES` is set; this deployment sets it in a drop-in:
+`PDF_SCHEDULER_MINUTES` is set. `PDF_TICK_ON_START=1` adds one pass about 10 s after the
+daemon starts, for a laptop that slept through quarter hours; it is off by default so a
+daemon restart on the VPS (a `git pull`) does not start extra laps, and the
+[Docker stack](docker.md) turns it on. This deployment sets the scheduler in a drop-in:
 
 ```sh
 sudo mkdir -p /etc/systemd/system/pi-factoryd.service.d

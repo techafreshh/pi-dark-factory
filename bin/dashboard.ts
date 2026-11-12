@@ -225,9 +225,13 @@ const MACHINE_RE = /^pdf-(.+)-i(\d+)(?:-g(\d+))?$/;
 interface MachineRow { provider: "instabox" | "boxd"; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
 interface MachinePool { provider: "instabox" | "boxd"; configured: boolean; error: string | null; machines: MachineRow[] }
 
-function keyFromFile(name: string): string | null {
+/** A machine-panel key: the process environment first (the Docker stack passes
+ *  it through), then the key file the VPS install writes. */
+export function secret(name: string, keyFile: string = KEY_FILE): string | null {
+  const fromEnv = process.env[name]?.trim();
+  if (fromEnv) return fromEnv;
   try {
-    const env = readFileSync(KEY_FILE, "utf8");
+    const env = readFileSync(keyFile, "utf8");
     return new RegExp(`^${name}=(.*)$`, "m").exec(env)?.[1]?.trim().replace(/^["']|["']$/g, "") || null;
   } catch {
     return null;
@@ -248,7 +252,7 @@ const toRow = (provider: MachineRow["provider"], name: string, state: string, cr
 async function instaboxPool(): Promise<MachinePool> {
   // dedicated key file (mode 600, factory-owned) — the dashboard gets only the
   // machine-list keys, never the whole factoryd.env; keys stay server-side
-  const key = keyFromFile("INSTABOX_API_KEY");
+  const key = secret("INSTABOX_API_KEY");
   if (!key) return { provider: "instabox", configured: false, error: null, machines: [] };
   try {
     const res = await fetch(MACHINES_URL, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(5000) });
@@ -267,7 +271,7 @@ async function instaboxPool(): Promise<MachinePool> {
 }
 
 async function boxdPool(): Promise<MachinePool> {
-  const key = keyFromFile("BOXD_API_KEY");
+  const key = secret("BOXD_API_KEY");
   if (!key) return { provider: "boxd", configured: false, error: null, machines: [] };
   let client: any = null;
   try {

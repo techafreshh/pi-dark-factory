@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dark-factory — drive a pi-dark-factory over HTTPS from any OS with
+ * dark-factory — drive a pi-dark-factory over HTTP(S) from any OS with
  * Node >= 18. Zero dependencies; the Windows/macOS/Linux twin of the VPS's
  * Python `factory-remote` (same verbs, same REST surface, same output
  * shapes), so the docs and muscle memory stay identical.
@@ -252,7 +252,23 @@ async function cmdSetup(a, ctx) {
     /* Windows: NTFS perms are user-scope by default in the profile dir */
   }
   ctx.out(`stored config at ${file}\ntry it: dark-factory doctor`);
+  if (isCleartextRemote(url)) {
+    ctx.err(`warning: ${url} is plain http:// to a non-local host, so the API key travels in cleartext. Use https:// unless this is a trusted network.`);
+  }
   return 0;
+}
+
+/** http:// to anything but loopback. An unparsable URL gets no warning. */
+function isCleartextRemote(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:") return false;
+  const h = u.hostname;
+  return !(h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1" || h.endsWith(".localhost"));
 }
 
 async function cmdWhere(a, ctx) {
@@ -648,7 +664,8 @@ const HELP = {
 Store the connection in ~/.dark-factory/config.json (chmod 600 where the OS
 allows). Flags --url/--key override env/file per call; env vars
 DARK_FACTORY_URL / DARK_FACTORY_API_KEY rank between flags and the file.
-Example: dark-factory setup https://pi-factory.techa.pro <edge-key>`,
+Examples: dark-factory setup https://pi-factory.techa.pro <edge-key>
+          dark-factory setup http://localhost:8077 <api-key>   (a local Docker factory)`,
   where: `where
 Show the active connection: url, masked key, which layer it came from
 (flags > env > file), and the config file path.`,
@@ -709,7 +726,7 @@ the lap is actually dead.`,
 Prune caches and kill stale pi workers on the VPS.`,
 };
 
-const USAGE = `dark-factory — drive a pi-dark-factory over HTTPS (Node >= 18, zero deps)
+const USAGE = `dark-factory — drive a pi-dark-factory over HTTP(S) (Node >= 18, zero deps)
 
 setup <url> <key>                store connection in ~/.dark-factory/config.json
 where                            show active connection config

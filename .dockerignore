@@ -1,0 +1,8 @@
+.git
+**/node_modules
+state
+.agents
+.zcode
+**/.env
+docker/.env
+*.log

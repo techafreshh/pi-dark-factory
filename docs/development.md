@@ -27,6 +27,16 @@ object (swallowed by a catch), the skills tarball passed `timeoutMs` to `execFil
 option is `timeout`, so it never timed out), and `scenario --test` crashed with a bare
 TypeError on a repo with no scenario of that kind.
 
+### The Docker files
+
+`test/docker.test.ts` pins the invariants of `docker/` that would fail silently: the code path
+keeps `pi-dark-factory` in it (`src/lock.ts` matches the cwd), every published port is bound to
+`127.0.0.1`, `.env` stays out of the image and out of git, `.env.example` holds no secret, and
+the entrypoint never traces. It reads text only. To smoke the stack for real, copy
+`docker/.env.example` to `docker/.env`, set `FACTORY_API_KEY` and a throwaway `GH_TOKEN`
+(and `FACTORYD_HOST_PORT` / `DASHBOARD_HOST_PORT` if 8077 or 8787 is taken), then
+`docker compose up -d --build`, check `/health` and `laps.log`, and `docker compose down -v`.
+
 ### Boundary tests use recorded real shapes, never invented ones
 
 Every stub/fake of an external system (gh, the InstaBox API, pi output, ssh gateways) must be

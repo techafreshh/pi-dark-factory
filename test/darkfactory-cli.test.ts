@@ -74,6 +74,24 @@ describe("run (verbs over a mocked API)", () => {
     expect(calls[0].init.headers["X-Api-Key"]).toBe("envkey");
   });
 
+  test("setup warns about a cleartext key only for a non-local http:// URL, and always stores the config", async () => {
+    const cases: [string, boolean][] = [
+      ["http://localhost:8077", false],
+      ["http://127.0.0.1:8077", false],
+      ["http://[::1]:8077", false],
+      ["http://factory.localhost:8077", false],
+      ["http://factory.example", true],
+      ["https://factory.example", false],
+    ];
+    for (const [url, warns] of cases) {
+      const home = tmp();
+      const err: string[] = [];
+      expect(await run(["setup", url, "k-123"], { home, out: () => {}, err: (s) => err.push(String(s)) })).toBe(0);
+      expect(JSON.parse(readFileSync(join(home, ".dark-factory", "config.json"), "utf8")).url).toBe(url);
+      expect(err.join("").includes("cleartext")).toBe(warns);
+    }
+  });
+
   test("setup writes the config file, where reads it back masked", async () => {
     const home = tmp();
     const out: string[] = [];

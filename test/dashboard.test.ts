@@ -7,7 +7,7 @@ import { Ledger } from "../src/ledger";
 // the dashboard module reads STATE_DIR at import — point it at a tmp dir
 const dir = mkdtempSync(join(tmpdir(), "pdfdash-"));
 process.env.DASHBOARD_STATE_DIR = dir;
-const { computeSummary, listLaps, listProjects, lapDetail, parseSession, readSession, matchArtifacts } = await import("../bin/dashboard");
+const { secret, computeSummary, listLaps, listProjects, lapDetail, parseSession, readSession, matchArtifacts } = await import("../bin/dashboard");
 
 const R1 = "techafreshh/alpha";
 const R2 = "techafreshh/beta";
@@ -268,5 +268,35 @@ describe("computeScheduling (slot pools, queue, lanes, merge queues)", async () 
         const at = new Date(now - m * 60_000).toISOString();
         expect(dashEff(base, at, now, 30)).toBe(alloc.effectivePriority(base, at, now, 30));
       }
+  });
+});
+
+describe("secret (machine-panel keys: environment first, then the key file)", () => {
+  const NAME = "PDF_TEST_PANEL_KEY";
+  const file = join(dir, "panel.env");
+  const withEnv = (v: string | undefined, fn: () => void) => {
+    const saved = process.env[NAME];
+    if (v === undefined) delete process.env[NAME];
+    else process.env[NAME] = v;
+    try {
+      fn();
+    } finally {
+      if (saved === undefined) delete process.env[NAME];
+      else process.env[NAME] = saved;
+    }
+  };
+  writeFileSync(file, `OTHER=x\n${NAME}="from-file"\n`);
+
+  test("the environment variable wins over the file", () => {
+    withEnv("from-env", () => expect(secret(NAME, file)).toBe("from-env"));
+  });
+  test("the file is used when the variable is unset", () => {
+    withEnv(undefined, () => expect(secret(NAME, file)).toBe("from-file"));
+  });
+  test("an empty variable falls back to the file", () => {
+    withEnv("", () => expect(secret(NAME, file)).toBe("from-file"));
+  });
+  test("neither the variable nor a readable file gives null", () => {
+    withEnv(undefined, () => expect(secret(NAME, join(dir, "missing.env"))).toBeNull());
   });
 });

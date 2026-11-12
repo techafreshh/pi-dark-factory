@@ -47,6 +47,13 @@ Config lands in `~/.dark-factory/config.json`. Per-shell overrides and precedenc
 2. Environment — `DARK_FACTORY_URL` / `DARK_FACTORY_API_KEY`
 3. The stored config file (`dark-factory where` shows what's in play, key always masked)
 
+### Local Docker factory
+
+A factory running in Docker on your own computer listens on loopback, so point the client at it with
+plain HTTP: `dark-factory setup http://localhost:8077 <api-key>`. `setup` warns when an `http://` URL
+points anywhere other than localhost, because the key would travel in cleartext. The Docker install
+is described in the factory repo's [`docs/docker.md`](https://github.com/techafreshh/pi-dark-factory/blob/main/docs/docker.md).
+
 > [!TIP]
 > Provision one key per client (e.g. a dedicated key per laptop). They're independently revocable at the factory edge without disturbing other clients.
 
@@ -88,4 +95,4 @@ dark-factory --url <factory-url> --key <api-key> tick my-app
 
 ## How it talks
 
-Plain HTTPS: `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one.
+Plain HTTP(S): `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one.
