@@ -164,7 +164,9 @@ grep -q '^FACTORY_API_KEY=.' .env || VALUE=$(openssl rand -hex 32) setenvf FACTO
 
 Then write the rest, each the same way (`VALUE="$TOKEN" setenvf GH_TOKEN`):
 - `GH_TOKEN`: the token the user supplied. A fine-grained token limited to the
-  repos the factory will build is the safer choice; say so in one line.
+  repos the factory will build is the safer choice; say so in one line. A
+  classic token needs the `repo` scope, and `read:org` as well lets
+  `gh auth login` accept it (D4 explains the note it prints without it).
 - the model keys they chose (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
   `ZAI_API_KEY`, `DEEPSEEK_API_KEY`), skipped for providers they will log in to
   with OAuth in D3;
@@ -203,8 +205,10 @@ docker compose logs factoryd | head     # the entrypoint's lines
 ```
 
 Read the entrypoint's lines. `gh logged in, git credentials set` is the
-expected one. `WARNING gh rejected GH_TOKEN` is red: fix the token in `.env`
-and `docker compose up -d`. The `optional keys off:` line should name only
+expected one. `gh login skipped (the token lacks a scope it checks …)` is
+fine: a classic token without `read:org` still works, so tell the user in one
+line and go on. `WARNING GitHub did not accept GH_TOKEN` is red: fix the token
+in `.env` (or the network) and `docker compose up -d`. The `optional keys off:` line should name only
 what the user chose not to set. With no repo onboarded the scheduler has
 nothing to run, so this is safe before D5.
 
@@ -306,8 +310,8 @@ code), or put the token in `factoryd.env` in Phase 5. Verify with
 `sudo -u factory -H gh api user -q .login`.
 
 **4b. Provider auth.** For each provider in the lineup, run
-`sudo -u factory -H bash -lc 'pi auth login'` (an OAuth device flow; relay
-the URL and code), or add keys to `~/.pi/agent/auth.json`.
+`sudo -u factory -H bash -lc 'pi'`, type `/login`, pick the provider (pi has
+no `auth` subcommand; relay the URL and code), finish, then `/quit`, or add keys to `~/.pi/agent/auth.json`.
 `models.json` `apiKey` fields can also interpolate `"$ENV_VAR"`.
 
 **4c. Custom providers.** Non-built-in providers go in the factory user's

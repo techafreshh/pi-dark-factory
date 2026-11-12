@@ -20,7 +20,7 @@ if [ -n "${GH_TOKEN:-}" ]; then export GH_TOKEN GITHUB_TOKEN; fi
 name="${GIT_USER_NAME:-}"
 email="${GIT_USER_EMAIL:-}"
 if { [ -z "$name" ] || [ -z "$email" ]; } && [ -n "${GH_TOKEN:-}" ]; then
-  who="$(gh api user --jq '.login + " " + (.id | tostring)' 2>/dev/null || true)"
+  who="$(timeout 15 gh api user --jq '.login + " " + (.id | tostring)' 2>/dev/null || true)"
   if [ -n "$who" ]; then
     login="${who% *}"
     id="${who#* }"
@@ -36,14 +36,19 @@ fi
 git config --global user.name "$name"
 git config --global user.email "$email"
 
-# 3. gh login and git credentials, regenerated on every start, so rotating the token needs a
-#    restart and nothing else. `gh auth login` refuses while the token variables are set.
+# 3. Git credentials and gh login, regenerated on every start, so rotating the token needs a
+#    restart and nothing else. The credential helper reads the token from the environment,
+#    so it is configured whenever a token is set. `gh auth login --with-token` is extra: it
+#    also checks scopes online (classic tokens need repo and read:org) and refuses while the
+#    token variables are set, so a token it rejects can still be a working one.
 if [ -n "${GH_TOKEN:-}" ]; then
+  gh auth setup-git --hostname github.com
   if printf '%s' "$GH_TOKEN" | env -u GH_TOKEN -u GITHUB_TOKEN gh auth login --with-token >/dev/null 2>&1; then
-    gh auth setup-git --hostname github.com
     echo "entrypoint: gh logged in, git credentials set"
+  elif timeout 15 gh api user --jq .login >/dev/null 2>&1; then
+    echo "entrypoint: gh login skipped (the token lacks a scope it checks, probably read:org); git credentials set, and the token in the environment works"
   else
-    echo "entrypoint: WARNING gh rejected GH_TOKEN (expired, revoked or mistyped); pushes and issue reads will fail" >&2
+    echo "entrypoint: WARNING GitHub did not accept GH_TOKEN, or could not be reached within 15 s; pushes and issue reads will fail until the token or the network is fixed" >&2
   fi
 else
   echo "entrypoint: WARNING no GH_TOKEN or GITHUB_TOKEN set; a mounted gh login is the only way GitHub calls work" >&2

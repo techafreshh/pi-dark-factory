@@ -62,7 +62,7 @@ mkdir -p ~/state     # state lives OUTSIDE the checkout so `git pull` never touc
 ```
 
 **Model providers.** Authenticate pi as the `factory` user:
-- **OAuth:** `pi auth login` per provider.
+- **OAuth:** run `pi`, then `/login` and pick the provider, once per provider.
 - **API keys:** put them in `~/.pi/agent/auth.json`.
 - **Custom providers:** add them to `~/.pi/agent/models.json`.
 

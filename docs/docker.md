@@ -10,7 +10,7 @@ Both ports are published on `127.0.0.1` only. State lives in two named volumes, 
 ## Requirements
 
 - Docker with Compose. The Caddy override ([below](#running-on-a-vps-behind-caddy)) needs Compose 2.24 or newer.
-- A GitHub token that can read issues, push branches and open and merge PRs on your repos. A fine-grained token limited to those repos is the safer choice.
+- A GitHub token that can read issues, push branches and open and merge PRs on your repos. A fine-grained token limited to those repos is the safer choice. A classic token needs the `repo` scope; adding `read:org` also lets `gh auth login` accept it, but the stack works without it (see the troubleshooting table).
 - One model provider key, or a pi OAuth login.
 - Optional: a TinyFish key (web grounding), an InstaBox or boxd key (cloud lanes).
 
@@ -63,15 +63,17 @@ docker compose exec -T factoryd pi --mode json --no-tools --provider <provider> 
 
 On a host with Node 18 or newer, use `npx @techafresh/dark-factory` or install it globally (`npm i -g @techafresh/dark-factory`). It talks plain HTTP to loopback; `setup` warns only when an `http://` URL points at a non-local host.
 
-Without Node on the host, run the copy inside the container. A shell function keeps it short:
+Without Node on the host, run the copy inside the container. In bash or zsh a shell function keeps it short (`-T` keeps the output pipeable, for example into `jq`):
 
 ```sh
 dark-factory() {
-  docker compose -f /path/to/pi-dark-factory/docker/compose.yml exec factoryd \
+  docker compose -f /path/to/pi-dark-factory/docker/compose.yml exec -T factoryd \
     sh -c 'DARK_FACTORY_URL=http://127.0.0.1:8077 DARK_FACTORY_API_KEY=$FACTORY_API_KEY dark-factory "$@"' sh "$@"
 }
 dark-factory status
 ```
+
+The function is bash-only. On Windows PowerShell, install Node and use `npx @techafresh/dark-factory` instead.
 
 ## Execution modes
 
@@ -138,7 +140,7 @@ The header of the override file has the Caddy block (`reverse_proxy factoryd:807
 
 - **The dashboard has no login.** The loopback bind is its only protection. Do not publish it on `0.0.0.0`. To put it on the web, join it to `web_gateway` and add an auth layer in the Caddyfile.
 - **Anything in `docker/.env` is readable by anyone who can run `docker` on the machine.** `.env` stays out of the image (`.dockerignore`) and out of git.
-- Host-mode agents run in the same container as the daemon. They get an environment allowlist (`src/agentenv.ts`: runtime basics, `TINYFISH_API_KEY` and the repo's `pass_env`), not the factory's own `FACTORY_API_KEY`. A cloud lane isolates agents more strongly than `host` does.
+- Host-mode agents run in the same container as the daemon. They get an environment allowlist (`src/agentenv.ts`: runtime basics, `TINYFISH_API_KEY` and the repo's `pass_env`), not the factory's own `FACTORY_API_KEY`. The allowlist is defense in depth only: agents run as the same user in the same container as the daemon, so they can still read `/proc/<pid>/environ` (every key in `docker/.env`), `~/.config/gh/hosts.yml` (the GitHub token) and `~/.pi/agent/auth.json` (OAuth logins). A cloud lane isolates agents far more strongly than `host` does, so prefer it for repos whose issues or dependencies you do not fully trust.
 - Intake still claims only issues from trusted authors (the repo owner, the token's account, `trusted_authors`).
 
 ## Troubleshooting
@@ -147,8 +149,9 @@ The header of the override file has the Caddy block (`reverse_proxy factoryd:807
 |---|---|---|
 | `docker compose up` stops with "set FACTORY_API_KEY" | the key in `docker/.env` is empty | `openssl rand -hex 32`, paste it, run `up` again |
 | Container exits immediately | `FACTORY_API_KEY` missing (outside compose) or a port clash | `docker compose logs factoryd` |
-| `entrypoint: WARNING gh rejected GH_TOKEN` | expired, revoked or mistyped token | fix it in `.env`, `docker compose up -d` |
-| `git clone failed … could not read Username` in `laps.log` | no valid GitHub token, so git has no credentials | same as above |
+| `entrypoint: WARNING GitHub did not accept GH_TOKEN` | the token is expired, revoked or mistyped, or GitHub was unreachable for 15 s | fix the token or the network, then `docker compose up -d` |
+| `entrypoint: gh login skipped (the token lacks a scope it checks …)` | a classic token without `read:org`: `gh auth login` refuses it, but the token works | nothing to fix. Git credentials are set from the token in the environment. Add `read:org` to silence it |
+| `git clone failed … could not read Username` in `laps.log` | no GitHub token is set (with a token set, git credentials are configured at every start) | set `GH_TOKEN` in `.env`, `docker compose up -d` |
 | Push or PR denied | token scope or repo access too narrow | grant contents, pull requests and issues access to the repo |
 | `pi: command not found` in a lap | the image build failed at the pi layer | `docker compose build --no-cache` and read the output |
 | Port already in use | another service holds 8077 or 8787 | set `FACTORYD_HOST_PORT` / `DASHBOARD_HOST_PORT` |

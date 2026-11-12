@@ -14,3 +14,6 @@ skills-lock.json
 
 # the Docker stack's secrets file (docker/.env.example is the committed template)
 docker/.env
+# scratch files next to it (the setup skill writes .env.new before it moves it into place)
+docker/.env.*
+!docker/.env.example

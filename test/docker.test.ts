@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Static invariants over the Docker files. Each one fails silently in production if broken, so it
@@ -84,7 +85,7 @@ describe("compose.caddy.yml", () => {
 describe(".dockerignore and .gitignore", () => {
   test("env files stay out of the image and out of git", () => {
     const lines = dockerignore.split("\n").map((l) => l.trim());
-    expect(lines).toContain("**/.env");
+    expect(lines).toContain("**/.env*");
     expect(lines).toContain("docker/.env");
     expect(lines).toContain(".git");
     expect(lines).toContain("state");
@@ -123,5 +124,110 @@ describe("entrypoint.sh", () => {
         expect(l).not.toMatch(/\$\{?(GH_TOKEN|GITHUB_TOKEN|\w*_API_KEY)\b/);
       }
     }
+  });
+});
+
+// The entrypoint run for real (sh, real git) against a fake `gh`. The fake logs each call and
+// whether GH_TOKEN was set, never its value. `gh api user --jq <expr>` answers in the shape the
+// real binary printed on 2026-11-12 for the login+id expression: "techafreshh 67512801".
+const FAKE_GH = `#!/bin/sh
+t=unset; [ -n "\${GH_TOKEN:-}" ] && t=set
+echo "gh $* | GH_TOKEN=$t" >> "$CALLS"
+case "$1 $2" in
+  "auth login") cat >/dev/null; [ "$FAKE_LOGIN" = ok ] ;;
+  "auth setup-git") exit 0 ;;
+  "api user")
+    [ "$FAKE_API" = ok ] || exit 1
+    case "$*" in *tostring*) echo "techafreshh 67512801" ;; *) echo "techafreshh" ;; esac ;;
+  *) exit 2 ;;
+esac
+`;
+const SECRET = "ghp_SECRETSECRETSECRET0123456789";
+const tmps: string[] = [];
+afterAll(() => {
+  for (const d of tmps) rmSync(d, { recursive: true, force: true });
+});
+
+function runEntrypoint(o: { token: boolean; login: "ok" | "fail"; api: "ok" | "fail" }) {
+  const dir = mkdtempSync(join(tmpdir(), "pdfentry-"));
+  tmps.push(dir);
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "gh"), FAKE_GH);
+  chmodSync(join(bin, "gh"), 0o755);
+  const calls = join(dir, "calls.log");
+  const env: Record<string, string> = {
+    PATH: `${bin}:${process.env.PATH}`,
+    HOME: join(dir, "home"),
+    PI_FACTORY_STATE: join(dir, "state"),
+    CALLS: calls,
+    FAKE_LOGIN: o.login,
+    FAKE_API: o.api,
+  };
+  mkdirSync(env.HOME);
+  if (o.token) env.GH_TOKEN = SECRET;
+  const r = Bun.spawnSync(["sh", join(root, "docker/entrypoint.sh"), "true"], { env });
+  return {
+    code: r.exitCode,
+    out: r.stdout.toString(),
+    err: r.stderr.toString(),
+    calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
+    gitconfig: readFileSync(join(env.HOME, ".gitconfig"), "utf8"),
+  };
+}
+
+describe.skipIf(!Bun.which("timeout"))("entrypoint.sh run against a fake gh", () => {
+  const SETUP = "gh auth setup-git --hostname github.com";
+
+  test("login accepted: credentials set, login ran without the token variables, identity from the API", () => {
+    const r = runEntrypoint({ token: true, login: "ok", api: "ok" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("gh logged in, git credentials set");
+    expect(r.calls).toContain(SETUP);
+    expect(r.calls).toContain("gh auth login --with-token | GH_TOKEN=unset");
+    expect(r.gitconfig).toContain("name = techafreshh");
+    expect(r.gitconfig).toContain("email = 67512801+techafreshh@users.noreply.github.com");
+  });
+
+  test("login rejected for scopes but the token works: git credentials are still set, and no false 'bad token' warning", () => {
+    const r = runEntrypoint({ token: true, login: "fail", api: "ok" });
+    expect(r.code).toBe(0);
+    expect(r.calls).toContain(SETUP);
+    expect(r.out).toContain("gh login skipped");
+    expect(r.err).not.toContain("WARNING GitHub did not accept");
+    expect(r.err).not.toContain("expired, revoked or mistyped");
+  });
+
+  test("token refused by GitHub: git credentials are still configured, the warning names the cause, the container still starts", () => {
+    const r = runEntrypoint({ token: true, login: "fail", api: "fail" });
+    expect(r.code).toBe(0);
+    expect(r.calls).toContain(SETUP);
+    expect(r.err).toContain("WARNING GitHub did not accept GH_TOKEN");
+    expect(r.gitconfig).toContain("pi-dark-factory"); // fallback identity: the API said nothing
+  });
+
+  test("no token: gh is never called, one warning", () => {
+    const r = runEntrypoint({ token: false, login: "ok", api: "ok" });
+    expect(r.code).toBe(0);
+    expect(r.calls).toBe("");
+    expect(r.err).toContain("no GH_TOKEN or GITHUB_TOKEN set");
+  });
+
+  test("the token value never appears in any output or in the git config", () => {
+    for (const [login, api] of [["ok", "ok"], ["fail", "ok"], ["fail", "fail"]] as const) {
+      const r = runEntrypoint({ token: true, login, api });
+      expect(r.out + r.err + r.calls + r.gitconfig).not.toContain(SECRET);
+    }
+  });
+});
+
+describe("ignore files keep secret scratch files out", () => {
+  test(".env.new (the setup skill's temp file) is not copied into the image or committed", () => {
+    const lines = dockerignore.split("\n").map((l) => l.trim());
+    expect(lines).toContain("**/.env*");
+    const ig = (f: string) => Bun.spawnSync(["git", "check-ignore", "-q", f], { cwd: root }).exitCode === 0;
+    expect(ig("docker/.env")).toBe(true);
+    expect(ig("docker/.env.new")).toBe(true);
+    expect(ig("docker/.env.example")).toBe(false);
   });
 });
