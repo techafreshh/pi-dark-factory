@@ -20,10 +20,11 @@
  */
 import type { Ledger } from "./ledger";
 import { pidAlive } from "./lock";
-import type { RepoConfig, SchedulingPriority } from "./types";
+import { MACHINE_MODES, isMachineMode, type MachineMode, type RepoConfig, type SchedulingPriority } from "./types";
 
-export type Pool = "instabox" | "boxd";
-export const POOLS: Pool[] = ["instabox", "boxd"];
+// the pool list IS the machine-mode list — one source of truth in types.ts
+export type Pool = MachineMode;
+export const POOLS: Pool[] = [...MACHINE_MODES];
 export type SlotState = "waiting" | "parked" | "granted" | "released" | "lost";
 
 export const PRIORITY_LEVEL: Record<SchedulingPriority, number> = { low: 0, normal: 1, high: 2 };
@@ -70,14 +71,22 @@ export interface SlotLease {
 }
 
 /** pool caps: InstaBox entry tier = 5; boxd's account limit is 100, so its
- *  pool is a cost cap the owner picks (10). Read per call: tests and a
- *  daemon env change both take effect without a restart of the caller. */
+ *  pool is a cost cap the owner picks (10); daytona's Tier 1 org pool is
+ *  10 vCPU ≈ five 2-vCPU sandboxes; e2b's Hobby plan caps 10 concurrent
+ *  sandboxes; instavm's Free plan caps 5 concurrent VMs. Read per call:
+ *  tests and a daemon env change both take effect without a restart. */
 export function poolCaps(): Record<Pool, number> {
   const num = (v: string | undefined, d: number) => {
     const n = Number(v);
     return v !== undefined && v !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : d;
   };
-  return { instabox: num(process.env.PDF_POOL_INSTABOX, 5), boxd: num(process.env.PDF_POOL_BOXD, 10) };
+  return {
+    instabox: num(process.env.PDF_POOL_INSTABOX, 5),
+    boxd: num(process.env.PDF_POOL_BOXD, 10),
+    daytona: num(process.env.PDF_POOL_DAYTONA, 5),
+    e2b: num(process.env.PDF_POOL_E2B, 10),
+    instavm: num(process.env.PDF_POOL_INSTAVM, 5),
+  };
 }
 
 const agingMinutes = () => {
@@ -93,11 +102,12 @@ export function effectivePriority(base: SchedulingPriority, requestedAtIso: stri
   return Math.min(2, (PRIORITY_LEVEL[base] ?? 1) + Math.floor(waitedMin / agingMin));
 }
 
-/** the platforms a lap of this repo may run on, in preference order */
+/** the platforms a lap of this repo may run on, in preference order: its own
+ *  mode first, then (spill-over) the rest of the fleet's pools in POOLS order */
 export function lanePools(cfg: RepoConfig): Pool[] {
-  if (cfg.env.mode !== "instabox" && cfg.env.mode !== "boxd") return [];
+  if (!isMachineMode(cfg.env.mode)) return [];
   const own: Pool = cfg.env.mode;
-  return cfg.scheduling?.spill_over ? [own, own === "instabox" ? "boxd" : "instabox"] : [own];
+  return cfg.scheduling?.spill_over ? [own, ...POOLS.filter((p) => p !== own)] : [own];
 }
 
 /** a per-lap copy of the config on the granted platform: repoDirFor,
@@ -176,7 +186,7 @@ export function grantPass(
         r.state = "released";
       }
     }
-    const used: Record<Pool, number> = { instabox: 0, boxd: 0 };
+    const used: Record<Pool, number> = Object.fromEntries(POOLS.map((p) => [p, 0])) as Record<Pool, number>;
     for (const r of open) if (r.state === "granted" && r.pool && r.pool in used) used[r.pool]++;
     const grant = ledger.db.query("UPDATE slot_requests SET state = 'granted', pool = ?, granted_at = ? WHERE id = ?");
     const granted: SlotRequestRow[] = [];

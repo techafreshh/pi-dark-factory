@@ -41,7 +41,7 @@ services:
     init: true
     restart: unless-stopped
     # skip the factoryd entrypoint (git identity, gh login): the dashboard is read-only and
-    # gets only the two machine-panel keys below, never the GitHub token or model keys
+    # gets only the machine-panel keys below, never the GitHub token or model keys
     entrypoint: ["/usr/bin/tini", "-s", "--"]
     command: ["bun", "bin/dashboard.ts"]
     environment:
@@ -51,6 +51,9 @@ services:
       DASHBOARD_FACTORYD_HEALTH: http://factoryd:8077/health
       INSTABOX_API_KEY: ${INSTABOX_API_KEY:-}
       BOXD_API_KEY: ${BOXD_API_KEY:-}
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-}
+      E2B_API_KEY: ${E2B_API_KEY:-}
+      INSTAVM_API_KEY: ${INSTAVM_API_KEY:-}
     ports:
       # The dashboard has no login. The loopback bind is its only protection.
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-8787}:8787"

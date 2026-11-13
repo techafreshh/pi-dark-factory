@@ -46,6 +46,9 @@ server-side is handed to the operator as an exact command (see
   |---|---|
   | `instabox` | one disposable InstaBox VM per lap (`pdf-<slug>-i<issue>-g<lapId>`), all stages |
   | `boxd` | the same, on a boxd microVM |
+  | `daytona` | the same, on a Daytona cloud sandbox (SDK transport) |
+  | `e2b` | the same, on an E2B Firecracker sandbox (SDK transport) |
+  | `instavm` | the same, on an InstaVM microVM (raw REST; needs a card on file even on Free) |
   | `compose` | root inside the product's docker-compose worker service |
   | `host` | plain processes on the VPS |
 
@@ -226,6 +229,14 @@ Decisions to walk with the user:
   - `instabox` (needs a stack base, see below).
   - `boxd` (needs `env.boxd.repo_dir`; the default snapshot
     `factory-base-boxd-r1` has bun, git, gh and python3, but no node or Chrome).
+  - `daytona` (needs `DAYTONA_API_KEY`; bake first — `env.daytona.snapshot`
+    is empty until `foreman bake` saves the golden snapshot, which the clone
+    and `env.daytona.bake` fill with the repo's deps).
+  - `e2b` (needs `E2B_API_KEY`; Hobby caps sandboxes at 1 h continuous and
+    10 concurrent, so keep `timeouts.stage_minutes` under ~50; bake is a
+    remote template build).
+  - `instavm` (needs `INSTAVM_API_KEY` **and a card on file even on Free**;
+    young platform — run the gating smoke before trusting it with laps).
   - `compose` (stages run as root in the repo's own `docker-compose.yml`
     worker; until one exists, `env.image` must carry the toolchain, e.g.
     `node:22`).
@@ -244,19 +255,24 @@ Decisions to walk with the user:
     `Depends on:` between them). Slicing a new PRD with it on adds a
     foundation-issue rule to the slicer, so set it **before** `backlog`.
   - `spill_over: true`: when the repo's own platform pool is full, a lap may
-    run on the other one. Needs a working snapshot on both: run
-    `scenario SLUG --test` on each platform first (instabox bases ship node,
-    the boxd base ships bun), or spilled laps fail in verify.
+    run on any other machine platform (instabox, boxd, daytona, e2b, instavm
+    — own mode first, then the rest in fleet order). Run
+    `scenario SLUG --test` on every platform you spill to first: snapshots
+    differ in toolchain (instabox bases ship node, boxd/daytona/e2b/instavm
+    bases ship bun + node + git + gh + python3), or spilled laps fail in
+    verify.
 - **`discoveries.auto_file`.** On by default: reviewer findings become
   `[discovery]` issues. Set false for a quiet repo.
 - **`pi.web.search` / `pi.web.fetch`.** Web tools for the agent, on by default.
 - **`attempts`, `timeouts.stage_minutes`** (60), **`timeouts.readiness_seconds`**
   (120).
 
-**Stack bases (instabox).** `env.instabox.snapshot` names a base alias, and
-`doctor` prints what each alias contains. Compare the PRD's runtime needs
-against that list before the first lap. A missing toolchain doesn't fail at
-onboarding; it fails later as blocked laps.
+**Stack bases.** `env.<platform>.snapshot` names a base alias
+(`state/base-snapshot.json` resolves it per platform), and `doctor` prints
+what each alias contains. Compare the PRD's runtime needs against that list
+before the first lap. A missing toolchain doesn't fail at onboarding; it
+fails later as blocked laps. (daytona/e2b/instavm snapshots are empty until
+the repo's first `foreman bake`.)
 - **Small extras:** install them in the scenario `setup` or the repo's own
   scripts.
 - **A real gap:** ask the operator for a new stack base (an operator bake).
@@ -320,8 +336,8 @@ To check status and body in one probe, use `curl -s -w '\n%{http_code}'`.
 - **`--test`** catches probes that assert something the product doesn't do,
   in minutes and for free. Use it before the first lap and after every fix.
   - instabox repos test in a throwaway machine.
-  - host, compose **and boxd** repos test in a worktree on the VPS, so the
-    product's code runs there.
+  - host, compose **and boxd/daytona/e2b/instavm** repos test in a worktree
+    on the VPS, so the product's code runs there.
 - **`prove-gates`** exits 1 if no probe fails against the stub. Weak probes
   are listed in `survived[]` even when the verdict is `healthy`. It needs the
   repo idle.
@@ -434,9 +450,9 @@ details are in the repo's `docs/operations.md`.
 |---|---|
 | deploy new factory code | `cd /home/factory/pi-dark-factory && sudo -u factory git pull --ff-only` (+ `bun install` if `package.json` changed), then `sudo systemctl restart pi-factoryd`. Restarts are safe mid-lap (`KillMode=process`); ticks load fresh code by themselves |
 | provider keys, top-ups, new models | edit the factory user's `~/.pi/agent/models.json` / `auth.json`; check with `dark-factory models` |
-| GitHub, InstaBox, boxd or TinyFish keys | `/home/factory/factoryd.env` (600), then restart `pi-factoryd` |
+| GitHub, InstaBox, boxd, Daytona, E2B, InstaVM or TinyFish keys | `/home/factory/factoryd.env` (600), then restart `pi-factoryd`. Daytona keys need the sandbox+snapshot write/delete scopes (a create-only key 403s every delete and the janitor silently can't reap) |
 | ClinePass keys | `/home/factory/state/clinepass.keys`, one per line, live-reloaded |
-| bake a repo snapshot (instabox) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.instabox.snapshot` empty it boots the plain template, runs `env.instabox.bake`, saves `<slug>-base` and writes that name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
+| bake a repo snapshot (machine repos) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.<platform>.snapshot` empty it builds the first golden snapshot (instabox: plain template machine; daytona: `node:22-bookworm` sandbox; e2b/instavm: remote builds), clones, runs `env.<platform>.bake`, saves `<slug>-base` and writes the name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
 | upgrade a stack base | fresh-template bake under a new versioned name, then repoint the alias in `state/base-snapshot.json` |
 | `ui.enabled:false` or other non-allowlisted config | edit `state/repos/SLUG/config.json` |
 | offboard a repo | `pause` it, move `state/repos/SLUG` aside, `cleanup`. Ledger rows stay as history |

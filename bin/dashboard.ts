@@ -3,7 +3,7 @@
  *
  * Opens factory.db in SQLite readonly mode (it physically cannot write),
  * tails laps.log, reads paused markers and per-issue session files, and
- * optionally lists the InstaBox and boxd machines. Serves the built React app
+ * optionally lists the lap machines on all five machine platforms. Serves the built React app
  * plus a small JSON API on its own port. The factory never knows it exists:
  * no imports from src/, no writes, no locks, no ledger schema opinions beyond
  * SELECTs. Default bind 10.0.1.1 (the web_gateway bridge — reachable by the
@@ -219,11 +219,12 @@ async function factorydHealth(): Promise<any> {
   return healthCache.data;
 }
 
-// ── machines (InstaBox + boxd), cached 30 s ─────────────────────────────────
+// ── machines (all five machine platforms), cached 30 s ──────────────────────
 
 const MACHINE_RE = /^pdf-(.+)-i(\d+)(?:-g(\d+))?$/;
-interface MachineRow { provider: "instabox" | "boxd"; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
-interface MachinePool { provider: "instabox" | "boxd"; configured: boolean; error: string | null; machines: MachineRow[] }
+type MachineProvider = "instabox" | "boxd" | "daytona" | "e2b" | "instavm";
+interface MachineRow { provider: MachineProvider; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
+interface MachinePool { provider: MachineProvider; configured: boolean; error: string | null; machines: MachineRow[] }
 
 /** A machine-panel key: the process environment first (the Docker stack passes
  *  it through), then the key file the VPS install writes. */
@@ -290,11 +291,72 @@ async function boxdPool(): Promise<MachinePool> {
   }
 }
 
+async function daytonaPool(): Promise<MachinePool> {
+  const key = secret("DAYTONA_API_KEY");
+  if (!key) return { provider: "daytona", configured: false, error: null, machines: [] };
+  try {
+    const { Daytona } = await import("@daytona/sdk");
+    const c = new Daytona({ apiKey: key });
+    const ms: any[] = [];
+    for await (const sbx of c.list({ labels: { factory: "1" } })) ms.push(sbx);
+    return {
+      provider: "daytona",
+      configured: true,
+      error: null,
+      machines: ms.map((m) => toRow("daytona", m.name ?? m.id, m.state ?? m.status ?? "?", m.createdAt ?? m.created_at)),
+    };
+  } catch (e: any) {
+    return { provider: "daytona", configured: true, error: String(e?.message ?? e).slice(0, 160), machines: [] };
+  }
+}
+
+async function e2bPool(): Promise<MachinePool> {
+  const key = secret("E2B_API_KEY");
+  if (!key) return { provider: "e2b", configured: false, error: null, machines: [] };
+  try {
+    const { Sandbox } = await import("e2b");
+    const page = Sandbox.list({ query: { metadata: { factory: "1" } }, apiKey: key });
+    const ms: any[] = [];
+    while (page.hasNext) ms.push(...(await page.nextItems()));
+    return {
+      provider: "e2b",
+      configured: true,
+      error: null,
+      machines: ms.map((m) => toRow("e2b", m.metadata?.name ?? m.sandboxId, m.state ?? m.status ?? "?", m.startedAt)),
+    };
+  } catch (e: any) {
+    return { provider: "e2b", configured: true, error: String(e?.message ?? e).slice(0, 160), machines: [] };
+  }
+}
+
+async function instavmPool(): Promise<MachinePool> {
+  const key = secret("INSTAVM_API_KEY");
+  if (!key) return { provider: "instavm", configured: false, error: null, machines: [] };
+  try {
+    const res = await fetch(`${process.env.INSTAVM_API_BASE ?? "https://api.instavm.io/v1"}/vms`, {
+      headers: { "X-API-Key": key },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = (await res.json()) as any;
+    const ms: any[] = Array.isArray(list) ? list : list?.vms ?? list?.items ?? [];
+    return {
+      provider: "instavm",
+      configured: true,
+      error: null,
+      // the factory name rides the VM metadata (recorded shape, sandbox_client.py)
+      machines: ms.map((m) => toRow("instavm", m.metadata?.name ?? m.vm_id ?? m.id, m.state ?? m.status ?? "?", m.created_at ?? m.createdAt)),
+    };
+  } catch (e: any) {
+    return { provider: "instavm", configured: true, error: String(e?.message ?? e).slice(0, 160), machines: [] };
+  }
+}
+
 let machinesCache: { at: number; data: MachinePool[] | null } = { at: 0, data: null };
 let machinesInflight: Promise<MachinePool[]> | null = null;
 async function machines(): Promise<MachinePool[]> {
   if (machinesCache.data && Date.now() - machinesCache.at < 30_000) return machinesCache.data;
-  machinesInflight ??= Promise.all([instaboxPool(), boxdPool()]).then((d) => {
+  machinesInflight ??= Promise.all([instaboxPool(), boxdPool(), daytonaPool(), e2bPool(), instavmPool()]).then((d) => {
     machinesCache = { at: Date.now(), data: d };
     machinesInflight = null;
     return d;
@@ -501,9 +563,13 @@ export function effectivePriority(base: string, requestedAtIso: string, nowMs: n
   return Math.min(2, (PRIORITY_LEVEL[base] ?? 1) + Math.floor(waitedMin / agingMin));
 }
 
+export const POOL_NAMES = ["instabox", "boxd", "daytona", "e2b", "instavm"] as const;
 const poolCaps = () => ({
   instabox: Number(process.env.DASHBOARD_POOL_INSTABOX ?? process.env.PDF_POOL_INSTABOX ?? 5),
   boxd: Number(process.env.DASHBOARD_POOL_BOXD ?? process.env.PDF_POOL_BOXD ?? 10),
+  daytona: Number(process.env.DASHBOARD_POOL_DAYTONA ?? process.env.PDF_POOL_DAYTONA ?? 5),
+  e2b: Number(process.env.DASHBOARD_POOL_E2B ?? process.env.PDF_POOL_E2B ?? 10),
+  instavm: Number(process.env.DASHBOARD_POOL_INSTAVM ?? process.env.PDF_POOL_INSTAVM ?? 5),
 });
 
 /** The Scheduling page. Pure over the ledger + state dir; the server swaps in
@@ -537,7 +603,7 @@ export function computeScheduling(db: Database, nowMs = Date.now()) {
       priority: r.priority, effective: LEVEL_NAME[eff], extra_lane: !!r.extra_lane, state: r.state,
       requested_at: r.requested_at, position: i + 1,
     }));
-  const pools = (["instabox", "boxd"] as const).map((pool) => ({
+  const pools = POOL_NAMES.map((pool) => ({
     pool,
     cap: caps[pool],
     used: granted.filter((r) => r.pool === pool).length,

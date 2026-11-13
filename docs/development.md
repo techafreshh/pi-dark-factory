@@ -1,6 +1,6 @@
 # Development — tests and the boundary rule
 
-`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, the boxd lane through a stubbed SDK client, and full tick integration.
+`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, the boxd lane through a stubbed SDK client, the daytona and e2b lanes through stubbed SDK seams, the instavm lane through a stubbed raw-REST client, and full tick integration.
 
 ## Development
 
@@ -58,9 +58,10 @@ Practice: when touching a boundary, paste the actual CLI/HTTP response into the 
 real python3). When a production failure contradicts a stub, the recorded shape gets fixed
 FIRST — the stub was the lie.
 
-One runtime dependency: `@boxd-sh/sdk` (boxd mode's machine lifecycle). `src/tick.ts` imports
-it statically, so every factory process needs it installed: a deploy that changes
-`package.json` runs `bun install`. Everything else is `bun:sqlite` and the Bun standard
-library. The only subprocesses the factory expects on its host: `git`, `gh`, `ssh` (instabox mode), optional
+Runtime dependencies: `@boxd-sh/sdk` (boxd machine lifecycle), `@daytona/sdk` (daytona
+lanes) and `e2b` (e2b lanes) — `src/tick.ts` imports the drivers statically, so every
+factory process needs them installed: a deploy that changes `package.json` runs
+`bun install`. The instavm lane is raw REST over fetch (no SDK). Everything else is
+`bun:sqlite` and the Bun standard library. The only subprocesses the factory expects on its host: `git`, `gh`, `ssh` (instabox mode), optional
 `docker` (compose mode), and `pi` itself. Web grounding uses the TinyFish HTTP APIs from
 the bundled pi extension (network calls from stage agents only).

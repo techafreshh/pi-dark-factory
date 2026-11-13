@@ -21,7 +21,7 @@ import { Ledger } from "../src/ledger";
 const T0 = Date.parse("2026-11-11T12:00:00.000Z");
 const min = (m: number) => T0 + m * 60_000;
 const alive = () => true;
-const caps = (instabox: number, boxd: number) => ({ instabox, boxd });
+const caps = (instabox: number, boxd: number) => ({ instabox, boxd, daytona: 0, e2b: 0, instavm: 0 });
 
 const req = (repo: string, o: Partial<SlotRequest> = {}): SlotRequest => ({
   repo,
@@ -210,9 +210,15 @@ describe("acquireSlot", () => {
 
 describe("config helpers", () => {
   const base = { repo: "acme/app", models: { default: { provider: "zai", model: "glm" } } };
-  test("lanePools: own platform first, the other only with spill_over; none for host", () => {
+  test("lanePools: own platform first, the rest of the fleet only with spill_over; none for host", () => {
     expect(lanePools(parseRepoConfig({ ...base, env: { mode: "instabox" } }, "t"))).toEqual(["instabox"]);
-    expect(lanePools(parseRepoConfig({ ...base, env: { mode: "boxd" }, scheduling: { spill_over: true } }, "t"))).toEqual(["boxd", "instabox"]);
+    // spill order: own mode, then the remaining pools in POOLS order
+    expect(lanePools(parseRepoConfig({ ...base, env: { mode: "boxd" }, scheduling: { spill_over: true } }, "t"))).toEqual([
+      "boxd", "instabox", "daytona", "e2b", "instavm",
+    ]);
+    expect(lanePools(parseRepoConfig({ ...base, env: { mode: "e2b" }, scheduling: { spill_over: true } }, "t"))).toEqual([
+      "e2b", "instabox", "boxd", "daytona", "instavm",
+    ]);
     expect(lanePools(parseRepoConfig(base, "t"))).toEqual([]);
   });
   test("configForPool swaps only env.mode and leaves the original alone", () => {

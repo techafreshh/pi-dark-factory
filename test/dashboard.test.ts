@@ -204,7 +204,7 @@ describe("sessions", () => {
 });
 
 describe("computeScheduling (slot pools, queue, lanes, merge queues)", async () => {
-  const { computeScheduling, effectivePriority: dashEff } = await import("../bin/dashboard");
+  const { computeScheduling, effectivePriority: dashEff, POOL_NAMES } = await import("../bin/dashboard");
   const alloc = await import("../src/allocator");
   const R3 = "techafreshh/gamma";
   const sl = new Ledger(":memory:");
@@ -228,7 +228,17 @@ describe("computeScheduling (slot pools, queue, lanes, merge queues)", async () 
 
   const s = computeScheduling(sl.db, now);
 
+  test("POOL_NAMES mirrors allocator POOLS — the dashboard copies it by the no-imports rule", () => {
+    expect([...POOL_NAMES]).toEqual([...alloc.POOLS]);
+  });
+
   test("pools count leases against caps; waiting counts by first preference", () => {
+    // all five machine platforms appear on the Scheduling page, even with no
+    // repo using them yet
+    expect(s.pools.map((p) => p.pool)).toEqual(["instabox", "boxd", "daytona", "e2b", "instavm"]);
+    expect(s.pools.find((p) => p.pool === "daytona")).toMatchObject({ cap: 5, used: 0, waiting: 0 });
+    expect(s.pools.find((p) => p.pool === "e2b")).toMatchObject({ cap: 10, used: 0, waiting: 0 });
+    expect(s.pools.find((p) => p.pool === "instavm")).toMatchObject({ cap: 5, used: 0, waiting: 0 });
     expect(s.pools.find((p) => p.pool === "boxd")).toMatchObject({ cap: 10, used: 1 });
     expect(s.pools.find((p) => p.pool === "instabox")).toMatchObject({ cap: 5, used: 0, waiting: 2 });
   });

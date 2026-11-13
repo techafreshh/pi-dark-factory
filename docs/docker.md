@@ -41,7 +41,7 @@ npx @techafresh/dark-factory setup http://localhost:8077 <FACTORY_API_KEY>
 npx @techafresh/dark-factory doctor
 ```
 
-`doctor` is written for the VPS install. On a local stack it reports "laptop key NOT provisioned" and "shared base UNMAPPED" as failures, and "web tools" as a warning until `TINYFISH_API_KEY` is set. The first two do not matter locally: the laptop key is a second client key, and the shared base is an InstaBox-only alias. Its last line, `auth OK`, is the one that proves the connection.
+`doctor` is written for the VPS install. On a local stack it reports "laptop key NOT provisioned" and "shared base UNMAPPED" as failures, and "web tools" as a warning until `TINYFISH_API_KEY` is set. The first two do not matter locally: the laptop key is a second client key, and the shared base is an alias the machine lanes resolve through `state/base-snapshot.json`. Its last line, `auth OK`, is the one that proves the connection.
 
 ## Authentication
 
@@ -50,7 +50,7 @@ npx @techafresh/dark-factory doctor
 | GitHub | `GH_TOKEN` in `docker/.env`. The entrypoint logs `gh` in and configures git credentials on every start, so rotating the token is: edit `.env`, `docker compose up -d`. |
 | Model keys | `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `ZAI_API_KEY`, `DEEPSEEK_API_KEY` in `docker/.env`. Empty ones are dropped at start. These are the keys the default `env.pass_env` forwards to host-mode agents. |
 | Model OAuth | `docker compose run --rm -it factoryd pi`, then type `/login` and pick the provider; repeat per provider. The login is stored in the `factory-pi` volume (`/home/factory/.pi`) and survives restarts. |
-| Cloud lanes | `INSTABOX_API_KEY` / `BOXD_API_KEY` in `.env`. The dashboard receives these two and nothing else. |
+| Cloud lanes | `INSTABOX_API_KEY` / `BOXD_API_KEY` / `DAYTONA_API_KEY` / `E2B_API_KEY` / `INSTAVM_API_KEY` in `.env`. The dashboard receives these platform keys and nothing else. |
 | Commit identity | `GIT_USER_NAME` / `GIT_USER_EMAIL`, or leave them empty and the entrypoint derives both from the token's GitHub account. |
 
 Smoke every `provider/model:thinking` string a repo config will use before the first lap, inside the container:
@@ -82,6 +82,9 @@ The function is bash-only. On Windows PowerShell, install Node and use `npx @tec
 | `host` | yes | Stages run as the `factory` user inside the `factoryd` container. Serial per repo; `scheduling.parallel` needs a machine mode. |
 | `instabox` | yes | Needs `INSTABOX_API_KEY`. The image carries `ssh`, the transport. |
 | `boxd` | yes | Needs `BOXD_API_KEY`. |
+| `daytona` | yes | Needs `DAYTONA_API_KEY`. Tier 1/2 egress is allowlist-based (GitHub + AI providers whitelisted). |
+| `e2b` | yes | Needs `E2B_API_KEY`. Hobby caps sandboxes at 1 h continuous, 10 concurrent. |
+| `instavm` | yes | Needs `INSTAVM_API_KEY`. Young platform — run the gating smoke first. |
 | `compose` | no | It needs a Docker daemon inside the container, which this image does not provide. Use the [systemd install](../DEPLOYMENT.md) for compose-mode repos. |
 
 Do not onboard the same repo on a Docker stack and on a VPS. Each factory has its own ledger, and they would claim the same issues.

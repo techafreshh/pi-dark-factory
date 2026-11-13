@@ -15,6 +15,14 @@ export interface ModelEntry extends Partial<ModelSpec> {
   fallback?: string[];
 }
 
+/** The modes that run agent stages inside a disposable platform machine —
+ *  the machine-mode family the slot allocator, the janitor and the runtime
+ *  context all branch on (docs/execution-modes.md). */
+export const MACHINE_MODES = ["instabox", "boxd", "daytona", "e2b", "instavm"] as const;
+export type MachineMode = (typeof MACHINE_MODES)[number];
+export const isMachineMode = (mode: string | undefined | null): mode is MachineMode =>
+  (MACHINE_MODES as readonly string[]).includes(mode ?? "");
+
 export interface RepoConfig {
   repo: string;
   slug: string;
@@ -59,9 +67,15 @@ export interface RepoConfig {
    * box against its own loopback. The host needs no Docker at all.
    * "boxd" = the same lap shape on boxd.sh microVMs (SDK lifecycle, exec
    * transport; see env.boxd below).
+   * "daytona" = the same lap shape on Daytona cloud sandboxes
+   * (https://daytona.io, SDK lifecycle + toolbox exec; see env.daytona).
+   * "e2b" = the same lap shape on E2B Firecracker sandboxes
+   * (https://e2b.dev, SDK lifecycle + commands transport; see env.e2b).
+   * "instavm" = the same lap shape on InstaVM microVMs
+   * (https://instavm.io, raw-REST lifecycle + async exec; see env.instavm).
    */
   env: {
-    mode: "host" | "compose" | "instabox" | "boxd";
+    mode: "host" | "compose" | MachineMode;
     /** repo-relative path of the product-owned compose file */
     compose_file: string;
     /** service in that compose file the factory runs stages in */
@@ -98,6 +112,39 @@ export interface RepoConfig {
       snapshot?: string;
       /** boxd region; default = the org's default region */
       region?: string;
+    };
+    /** daytona-mode settings (https://daytona.io — SDK lifecycle, toolbox
+     *  exec). Auth comes from DAYTONA_API_KEY on the factory host. */
+    daytona?: {
+      /** in-machine path the repo is cloned to (the sandbox user's home) */
+      repo_dir: string;
+      /** snapshot sandboxes boot from; default factory-base-daytona-r1 */
+      snapshot?: string;
+      /** shell run on the bake sandbox after clone; empty = clone-only snapshot */
+      bake?: string;
+    };
+    /** e2b-mode settings (https://e2b.dev — SDK lifecycle, commands
+     *  transport). Auth comes from E2B_API_KEY on the factory host. */
+    e2b?: {
+      /** in-machine path the repo is cloned to (the sandbox user's home) */
+      repo_dir: string;
+      /** template sandboxes boot from; default factory-base-e2b-r1 */
+      snapshot?: string;
+      /** shell run in the template build after clone; empty = clone-only */
+      bake?: string;
+    };
+    /** instavm-mode settings (https://instavm.io — raw-REST lifecycle,
+     *  async exec). Auth comes from INSTAVM_API_KEY on the factory host. */
+    instavm?: {
+      /** in-machine path the repo is cloned to (matches the snapshot
+       *  builder's fixed /app/repo clone path) */
+      repo_dir: string;
+      /** snapshot VMs boot from; default factory-base-instavm-r1 */
+      snapshot?: string;
+      /** shell run in the snapshot build after the platform's clone */
+      bake?: string;
+      /** REST base; default https://api.instavm.io/v1 */
+      api_base?: string;
     };
   };
   skip_labels: string[];

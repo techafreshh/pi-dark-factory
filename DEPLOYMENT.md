@@ -83,6 +83,9 @@ run may block on a question.
   in `state/base-snapshot.json` (`{"shared-base": {"snapshot": "<name>", "contents": "…"}}`),
   or from a repo snapshot built with `foreman bake <slug>`.
 - **boxd:** needs `BOXD_API_KEY` and a `factory-base-boxd-r1` snapshot in the boxd org.
+- **Daytona:** needs `DAYTONA_API_KEY`; bake the fleet base once (`foreman bake` on a daytona-mode repo builds it) and record it under the shared alias in `state/base-snapshot.json`.
+- **E2B:** needs `E2B_API_KEY`; Hobby plans cap sandboxes at 1 h continuous and 10 concurrent — keep `timeouts.stage_minutes` under ~50 min.
+- **InstaVM:** needs `INSTAVM_API_KEY` **and a card on file even on the Free tier** (VM and session creates 403 `card_required` otherwise, recorded 2026-11-13); young platform — run `bin/smoke-machine-platforms.ts --platform instavm` first (Free-tier egress to github.com is UNVERIFIED).
 - Neither lane needs Docker on the VPS.
 
 **Web grounding** (on by default for every repo) needs `TINYFISH_API_KEY` in `factoryd.env`.
@@ -122,6 +125,9 @@ GH_TOKEN=<token>          # if not using gh auth login
 GITHUB_TOKEN=<same token> # machine stages read this name
 INSTABOX_API_KEY=…        # instabox repos
 BOXD_API_KEY=…            # boxd repos
+DAYTONA_API_KEY=…         # daytona repos
+E2B_API_KEY=…             # e2b repos
+INSTAVM_API_KEY=…         # instavm repos
 TINYFISH_API_KEY=…        # web grounding
 # machine-slot pools (optional; defaults shown) — docs/parallel-mode.md
 # PDF_POOL_INSTABOX=5

@@ -1,4 +1,4 @@
-import type { RepoConfig, StageName } from "./types";
+import type { MachineMode, RepoConfig, StageName } from "./types";
 
 /**
  * Runtime context — the "where am I and what are the rules" brief every
@@ -22,7 +22,7 @@ export interface RuntimeContextInfo {
   attemptsMax: number;
   branch: string;
   base: string;
-  mode: "host" | "compose" | "instabox" | "boxd";
+  mode: "host" | "compose" | MachineMode;
   /** mode-specific identity: worktree path / image+service / machine+template */
   where: string;
   /** where the agent's file edits must happen */

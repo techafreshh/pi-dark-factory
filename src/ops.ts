@@ -16,6 +16,10 @@ import { deleteRemoteBranch, ensureSource, removeWorktree, supersedeIssueFiles }
 import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
 import { boxdClientFromEnv } from "./machine-boxd";
+import { daytonaClientFromEnv, daytonaBash } from "./machine-daytona";
+import { e2bFromEnv } from "./machine-e2b";
+import { instavmClientFromEnv } from "./machine-instavm";
+import { Template as E2bTemplate } from "e2b";
 import { Ledger } from "./ledger";
 import { portBusy, resolveScenarioPort, runScenario, runScenarioInMachine } from "./scenario";
 import { acquireRepoLock, releaseRepoLock } from "./lock";
@@ -26,7 +30,7 @@ import { readBases, resolveSnapshotName } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
-import type { RepoConfig } from "./types";
+import { isMachineMode, type RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
 const wtRoot = (stateDir: string, slug: string) => join(stateDir, "worktrees", slug);
@@ -250,11 +254,20 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
   machine: string;
   snapshot: string;
   snapshotId: string;
+  platform: "instabox" | "daytona" | "e2b" | "instavm";
   rootSizeBytes?: number;
   dataSizeBytes?: number;
   config_updated: boolean;
 }> {
   const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  // the newer machine platforms bake differently (daytona: sandbox →
+  // mutate → snapshot; e2b/instavm: definition-based remote builds) — each
+  // has its own path below; instabox keeps the original machine flow
+  if (cfg.env.mode === "daytona") return bakeDaytona(stateDir, cfg, slug);
+  if (cfg.env.mode === "e2b") return bakeE2b(stateDir, cfg, slug);
+  if (cfg.env.mode === "instavm") return bakeInstavm(stateDir, cfg, slug);
+  if (cfg.env.mode !== "instabox")
+    throw new Error(`bake applies to machine-mode repos (got env.mode "${cfg.env.mode}")`);
   const ibx = cfg.env.instabox;
   const ib = InstaBox.fromEnv(ibx);
   const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
@@ -304,9 +317,13 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
     .filter((k) => process.env[k] !== undefined && process.env[k] !== "")
     .map((k) => `export ${k}=${escapeSh(process.env[k]!)}`)
     .join("\n");
+  // same GH_TOKEN/GITHUB_TOKEN mismatch resolution as bakeCloneScriptFor
+  const ghBake = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const ghExport = ghBake ? `export GITHUB_TOKEN=${escapeSh(ghBake)}` : "";
   const clone = [
     `set -eu`,
     envExports,
+    ghExport,
     `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
     // same sudo prepare the lap bootstrap does (machine.ts): /data is a
     // root-owned fresh volume per machine — git can't create the work tree
@@ -371,10 +388,268 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
     machine: name,
     snapshot: snapName,
     snapshotId: snap.id,
+    platform: "instabox",
     rootSizeBytes: snap.rootSizeBytes,
     dataSizeBytes: snap.dataSizeBytes,
     config_updated,
   };
+}
+
+/** The clone+fetch+reset script every machine bake runs after boot (the
+ *  platform twin of the instabox bake's clone block): pass_env exports, the
+ *  token insteadOf rewrite, clone or fetch into repo_dir, hard-reset to the
+ *  default branch's origin tip. */
+function bakeCloneScriptFor(cfg: RepoConfig, repoDir: string): string {
+  const envExports = (cfg.env.pass_env ?? [])
+    .filter((k) => process.env[k] !== undefined && process.env[k] !== "")
+    .map((k) => `export ${k}=${escapeSh(process.env[k]!)}`)
+    .join("\n");
+  // the service env names the token GH_TOKEN while pass_env lists
+  // GITHUB_TOKEN — resolve either, or a private-repo bake clone silently
+  // runs anonymous (observed: bake 128 "could not read Username",
+  // 2026-11-13; the same class buildMachineEnvFile documents)
+  const ghBake = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const ghExport = ghBake ? `export GITHUB_TOKEN=${escapeSh(ghBake)}` : "";
+  return [
+    `set -eu`,
+    envExports,
+    ghExport,
+    `if [ -n "\${GITHUB_TOKEN:-}" ]; then git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/" 2>/dev/null || true; fi`,
+    `P=$(dirname ${escapeSh(repoDir)}); sudo -n mkdir -p "$P" 2>/dev/null || true; sudo -n chown -R "$(id -u):$(id -g)" "$P" 2>/dev/null || true`,
+    `if [ ! -d ${escapeSh(repoDir)}/.git ]; then git clone ${escapeSh(cfg.origin_url ?? `https://github.com/${cfg.repo}.git`)} ${escapeSh(repoDir)}; fi`,
+    `cd ${escapeSh(repoDir)}`,
+    `git fetch origin --prune >/dev/null 2>&1 || true`,
+    `git reset --hard "origin/${cfg.default_branch}" >/dev/null`,
+    `echo CLONE_OK`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function bakeScriptRunner(cfg: RepoConfig, repoDir: string): string {
+  const bake = (cfg.env.daytona?.bake ?? "").trim();
+  if (!bake) return `set -eu\ncd ${escapeSh(repoDir)}\necho BAKE_SKIPPED\n`;
+  return `set -eu\ncd ${escapeSh(repoDir)}\nprintf %s ${Buffer.from(bake, "utf8").toString("base64")} | base64 -d | bash\n`;
+}
+
+/** Write env.<platform>.snapshot = <name> into the repo config the way the
+ *  instabox bake does when it first names the golden snapshot. */
+function writeSnapshotToConfig(stateDir: string, slug: string, platform: "daytona" | "e2b" | "instavm", snapName: string): boolean {
+  const cfgPath = join(repoCfgDir(stateDir, slug), "config.json");
+  const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
+  raw.env = raw.env ?? {};
+  const existing = raw.env[platform]?.snapshot;
+  if (existing) return false;
+  raw.env[platform] = { ...(raw.env[platform] ?? {}), snapshot: snapName };
+  writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n");
+  return true;
+}
+
+/**
+ * Daytona bake: boot a sandbox (from the configured snapshot — an
+ * ENRICHMENT, not a replacement — or ubuntu:24.04 for a repo's first
+ * bake), clone, run the bake script, stop, snapshot-from-sandbox, delete.
+ * Container snapshots require a stopped sandbox.
+ */
+async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+}> {
+  const client = daytonaClientFromEnv();
+  const dx = cfg.env.daytona!;
+  const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
+  const snapName = dx.snapshot || `${sanitizeMachinePart(slug)}-base`;
+  const baseIsAlias = !!(dx.snapshot && readBases(stateDir)[dx.snapshot]);
+  if (baseIsAlias) {
+    const cur = dx.snapshot ? readBases(stateDir)[dx.snapshot] : undefined;
+    throw new Error(
+      `"${dx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
+      `To upgrade a base: bake the new versioned name platform-side, then flip state/base-snapshot.json.`
+    );
+  }
+  receipt(stateDir, `bake ${slug}: booting daytona sandbox ${name} from ${dx.snapshot ? `snapshot ${resolveSnapshotName(stateDir, dx.snapshot)}` : "node:22-bookworm"}`, slug);
+  const labels = { factory: "1", bake: slug };
+  // a previous failed bake's same-name sandbox lingers in a state where
+  // get-by-name may still 404 while the NAME is already reserved (recorded:
+  // create 409s "already exists" right after a 404, bake 2026-11-13) —
+  // clear the name, and on a still-reserved name retry the sweep a few
+  // times before giving up, the way the instabox bake's 409 path does
+  let sandbox: any = null;
+  for (let attempt = 0; attempt < 3 && !sandbox; attempt++) {
+    try {
+      const old = await client.get(name);
+      if (old) await client.delete(old);
+    } catch {}
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      sandbox = dx.snapshot
+        ? await client.create({ snapshot: resolveSnapshotName(stateDir, dx.snapshot), name, labels }, { timeout: 600 })
+        : await client.create({ image: "node:22-bookworm", name, labels }, { timeout: 600 });
+    } catch (e: any) {
+      if (attempt === 2 || !/already exists|conflict|409/i.test(String(e?.message ?? e))) throw e;
+      receipt(stateDir, `bake ${slug}: daytona name still reserved — sweeping again (attempt ${attempt + 1})`, slug);
+    }
+  }
+  if (!sandbox) throw new Error(`bake ${slug}: daytona bake sandbox "${name}" could not be created (name reserved by a leftover)`);
+  try {
+    const cloned = await daytonaBash(sandbox, bakeCloneScriptFor(cfg, dx.repo_dir), { timeoutMs: 15 * 60_000 });
+    if (cloned.code !== 0 || !cloned.stdout.includes("CLONE_OK")) {
+      throw new Error(`bake clone failed (exit ${cloned.code}): ${(cloned.stderr || cloned.stdout).trim().slice(0, 300)}`);
+    }
+    const baked = await daytonaBash(sandbox, bakeScriptRunner(cfg, dx.repo_dir), { timeoutMs: 120 * 60_000 });
+    if (baked.code !== 0 && !baked.stdout.includes("BAKE_SKIPPED")) {
+      throw new Error(`bake script failed (exit ${baked.code}): ${(baked.stderr || baked.stdout).trim().slice(0, 500)}`);
+    }
+    // snapshot-from-sandbox requires a STOPPED container sandbox
+    await client.stop(sandbox);
+    // snapshot names are unique per org — an enrichment re-bake over the same
+    // name deletes the old snapshot first (the delete→save window pauses new
+    // boots of that snapshot, same caveat as the instabox flow)
+    try {
+      const page = await client.snapshot.list({});
+      for (const s of page.items ?? []) {
+        if (s.name === snapName) await client.snapshot.delete(s.id ?? snapName);
+      }
+    } catch {}
+    await sandbox.createSnapshot(snapName, 1800);
+    receipt(stateDir, `bake ${slug}: daytona snapshot ${snapName} saved`, slug);
+  } finally {
+    await client.delete(sandbox).catch(() => {});
+  }
+  const config_updated = writeSnapshotToConfig(stateDir, slug, "daytona", snapName);
+  return { machine: name, snapshot: snapName, snapshotId: snapName, platform: "daytona", config_updated };
+}
+
+/**
+ * E2B bake: a definition-based remote template build (Build System 2.0 —
+ * no runtime mutate-and-commit exists). First bake builds on node:22-bookworm
+ * with bun + git + gh + python3 installed; an enrichment re-bake layers on
+ * the CURRENT template (fromTemplate), so the repo's own deps are preserved
+ * the same way the instabox flow preserves them.
+ */
+async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+}> {
+  const Template = E2bTemplate;
+  const ex = cfg.env.e2b!;
+  const snapName = ex.snapshot || `${sanitizeMachinePart(slug)}-base`;
+  const baseIsAlias = !!(ex.snapshot && readBases(stateDir)[ex.snapshot]);
+  if (baseIsAlias) {
+    const cur = ex.snapshot ? readBases(stateDir)[ex.snapshot] : undefined;
+    throw new Error(
+      `"${ex.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal template name. ` +
+      `To upgrade a base: build the new versioned name platform-side, then flip state/base-snapshot.json.`
+    );
+  }
+  receipt(stateDir, `bake ${slug}: building e2b template ${snapName}`, slug);
+  const cloneUrl = cfg.origin_url ?? `https://github.com/${cfg.repo}.git`;
+  let t;
+  if (ex.snapshot) {
+    t = Template().fromTemplate(resolveSnapshotName(stateDir, ex.snapshot));
+  } else {
+    // system installs run as root — the builder's default user cannot touch
+    // /var/lib/apt (recorded: permission-denied lock, bake 2026-11-13)
+    t = Template()
+      .fromImage("node:22-bookworm")
+      .runCmd("curl -fsSL https://bun.sh/install | bash", { user: "root" })
+      .runCmd("apt-get update && apt-get install -y git curl python3 ca-certificates && rm -rf /var/lib/apt/lists/*", { user: "root" });
+  }
+  // private repos need the token — Template.gitClone only does anonymous
+  // https (recorded: "could not read Username", bake 2026-11-13), so clone
+  // via a runCmd with the factory's insteadOf rewrite, exactly like the
+  // instabox/machine bakes. Clone and bake run as the builder's DEFAULT user
+  // (its own home is writable; a root-owned clone left the default user
+  // unable to write — recorded bake 2026-11-13); only system installs run as
+  // root. The builder echoes RUN lines into its logs, so the token is
+  // redacted from every receipt line below.
+  const ghToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const redact = (line: string) =>
+    ghToken ? line.split(ghToken).join("***GH_TOKEN***") : line;
+  const auth = ghToken ? `git config --global url."https://x-access-token:${ghToken}@github.com/".insteadOf "https://github.com/" && ` : "";
+  t = t.runCmd(`${auth}git clone ${cloneUrl} ${ex.repo_dir}`);
+  const bake = (ex.bake ?? "").trim();
+  if (bake) t = t.runCmd(`cd ${ex.repo_dir} && ${bake}`);
+  // Template.build caps: 1 h build, 20 concurrent (Hobby and Pro)
+  const info = await Template.build(t, snapName, { cpuCount: 2, memoryMB: 4096, onBuildLogs: (chunk) => receipt(stateDir, `bake ${slug}: ${redact(String(chunk).trimEnd()).slice(0, 200)}`, slug) });
+  const config_updated = writeSnapshotToConfig(stateDir, slug, "e2b", snapName);
+  receipt(stateDir, `bake ${slug}: e2b template ${snapName} ready (${info.templateId})`, slug);
+  return { machine: "(template build)", snapshot: snapName, snapshotId: String(info.templateId ?? snapName), platform: "e2b", config_updated };
+}
+
+/**
+ * InstaVM bake: the documented snapshot build (POST /v1/snapshots) — an OCI
+ * base + build_args: the platform clones the repo into /app/repo (the
+ * default repo_dir), runs post_build_cmd (the bake script), and registers
+ * the snapshot async. An enrichment re-bake rebuilds the same name (the old
+ * snapshot is deleted first; new boots of that name fail once in the window).
+ */
+async function bakeInstavm(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+}> {
+  const client = instavmClientFromEnv(cfg);
+  const ix = cfg.env.instavm!;
+  const snapName = ix.snapshot || `${sanitizeMachinePart(slug)}-base`;
+  const baseIsAlias = !!(ix.snapshot && readBases(stateDir)[ix.snapshot]);
+  if (baseIsAlias) {
+    const cur = ix.snapshot ? readBases(stateDir)[ix.snapshot] : undefined;
+    throw new Error(
+      `"${ix.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
+      `To upgrade a base: build the new versioned name platform-side, then flip state/base-snapshot.json.`
+    );
+  }
+  receipt(stateDir, `bake ${slug}: building instavm snapshot ${snapName}`, slug);
+  // delete a same-name snapshot first so the rebuild lands (names are unique)
+  try {
+    const existing = await client.request("GET", "/v1/snapshots");
+    const items = Array.isArray(existing) ? existing : (existing?.snapshots ?? existing?.items ?? []);
+    for (const s of items) if (s.name === snapName) await client.request("DELETE", `/v1/snapshots/${s.id ?? s.snapshot_id}`);
+  } catch {}
+  const bake = (ix.bake ?? "").trim();
+  const ghToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const postBuild = bake
+    ? `cd ${escapeSh(ix.repo_dir)} && ${bake}`
+    : `cd ${escapeSh(ix.repo_dir)} && echo BAKE_SKIPPED`;
+  const body = {
+    oci_image: "ubuntu:24.04",
+    name: snapName,
+    vcpu_count: 2,
+    memory_mb: 4096,
+    build_args: {
+      // UNVERIFIED until the gating smoke: git_clone_url lands in /app/repo,
+      // envs hold build-time secrets (never runtime), post_build_cmd is shell
+      git_clone_url: cfg.origin_url ?? `https://github.com/${cfg.repo}.git`,
+      git_clone_branch: cfg.default_branch,
+      ...(ghToken ? { envs: { GITHUB_TOKEN: ghToken } } : {}),
+      post_build_cmd: postBuild,
+      disk_size_gb: 8,
+    },
+    type: "user",
+  };
+  let res: any;
+  try {
+    res = await client.request("POST", "/v1/snapshots", body);
+  } catch (e: any) {
+    throw new Error(`instavm snapshot build request failed: ${String(e?.message ?? e).slice(0, 300)}`);
+  }
+  const snapId = String(res?.id ?? res?.snapshot_id ?? "");
+  if (!snapId) throw new Error(`instavm snapshot build returned no id: ${JSON.stringify(res).slice(0, 200)}`);
+  // async Celery build — poll status until ready (up to 60 min)
+  const deadline = Date.now() + 60 * 60_000;
+  for (;;) {
+    const info = await client.request("GET", `/v1/snapshots/${snapId}`);
+    const status = String(info?.status ?? "").toLowerCase();
+    if (status === "ready" || status === "active" || status === "available" || status === "complete") break;
+    if (status === "error" || status === "failed") {
+      throw new Error(`instavm snapshot build failed: ${String(info?.last_error ?? JSON.stringify(info)).slice(0, 400)}`);
+    }
+    if (Date.now() > deadline) throw new Error(`instavm snapshot build timed out after 60 min (status ${status})`);
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+  const config_updated = writeSnapshotToConfig(stateDir, slug, "instavm", snapName);
+  receipt(stateDir, `bake ${slug}: instavm snapshot ${snapName} ready (${snapId})`, slug);
+  return { machine: "(snapshot build)", snapshot: snapName, snapshotId: snapId, platform: "instavm", config_updated };
 }
 
 export function opsScenarioSet(stateDir: string, slug: string, kind: "runtime" | "holdout", content: string) {
@@ -1298,23 +1573,26 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
 }
 
 /**
- * Lap-machine janitor, both machine lanes: pdf-* machines are per-lap
+ * Lap-machine janitor, all machine lanes: pdf-* machines are per-lap
  * disposables, but a live lap's machine must survive (its clone IS the
  * worktree). A machine is an orphan unless its issue's ledger row is
  * in_progress — merged/blocked/no-row machines (crashed laps, phantom
  * platform records, de-onboarded repos) get deleted. Runs at every tick's
- * tail and inside `cleanup`. `boxdClient` is a test seam.
+ * tail and inside `cleanup`. The `*Client` fields are test seams.
  */
 export async function reapOrphanMachines(
   stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
-  opts: { boxdClient?: any } = {}
+  opts: { boxdClient?: any; daytonaClient?: any; e2bClient?: any; instavmClient?: any } = {}
 ): Promise<number> {
   const reposDir = join(stateDir, "repos");
   if (!existsSync(reposDir)) return 0;
   const instaboxBySlug = new Map<string, RepoConfig>();
   const boxdBySlug = new Map<string, RepoConfig>();
+  const daytonaBySlug = new Map<string, RepoConfig>();
+  const e2bBySlug = new Map<string, RepoConfig>();
+  const instavmBySlug = new Map<string, RepoConfig>();
   let instaboxClientCfg: RepoConfig | null = null;
   for (const slug of readdirSync(reposDir)) {
     const cfgPath = join(reposDir, slug, "config.json");
@@ -1324,25 +1602,33 @@ export async function reapOrphanMachines(
       // keyed by the SANITIZED slug, the form machineNameFor writes into
       // every machine name: a raw key would miss a slug that sanitizes
       // differently and file its live machines under "unknown repo".
-      // A machine-mode repo is known on BOTH platforms: a spill-over lap
-      // (scheduling.spill_over) runs on the other one, and bucketing by
+      // A machine-mode repo is known on EVERY platform: a spill-over lap
+      // (scheduling.spill_over) may run on any of them, and bucketing by
       // env.mode alone reaped a spilled box mid-lap as "unknown repo".
       const key = sanitizeMachinePart(cfg.slug);
-      const machine = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
-      if (machine && cfg.env.instabox) instaboxBySlug.set(key, cfg);
-      if (machine) boxdBySlug.set(key, cfg);
+      if (isMachineMode(cfg.env.mode)) {
+        if (cfg.env.instabox) instaboxBySlug.set(key, cfg);
+        boxdBySlug.set(key, cfg);
+        daytonaBySlug.set(key, cfg);
+        e2bBySlug.set(key, cfg);
+        instavmBySlug.set(key, cfg);
+      }
       if (cfg.env.mode === "instabox" && cfg.env.instabox) instaboxClientCfg ??= cfg;
     } catch {}
   }
   let reaped = 0;
   // a lane runs only where some repo lives: instabox when an instabox-mode
-  // repo exists (its block names the API), boxd when a boxd-mode repo exists
-  // or a repo may spill there
-  const anyBoxd = [...boxdBySlug.values()].some((c) => c.env.mode === "boxd" || c.scheduling?.spill_over);
-  const anyInstabox = !!instaboxClientCfg || [...instaboxBySlug.values()].some((c) => c.scheduling?.spill_over);
+  // repo exists (its block names the API); each other pool when one of its
+  // repos lives there or a repo may spill to it
+  const anyOf = (m: Map<string, RepoConfig>, pool: string) =>
+    [...m.values()].some((c) => c.env.mode === pool || c.scheduling?.spill_over);
+  const anyInstabox = !!instaboxClientCfg || anyOf(instaboxBySlug, "instabox");
   if (anyInstabox && instaboxBySlug.size > 0)
     reaped += await reapInstaboxMachines(stateDir, ledger, log, instaboxBySlug, instaboxClientCfg ?? instaboxBySlug.values().next().value!);
-  if (anyBoxd) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
+  if (anyOf(boxdBySlug, "boxd")) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
+  if (anyOf(daytonaBySlug, "daytona")) reaped += await reapDaytonaMachines(ledger, log, daytonaBySlug, opts.daytonaClient);
+  if (anyOf(e2bBySlug, "e2b")) reaped += await reapE2bMachines(ledger, log, e2bBySlug, opts.e2bClient);
+  if (anyOf(instavmBySlug, "instavm")) reaped += await reapInstavmMachines(ledger, log, instavmBySlug, opts.instavmClient);
   return reaped;
 }
 
@@ -1395,6 +1681,136 @@ async function reapBoxdMachines(
     }
   } finally {
     if (!client) await c.close?.().catch(() => {}); // only the client this pass opened
+  }
+  return reaped;
+}
+
+/**
+ * Daytona lane of the janitor: sandboxes carrying the factory=1 label every
+ * lap sandbox is created with are considered; the live-lap guard reads the
+ * repo label. A Sandbox object from the SDK's list iterator carries id/name.
+ */
+async function reapDaytonaMachines(
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void,
+  daytonaBySlug: Map<string, RepoConfig>,
+  client?: any
+): Promise<number> {
+  let c = client;
+  if (!c) {
+    try {
+      c = daytonaClientFromEnv();
+    } catch (e: any) {
+      log(`daytona janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+      return 0;
+    }
+  }
+  let reaped = 0;
+  try {
+    const found: any[] = [];
+    for await (const m of c.list({ labels: { factory: "1" } })) found.push(m);
+    for (const m of found) {
+      const hit = MACHINE_NAME_RE.exec(m.name ?? "");
+      if (!hit || (m as any).labels?.factory !== "1") continue;
+      const repo = daytonaBySlug.get(hit[1])?.repo ?? (m as any).labels?.repo;
+      const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
+      if (row && row.state === "in_progress") continue; // a lap is live in it
+      try {
+        await c.delete(m);
+        reaped++;
+        log(`janitor deleted daytona sandbox ${m.name} (${row?.state ?? (repo ? "no ledger row" : "unknown repo")})`);
+      } catch (e: any) {
+        log(`janitor could not delete daytona sandbox ${m.name}: ${String(e.message).slice(0, 120)}`);
+      }
+    }
+  } catch (e: any) {
+    log(`daytona janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+  }
+  return reaped;
+}
+
+/**
+ * E2B lane of the janitor: sandboxes carrying the factory=1 metadata every
+ * lap sandbox is created with; the live-lap guard reads the repo metadata.
+ */
+async function reapE2bMachines(
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void,
+  e2bBySlug: Map<string, RepoConfig>,
+  client?: any
+): Promise<number> {
+  let c = client;
+  if (!c) {
+    try {
+      c = e2bFromEnv();
+    } catch (e: any) {
+      log(`e2b janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+      return 0;
+    }
+  }
+  let reaped = 0;
+  try {
+    const all = await c.list();
+    for (const m of all) {
+      const name = (m as any).metadata?.name;
+      const hit = MACHINE_NAME_RE.exec(name ?? "");
+      if (!hit || (m as any).metadata?.factory !== "1") continue;
+      const repo = e2bBySlug.get(hit[1])?.repo ?? (m as any).metadata?.repo;
+      const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
+      if (row && row.state === "in_progress") continue; // a lap is live in it
+      try {
+        await c.kill(m.sandboxId);
+        reaped++;
+        log(`janitor deleted e2b sandbox ${name} (${row?.state ?? (repo ? "no ledger row" : "unknown repo")})`);
+      } catch (e: any) {
+        log(`janitor could not delete e2b sandbox ${name}: ${String(e.message).slice(0, 120)}`);
+      }
+    }
+  } catch (e: any) {
+    log(`e2b janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+  }
+  return reaped;
+}
+
+/**
+ * InstaVM lane of the janitor: VMs carrying the factory=1 metadata every lap
+ * VM is created with; the live-lap guard reads the repo metadata.
+ */
+async function reapInstavmMachines(
+  ledger: Pick<Ledger, "getIssue">,
+  log: (m: string) => void,
+  instavmBySlug: Map<string, RepoConfig>,
+  client?: any
+): Promise<number> {
+  let c = client;
+  if (!c) {
+    try {
+      c = instavmClientFromEnv();
+    } catch (e: any) {
+      log(`instavm janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
+      return 0;
+    }
+  }
+  let reaped = 0;
+  try {
+    const all = await c.listVms();
+    for (const m of all) {
+      const name = m?.metadata?.name;
+      const hit = MACHINE_NAME_RE.exec(name ?? "");
+      if (!hit || m?.metadata?.factory !== "1") continue;
+      const repo = instavmBySlug.get(hit[1])?.repo ?? m?.metadata?.repo;
+      const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
+      if (row && row.state === "in_progress") continue; // a lap is live in it
+      try {
+        await c.deleteVm(String(m.vm_id ?? m.id));
+        reaped++;
+        log(`janitor deleted instavm VM ${name} (${row?.state ?? (repo ? "no ledger row" : "unknown repo")})`);
+      } catch (e: any) {
+        log(`janitor could not delete instavm VM ${name}: ${String(e.message).slice(0, 120)}`);
+      }
+    }
+  } catch (e: any) {
+    log(`instavm janitor skipped: ${String(e?.message ?? e).slice(0, 150)}`);
   }
   return reaped;
 }

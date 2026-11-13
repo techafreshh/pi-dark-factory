@@ -6,8 +6,9 @@ export interface StageRef { stage: string; model: string; attempt: number; start
 export interface LiveLap { id: number; repo: string; slug: string; issue_number: number; title: string | null; started_at: string; attempts: number | null; pr: number | null; stage: StageRef | null }
 export interface NeedsYou { kind: "blocked" | "paused" | "daily_cap" | "billing" | "backup" | "slot_wait"; repo: string | null; slug: string | null; issue: number | null; title: string | null; detail: string; at: string | null; pr?: number | null; attempts?: number; lap_id?: number | null }
 export interface ModelHealth { model: string; tries: number; ok: number; failed: number; billing: number; last_at: string; last_outcome: string; last_error: string | null }
-export interface MachineRow { provider: "instabox" | "boxd"; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
-export interface MachinePool { provider: "instabox" | "boxd"; configured: boolean; error: string | null; machines: MachineRow[] }
+export type MachineProvider = "instabox" | "boxd" | "daytona" | "e2b" | "instavm";
+export interface MachineRow { provider: MachineProvider; name: string; state: string; slug: string | null; issue: number | null; created: string | null }
+export interface MachinePool { provider: MachineProvider; configured: boolean; error: string | null; machines: MachineRow[] }
 
 export interface Summary {
   generatedAt: string;
@@ -28,7 +29,7 @@ export interface Summary {
   backup: { last_ok_at?: string | null; last_id?: string; last_error?: string | null; last_error_at?: string | null } | null;
 }
 
-export type PoolName = "instabox" | "boxd";
+export type PoolName = "instabox" | "boxd" | "daytona" | "e2b" | "instavm";
 export interface PoolRow { pool: PoolName; cap: number; used: number; waiting: number; parked: number }
 export interface LeaseRow {
   id: number; repo: string; slug: string; lane: number; pool: PoolName; priority: string; issue: number | null; title: string | null;

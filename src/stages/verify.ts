@@ -8,7 +8,7 @@ import { branchName } from "./intake";
 import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir, withSourceLock } from "../gitws";
 import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
 import { repoDirFor } from "../machine";
-import type { RepoConfig } from "../types";
+import { isMachineMode, type RepoConfig } from "../types";
 
 export interface GateFailure {
   gate: string;
@@ -168,7 +168,7 @@ export async function runVerify(
     const scratch = join(issueDir(opts.stateDir, cfg.slug, opts.issue), key === "runtime" ? "verify" : "holdout");
     mkdirSync(join(scratch, ".."), { recursive: true });
     let result: ScenarioResult;
-    if (opts.machine && (cfg.env.mode === "instabox" || cfg.env.mode === "boxd")) {
+    if (opts.machine && isMachineMode(cfg.env.mode)) {
       // setup + start run inside the machine; every probe judges the box's OWN
       // loopback over the machine's exec/bash primitive (instabox: ssh gateway
       // channel; boxd: hardened exec wrapper). $WORKTREE is the machine's copy

@@ -52,7 +52,7 @@ Per repo, in `config.json` (patchable through `POST /repos/<slug>/config`):
 | Key | Default | Meaning |
 |---|---|---|
 | `priority` | `normal` | `high`, `normal` or `low`: the repo's place in the slot queue |
-| `spill_over` | `false` | when the repo's own platform pool is full, a lap may run on the other platform. Needs a working snapshot and `repo_dir` on both (`env.instabox` and `env.boxd`) |
+| `spill_over` | `false` | when the repo's own platform pool is full, a lap may run on any other machine platform (instabox, boxd, daytona, e2b, instavm — own mode first, then the rest in fleet order). Every platform block carries defaults; point the target's `snapshot` at a baked base before relying on it |
 | `parallel` | `false` | run up to `max_lanes` laps at once. Requires `env.mode` `instabox` or `boxd` |
 | `max_lanes` | `3` | lanes per repo in parallel mode (1–10) |
 
@@ -62,6 +62,9 @@ Fleet-wide, in `factoryd.env` (the daemon's children inherit it):
 |---|---|---|
 | `PDF_POOL_INSTABOX` | `5` | concurrent factory machines on InstaBox (entry tier) |
 | `PDF_POOL_BOXD` | `10` | concurrent factory machines on boxd. The account limit is 100, so this is a cost cap |
+| `PDF_POOL_DAYTONA` | `5` | concurrent factory sandboxes on Daytona (Tier 1 org pool ≈ five 2-vCPU sandboxes) |
+| `PDF_POOL_E2B` | `10` | concurrent factory sandboxes on E2B (Hobby plan cap) |
+| `PDF_POOL_INSTAVM` | `5` | concurrent factory VMs on InstaVM (Free plan cap) |
 | `PDF_AGING_MINUTES` | `30` | a waiting request moves up one priority level per this many minutes |
 | `PDF_SLOT_WAIT_MS` | `840000` (14 min) | how long a tick process waits for a grant before it parks its request and exits |
 | `PDF_FLEET_DAILY_ATTEMPTS` | `0` (off) | implement attempts across every repo per UTC day |
@@ -93,7 +96,7 @@ slot_requests (id, repo, slug, lane, pools, priority, extra_lane, pid, state,
 ```
 
 One row per lane's request. `pools` is the ordered platform preference (`["instabox"]`, or
-`["instabox","boxd"]` with spill-over). `pool` is the platform granted.
+`[own mode, then the rest of the fleet]` with spill-over). `pool` is the platform granted.
 
 ### Ordering
 
@@ -138,10 +141,11 @@ machines, anything else in the org) can still fill a platform.
 A spilled lap runs with a per-lap copy of the repo config whose `env.mode` is the granted
 platform. `repoDirFor`, `openMachine`, the runtime context and verify all branch on
 `cfg.env.mode`, so the copy is the whole change. It is rebuilt after `runChain`'s per-lap
-config reload. Before enabling spill-over on a repo, run `scenario --test` on both platforms:
-snapshots differ in toolchain (the instabox base ships node, the boxd base ships bun).
+config reload. Before enabling spill-over on a repo, run `scenario --test` on every
+platform you spill to: snapshots differ in toolchain (the instabox base ships node, the
+boxd base ships bun; the daytona/e2b/instavm bases ship bun + node + git + gh + python3).
 
-The janitor buckets repos by `env.mode` today, so a boxd-primary repo's spilled InstaBox
+The janitor buckets repos onto every machine platform, so a boxd-primary repo's spilled InstaBox
 machine would be reaped as "unknown repo" mid-lap. The janitor change: a slug known to any
 onboarded config is a known repo on both platforms. The live-lap guard (`in_progress` row)
 is unchanged.
@@ -256,7 +260,7 @@ overview's Machines card:
 The dashboard keeps its rule of no imports from `src/`. The effective-priority formula is
 duplicated there, and a test pins both copies to the same results. Pool caps come from
 factoryd's `/health` when the daemon answers, else from `DASHBOARD_POOL_INSTABOX` /
-`DASHBOARD_POOL_BOXD` (falling back to `PDF_POOL_*`, then 5 and 10).
+`DASHBOARD_POOL_BOXD` / `DASHBOARD_POOL_DAYTONA` / `DASHBOARD_POOL_E2B` / `DASHBOARD_POOL_INSTAVM` (each falling back to its `PDF_POOL_*`, then the defaults 5 / 10 / 5 / 10 / 5)
 
 ## Prompts
 

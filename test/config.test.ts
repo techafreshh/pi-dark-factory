@@ -195,17 +195,24 @@ describe("loadRepoConfig scheduling", () => {
   });
 
   test("parallel and spill-over need a machine mode", () => {
-    expect(() => load({ scheduling: { parallel: true } })).toThrow(/parallel requires env.mode "instabox" or "boxd"/);
-    expect(() => load({ env: { mode: "compose" }, scheduling: { spill_over: true } })).toThrow(/spill_over requires env.mode/);
+    expect(() => load({ scheduling: { parallel: true } })).toThrow(/parallel requires a machine env\.mode/);
+    expect(() => load({ env: { mode: "compose" }, scheduling: { spill_over: true } })).toThrow(/spill_over requires a machine env\.mode/);
+    expect(() => load({ env: { mode: "host" }, scheduling: { spill_over: true } })).toThrow(/spill_over requires a machine env\.mode/);
   });
 
-  test("spill-over needs the other platform's block", () => {
-    // the boxd block has defaults (repo_dir + the shared boxd base), so an
-    // instabox repo can spill without extra config
-    expect(load({ env: { mode: "instabox" }, scheduling: { spill_over: true } }).scheduling!.spill_over).toBe(true);
-    expect(() => load({ env: { mode: "instabox", boxd: { repo_dir: "" } }, scheduling: { spill_over: true } })).toThrow(/requires env.boxd.repo_dir/);
-    // a boxd repo needs an instabox snapshot or template to boot from
-    expect(load({ env: { mode: "boxd" }, scheduling: { spill_over: true } }).scheduling!.spill_over).toBe(true);
-    expect(() => load({ env: { mode: "boxd", instabox: { snapshot: "", template: "" } }, scheduling: { spill_over: true } })).toThrow(/requires env.instabox.repo_dir and env.instabox.snapshot/);
+  test("spill-over is accepted on every machine mode — the cross-platform blocks all carry defaults", () => {
+    // every machine block (repo_dir + a snapshot token) is merged in by the
+    // defaults, so a spill target's absence is discovered at machine-create
+    // time, loudly, instead of by a config gate that would need updating for
+    // every new platform
+    for (const mode of ["instabox", "boxd", "daytona", "e2b", "instavm"]) {
+      expect(load({ env: { mode }, scheduling: { spill_over: true } }).scheduling!.spill_over).toBe(true);
+    }
+    // the merged config still exposes the platform blocks for the operator to
+    // point at their own snapshot instead of the fleet default
+    const cfg = load({ env: { mode: "instabox", scheduling: { spill_over: true } } });
+    expect(cfg.env.daytona!.repo_dir).toBe("/home/daytona/repo");
+    expect(cfg.env.e2b!.snapshot).toBe(""); // unset until baked, like instabox
+    expect(cfg.env.instavm!.api_base).toBe("https://api.instavm.io");
   });
 });

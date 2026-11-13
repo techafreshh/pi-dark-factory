@@ -16,14 +16,16 @@ Commands:
   onboard <owner/name>                register a repo: config + scenario templates + port pair
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)
                                          [--max N] [--dry-run]
-  bake <slug>                         build the repo's golden instabox snapshot: machine from
-                                         template + clone + env.instabox.bake script; sets
-                                         env.instabox.snapshot in the repo config
+  bake <slug>                         build the repo's golden snapshot on its machine
+                                         platform (instabox machine flow; daytona sandbox
+                                         flow; e2b/instavm remote builds) from the base
+                                         snapshot/template + clone + env.<platform>.bake
+                                         script; sets env.<platform>.snapshot in the config
   unblock <slug> <issue>              drop the ledger row so intake re-claims the issue
                                          [--prune] also close PR + delete branch + worktree
                                          [--force] override the in-progress guard (verify dead first)
   cleanup                             prune blocked worktrees' dep caches, kill stale pi,
-                                       reap leftover pdf-* lap machines (instabox + boxd),
+                                       reap leftover pdf-* lap machines (all machine platforms),
                                        report disk
 
 Options:

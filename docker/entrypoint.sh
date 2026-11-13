@@ -6,7 +6,8 @@ set -eu
 # 0. docker/.env.example leaves unused keys empty. An empty key must not reach pi or the
 #    web-grounding extension as "set", so drop every empty one.
 for k in GH_TOKEN GITHUB_TOKEN ANTHROPIC_API_KEY OPENROUTER_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY \
-         TINYFISH_API_KEY INSTABOX_API_KEY BOXD_API_KEY GIT_USER_NAME GIT_USER_EMAIL; do
+         TINYFISH_API_KEY INSTABOX_API_KEY BOXD_API_KEY DAYTONA_API_KEY E2B_API_KEY INSTAVM_API_KEY \
+         GIT_USER_NAME GIT_USER_EMAIL; do
   eval "v=\${$k:-}"
   if [ -z "$v" ]; then unset "$k"; fi
 done
@@ -57,7 +58,7 @@ fi
 # 4. First-run dirs, then one line naming the optional keys that are off (never the values).
 mkdir -p "${PI_FACTORY_STATE:-$HOME/state}" "$HOME/.pi"
 off=""
-for k in TINYFISH_API_KEY INSTABOX_API_KEY BOXD_API_KEY; do
+for k in TINYFISH_API_KEY INSTABOX_API_KEY BOXD_API_KEY DAYTONA_API_KEY E2B_API_KEY INSTAVM_API_KEY; do
   eval "v=\${$k:-}"
   [ -n "$v" ] || off="$off $k"
 done

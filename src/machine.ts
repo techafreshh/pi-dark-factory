@@ -60,11 +60,18 @@ export function escapeSh(s: string): string {
 }
 
 /** The in-machine clone path for the repo's mode — instabox clones to
- *  cfg.env.instabox.repo_dir, boxd to cfg.env.boxd.repo_dir. Everything that
- *  materializes a worktree in a machine (env.sh, bootstrap, scenario target)
- *  resolves through this so a mode flip touches nothing else. */
+ *  cfg.env.instabox.repo_dir, boxd to cfg.env.boxd.repo_dir, daytona/e2b/
+ *  instavm to their own blocks. Everything that materializes a worktree in a
+ *  machine (env.sh, bootstrap, scenario target) resolves through this so a
+ *  mode flip touches nothing else. */
 export function repoDirFor(cfg: RepoConfig): string {
-  return cfg.env.mode === "boxd" ? cfg.env.boxd?.repo_dir ?? "" : cfg.env.instabox.repo_dir;
+  switch (cfg.env.mode) {
+    case "boxd": return cfg.env.boxd?.repo_dir ?? "";
+    case "daytona": return cfg.env.daytona?.repo_dir ?? "";
+    case "e2b": return cfg.env.e2b?.repo_dir ?? "";
+    case "instavm": return cfg.env.instavm?.repo_dir ?? "";
+    default: return cfg.env.instabox.repo_dir;
+  }
 }
 
 /** Test seam: tests point PDF_SSH_BIN at a fake gateway (and custom ssh paths can too). */

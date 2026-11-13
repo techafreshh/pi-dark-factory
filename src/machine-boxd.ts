@@ -85,7 +85,9 @@ export function parseWrap(stdout: string, nonce: string): { rc: number; out: str
   return { rc: rcM ? Number(rcM[1]) : 125, out, err };
 }
 
-const raceDeadline = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+/** exported: every HTTP/SDK driver (daytona, e2b, instavm) races the same
+ *  hung-transport detector against its platform call */
+export const raceDeadline = <T,>(p: Promise<T>, ms: number): Promise<T> =>
   new Promise<T>((res, rej) => {
     const t = setTimeout(() => rej(new Error(`transport hung past ${ms}ms deadline`)), ms);
     p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); });
@@ -122,8 +124,10 @@ export async function boxdBash(
 
 /** The stage wire protocol over exec env instead of ssh stdin: the driver
  *  script is byte-identical, only its three `read` lines become assignments
- *  from exec env (base64 payload + "PDFENV " prefix ride env vars safely). */
-function stageScriptFor(): string {
+ *  from exec env (base64 payload + "PDFENV " prefix ride env vars safely).
+ *  Shared by every exec-transport driver (boxd, daytona, e2b; instavm embeds
+ *  the assignments in the script — its REST exec takes no env param). */
+export function stageScriptFor(): string {
   const body = STAGE_DRIVER.split("\n").filter((l) => !/^read -r L_(ENV|ARGS|PROMPT)/.test(l.trim())).join("\n");
   return [`L_ENV="$PDF_L_ENV"`, `L_ARGS="$PDF_L_ARGS"`, `L_PROMPT="$PDF_L_PROMPT"`, body].join("\n");
 }

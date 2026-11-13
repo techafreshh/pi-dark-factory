@@ -26,7 +26,9 @@ default laps run strictly one at a time per repo, in dependency order: a merge r
 tick chains up to 6 laps per repo inside a 12-minute budget and the next tick takes the rest.
 Repos fan out in parallel, and a repo can opt into parallel lanes: independent issues
 build at once and land one by one through a rebase-and-re-verify merge queue. Machine slots
-are shared across the fleet by priority ([parallel mode](docs/parallel-mode.md)).
+across five cloud platforms (InstaBox, boxd, Daytona, E2B, InstaVM) are shared fleet-wide
+by priority, and a lap whose own pool is full spills to another platform
+([parallel mode](docs/parallel-mode.md)).
 
 From your **laptop** everything is remote: the factory exposes an HTTPS API (`factoryd`) —
 onboard repos, slice PRDs, watch laps, unblock, clean up — **no SSH after install day**.
@@ -126,7 +128,8 @@ Full verb manuals: [cli/README.md](cli/README.md).
 ## Repo map
 
 ```
-src/                 the engine: ledger, tick, stages, gates, instabox + boxd + compose drivers, factoryd
+src/                 the engine: ledger, tick, stages, gates, the machine drivers (instabox, boxd,
+                        daytona, e2b, instavm) + compose, factoryd
 pi-skills/           skill content shipped into every lap agent (ui router, agent-browser, …)
 cli/                 the @techafresh/dark-factory npm client
 bin/dashboard.ts     read-only telemetry dashboard server (UI in dashboard-ui/)
@@ -161,8 +164,9 @@ docs/                deep dives (below)
 - GitHub-centric by design: issues, PRs, checks and labels are the protocol.
 - Runtime verification assumes products that can serve HTTP on reserved local ports (the
   scenario contract).
-- Machine modes are bounded by your platform's machine cap (InstaBox entry tier ≈ 5
-  concurrent machines; boxd: your org's limit).
+- Machine modes are bounded by your platform's cap (InstaBox entry tier ≈ 5 concurrent
+  machines; boxd: your org's limit; Daytona Tier 1 ≈ 5 two-vCPU sandboxes; E2B Hobby: 10
+  sandboxes at 1 h each; InstaVM Free: 5 VMs).
 - Lap and backlog mutations spend real provider tokens. Spend is bounded by per-stage timeouts,
   attempt caps and a per-repo daily ceiling (`limits.daily_attempts`, default 60 implement
   attempts per UTC day), not by a dollar meter. When every model a stage tries answers `402`

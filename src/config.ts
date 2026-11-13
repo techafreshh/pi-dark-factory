@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { ModelEntry, ModelSpec, RepoConfig, StageModels } from "./types";
+import { MACHINE_MODES, isMachineMode, type ModelEntry, type ModelSpec, type RepoConfig, type StageModels } from "./types";
 
 const DEFAULTS = {
   attempts: 3,
@@ -49,6 +49,22 @@ const DEFAULTS = {
     boxd: {
       repo_dir: "/home/boxd/repo",
       snapshot: "factory-base-boxd-r1",
+    },
+    daytona: {
+      repo_dir: "/home/daytona/repo",
+      snapshot: "",
+      bake: "",
+    },
+    e2b: {
+      repo_dir: "/home/user/repo",
+      snapshot: "",
+      bake: "",
+    },
+    instavm: {
+      repo_dir: "/app/repo",
+      snapshot: "",
+      bake: "",
+      api_base: "https://api.instavm.io",
     },
   },
   pi: {
@@ -163,12 +179,21 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
       ...DEFAULTS.env,
       ...raw.env,
       instabox: { ...DEFAULTS.env.instabox, ...(raw.env?.instabox ?? {}) },
-      // boxd block is optional; merge so a mode flip needs only mode + repo_dir
+      // machine blocks are optional; merge so a mode flip needs only mode
       boxd: { ...DEFAULTS.env.boxd!, ...(raw.env?.boxd ?? {}) },
+      daytona: { ...DEFAULTS.env.daytona!, ...(raw.env?.daytona ?? {}) },
+      e2b: { ...DEFAULTS.env.e2b!, ...(raw.env?.e2b ?? {}) },
+      instavm: { ...DEFAULTS.env.instavm!, ...(raw.env?.instavm ?? {}) },
     },
   };
   if (cfg.env.mode === "boxd" && !cfg.env.boxd?.repo_dir)
     throw new Error(`config env.mode "boxd" requires env.boxd.repo_dir (the in-machine clone path)`);
+  if (cfg.env.mode === "daytona" && !cfg.env.daytona?.repo_dir)
+    throw new Error(`config env.mode "daytona" requires env.daytona.repo_dir (the in-sandbox clone path)`);
+  if (cfg.env.mode === "e2b" && !cfg.env.e2b?.repo_dir)
+    throw new Error(`config env.mode "e2b" requires env.e2b.repo_dir (the in-sandbox clone path)`);
+  if (cfg.env.mode === "instavm" && !cfg.env.instavm?.repo_dir)
+    throw new Error(`config env.mode "instavm" requires env.instavm.repo_dir (the in-VM clone path)`);
   // web flags must be booleans — a string "false" from a bad remote patch
   // would otherwise truthy through and flip the toggle the operator meant
   // to close (same fail-fast rule as the roster checks: reject at write time)
@@ -206,14 +231,19 @@ function validateScheduling(cfg: RepoConfig) {
   }
   if (!Number.isInteger(s.max_lanes) || s.max_lanes! < 1 || s.max_lanes! > 10)
     throw new Error(`config scheduling.max_lanes must be a whole number from 1 to 10 (got ${JSON.stringify(s.max_lanes)})`);
-  const machine = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
+  const machine = isMachineMode(cfg.env.mode);
   if (s.parallel && !machine)
-    throw new Error(`config scheduling.parallel requires env.mode "instabox" or "boxd" (got "${cfg.env.mode}"): every parallel lap needs its own machine`);
+    throw new Error(
+      `config scheduling.parallel requires a machine env.mode ("${MACHINE_MODES.join('" | "')}") (got "${cfg.env.mode}"): every parallel lap needs its own machine`
+    );
   if (s.spill_over) {
-    if (!machine) throw new Error(`config scheduling.spill_over requires env.mode "instabox" or "boxd" (got "${cfg.env.mode}")`);
-    if (cfg.env.mode === "instabox" && !cfg.env.boxd?.repo_dir)
-      throw new Error(`config scheduling.spill_over on an instabox repo requires env.boxd.repo_dir (and a boxd snapshot) for laps that spill to boxd`);
-    if (cfg.env.mode === "boxd" && (!cfg.env.instabox?.repo_dir || !(cfg.env.instabox.snapshot || cfg.env.instabox.template)))
-      throw new Error(`config scheduling.spill_over on a boxd repo requires env.instabox.repo_dir and env.instabox.snapshot (or template) for laps that spill to instabox`);
+    if (!machine)
+      throw new Error(
+        `config scheduling.spill_over requires a machine env.mode ("${MACHINE_MODES.join('" | "')}") (got "${cfg.env.mode}")`
+      );
+    // cross-platform spill targets resolve their clone path and snapshot from
+    // the config defaults (every machine block is always merged in), so no
+    // per-platform cross-requirement remains — a target whose fleet snapshot
+    // was never baked fails the spilled lap at machine create, loudly.
   }
 }

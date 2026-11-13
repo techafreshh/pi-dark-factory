@@ -5,7 +5,8 @@ description: >-
   laptop or VPS with Docker Compose. Server path: factory user, runtimes (bun,
   pi, gh), GitHub and model-provider auth, pi provisioning (models.json,
   packages, thinking levels), code + state dirs, the factoryd API with its
-  built-in scheduler, optional machine lanes (InstaBox, boxd), container mode,
+  built-in scheduler, optional machine lanes (InstaBox, boxd, Daytona, E2B,
+  InstaVM), container mode,
   ClinePass key router, web grounding, dashboard, backups, the Caddy block, and
   a smoke lap. Docker path: docker/.env, the factoryd + dashboard stack, model
   auth and smoke calls inside the container, and the CLI connection. Use when
@@ -83,8 +84,9 @@ plain stack and proxy to `127.0.0.1:8077`).
 The rest of Phase 0 is shared. For Docker, skip the systemd detection block
 below, run D1's checks instead, and treat questions as follows:
 - 1 (GitHub auth): a token only. `gh auth login` is not used.
-- 5 (lanes): `host`, `instabox`, `boxd`. `compose` is not available on the
-  Docker path; send a compose-mode repo to the systemd install.
+- 5 (lanes): `host`, `instabox`, `boxd`, `daytona`, `e2b`, `instavm`.
+  `compose` is not available on the Docker path; send a compose-mode repo to
+  the systemd install.
 - 7 (key router) and 9 (backups): not offered on the Docker path.
 - 8 (dashboard): always part of the stack, on loopback. It needs an auth layer
   only if it is exposed beyond loopback.
@@ -117,6 +119,13 @@ Ask in one batch. The defaults hold on "just set it up".
    - `instabox` needs `INSTABOX_API_KEY` and a stack-base snapshot.
    - `boxd` needs `BOXD_API_KEY` and the `factory-base-boxd-r1` snapshot in
      the boxd org.
+   - `daytona` needs `DAYTONA_API_KEY` **with the sandbox and snapshot
+     write/delete scopes** (a create-only key 403s every delete; the janitor
+     and the bake's snapshot step fail silently otherwise).
+   - `e2b` needs `E2B_API_KEY` (Hobby: 1 h continuous, 10 concurrent — keep
+     stage timeouts under ~50 min).
+   - `instavm` needs `INSTAVM_API_KEY` **and a card on file even on the Free
+     tier** (both VM and session creates 403 `card_required` otherwise).
    - `compose` needs docker on the host.
    - `host` needs nothing.
 6. **TinyFish web grounding** (default on): needs `TINYFISH_API_KEY`.
@@ -170,7 +179,7 @@ Then write the rest, each the same way (`VALUE="$TOKEN" setenvf GH_TOKEN`):
 - the model keys they chose (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
   `ZAI_API_KEY`, `DEEPSEEK_API_KEY`), skipped for providers they will log in to
   with OAuth in D3;
-- `TINYFISH_API_KEY`, `INSTABOX_API_KEY`, `BOXD_API_KEY` per Phase 0;
+- `TINYFISH_API_KEY`, `INSTABOX_API_KEY`, `BOXD_API_KEY`, `DAYTONA_API_KEY`, `E2B_API_KEY`, `INSTAVM_API_KEY` per Phase 0;
 - `FACTORYD_HOST_PORT` / `DASHBOARD_HOST_PORT` if D1 found a clash;
 - `GIT_USER_NAME` / `GIT_USER_EMAIL` only if they want a specific commit
   identity (the entrypoint derives one from the token otherwise).
@@ -224,9 +233,9 @@ If a project-trust prompt appears, set default trust in
 `~/.pi/agent/settings.json` inside the container. Where they chose web
 grounding, run Phase 5f's check as
 `docker compose exec -T factoryd sh -c 'pi --mode json --no-session --tools read,web_search,web_fetch --extension pi-extensions/pdf-tinyfish.ts -p "Call web_search with query \"tinyfish api\" and reply COUNT=<n> only."' | grep -o 'COUNT=[0-9]*'`.
-For an InstaBox or boxd lane, run Phase 5e's key and quota checks the same
-way, with the key read inside the container (`"$INSTABOX_API_KEY"` in a
-single-quoted `sh -c`). The stack-base snapshot file lives at
+For a machine lane (InstaBox, boxd, Daytona, E2B or InstaVM), run Phase 5e's
+key and quota checks the same way, with the key read inside the container
+(`"$INSTABOX_API_KEY"` in a single-quoted `sh -c`). The stack-base snapshot file lives at
 `/home/factory/state/base-snapshot.json` in the container, and
 `foreman bake` runs as `docker compose exec factoryd bun src/foreman.ts bake <slug>`.
 
@@ -385,7 +394,7 @@ heredoc with secrets passed straight in, never printed:
 | `FACTORY_API_KEY` | `$(openssl rand -hex 32)` |
 | `DARK_FACTORY_LAPTOP_KEY` | optional second key, `openssl rand -hex 32`, so the laptop key can be revoked on its own |
 | `GH_TOKEN` and `GITHUB_TOKEN` | both, same value, if the token route was chosen (machine stages read `GITHUB_TOKEN`) |
-| `INSTABOX_API_KEY` / `BOXD_API_KEY` / `TINYFISH_API_KEY` | per Phase 0 |
+| `INSTABOX_API_KEY` / `BOXD_API_KEY` / `DAYTONA_API_KEY` / `E2B_API_KEY` / `INSTAVM_API_KEY` / `TINYFISH_API_KEY` | per Phase 0 |
 
 **5b. `/etc/systemd/system/pi-factoryd.service`.** The daemon serves the API
 and schedules the ticks: every 15 minutes it starts one `foreman tick --repo`

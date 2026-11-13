@@ -178,7 +178,7 @@ export function Overview() {
         <Card>
           <CardHeader
             title={`Machines (${allMachines.length})`}
-            description="Lap machines on InstaBox and boxd, matched to their project and issue."
+            description="Lap machines across the five machine platforms, matched to their project and issue."
             action={<Link href={href("/scheduling")}>scheduling</Link>}
           />
           <div className="flex flex-wrap gap-2 border-b border-border px-4 py-2 text-xs">

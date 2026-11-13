@@ -176,6 +176,9 @@ inherit them:
 |---|---|---|
 | `PDF_POOL_INSTABOX` | 5 | concurrent factory machines on InstaBox |
 | `PDF_POOL_BOXD` | 10 | concurrent factory machines on boxd (a cost cap; the account allows 100) |
+| `PDF_POOL_DAYTONA` | 5 | concurrent factory sandboxes on Daytona (Tier 1 org pool ≈ five 2-vCPU) |
+| `PDF_POOL_E2B` | 10 | concurrent factory sandboxes on E2B (Hobby plan cap) |
+| `PDF_POOL_INSTAVM` | 5 | concurrent factory VMs on InstaVM (Free plan cap) |
 | `PDF_AGING_MINUTES` | 30 | a waiting request moves up one priority level per this many minutes |
 | `PDF_SLOT_WAIT_MS` | 840000 | how long a tick waits for a slot before it parks its request and exits |
 | `PDF_FLEET_DAILY_ATTEMPTS` | 0 (off) | implement attempts across every repo per UTC day |
@@ -203,7 +206,7 @@ lanes, merge queues, spill-over). Needs-you flags a lane waiting over an hour fo
 (`#/laps/123`) because Caddy strips the `/dashboard` prefix.
 
 The machine panel reads its API keys from `/home/factory/dashboard.env` (mode 600, factory
-owned): `INSTABOX_API_KEY=` and `BOXD_API_KEY=`, never the whole `factoryd.env`. A missing
+owned): `INSTABOX_API_KEY=`, `BOXD_API_KEY=`, `DAYTONA_API_KEY=`, `E2B_API_KEY=` or `INSTAVM_API_KEY=`, never the whole `factoryd.env`. A missing
 key shows that provider as "no key".
 
 The UI is built into the committed `dashboard-ui/dist`: after a UI change run

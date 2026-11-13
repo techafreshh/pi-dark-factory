@@ -20,8 +20,8 @@ dependencies are closed, longest chain first, and lands them through a merge que
    (the repo owner, the factory's own gh account, or the config's `trusted_authors`), no
    foreign PR claiming it, no unmet `Depends on: #n`, none of `skip_labels` (or the factory's
    `needs-info` label).
-2. **Plan** (planner model, read-only by contract; runs in the lap's machine for instabox
-   and boxd repos, on the VPS for host-mode repos) — writes `plan.md` in a fixed skeleton (approach with
+2. **Plan** (planner model, read-only by contract; runs in the lap's machine for every
+   machine mode — instabox, boxd, daytona, e2b, instavm — on the VPS for host-mode repos) — writes `plan.md` in a fixed skeleton (approach with
    rejected alternatives, assumptions, repo patterns to mirror with `file:line` citations, files
    to change, anchored steps, validation, out-of-scope). Escapes: `NO_ACTION: <reason>` for
    tracker/meta issues; `INSUFFICIENT_CONTEXT: <question>` when a product decision is missing: the question (plus the defaults it would have assumed) is posted on the issue, parked under `factory:needs-info`, and answered by a human in the issue body.

@@ -8,6 +8,9 @@ import { branchName, issueDir, sessionDir as sessionDirOf, sourceDir, sourceDir 
 import { machineNameFor } from "./instabox";
 import { buildMachineEnvFile, InfraUnavailableError, isInfraTransportText, openLapMachine, rebaseScriptFor, repoDirFor, resetToBaseScriptFor, type LapMachineLike } from "./machine";
 import { openBoxdLapMachine } from "./machine-boxd";
+import { openDaytonaLapMachine } from "./machine-daytona";
+import { openE2bLapMachine } from "./machine-e2b";
+import { openInstavmLapMachine } from "./machine-instavm";
 import { acquireSlot, bindLease, configForPool, lanePools, releaseSlot, type SlotLease } from "./allocator";
 import { runParallel, type MergeQueue } from "./parallel";
 import { Ledger } from "./ledger";
@@ -26,7 +29,7 @@ import { ensureHostExtension, extensionPresent, stageTools, webToggle } from "./
 import { syncHostSkills } from "./skills";
 import { reapOrphanMachines } from "./ops";
 import { acquireRepoLock, acquireTickLock, releaseRepoLock, releaseTickLock } from "./lock";
-import type { IssueLite, ModelSpec, RepoConfig, StageModels, StageName } from "./types";
+import { isMachineMode, type IssueLite, type ModelSpec, type RepoConfig, type StageModels, type StageName } from "./types";
 
 export interface CallStageArgs {
   models: StageModels;
@@ -87,7 +90,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
     // Machine-mode stages run in the box and get it prompt-only; the box
     // clone holds no host-side file.
     if (a.runtimeContext) {
-      if (cfg.env?.mode !== "instabox" && cfg.env?.mode !== "boxd") {
+      if (!isMachineMode(cfg.env?.mode)) {
         try {
           writeFileSync(a.cwd + "/.factory-context.md", a.runtimeContext + "\n");
         } catch {}
@@ -339,21 +342,27 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     return f;
   };
   let lastError = "attempts exhausted";
-  // machine modes (instabox/boxd): one machine per lap, created lazily by the
-  // first stage that needs it (plan, or implement when a reclaimed lap reuses
-  // its saved plan) and kept across this lap's repair rounds; the finally
-  // below destroys it however the lap ends (a reclaimed lap boots a fresh
-  // -g<lapId> machine, so nothing is ever parked for reuse)
+  // machine modes (instabox/boxd/daytona/e2b/instavm): one machine per lap,
+  // created lazily by the first stage that needs it (plan, or implement when
+  // a reclaimed lap reuses its saved plan) and kept across this lap's repair
+  // rounds; the finally below destroys it however the lap ends (a reclaimed
+  // lap boots a fresh -g<lapId> machine, so nothing is ever parked for reuse)
   // (cast: the stage closures assign it, which control-flow narrowing can't see)
   let machine = null as LapMachineLike | null;
-  const machineMode = cfg.env.mode === "instabox" || cfg.env.mode === "boxd";
+  const machineMode = isMachineMode(cfg.env.mode);
   const machineLog = (m: string) => repoReceipt(cfg.slug, stateDir, m);
   const openMachine = (): LapMachineLike =>
     deps.openMachine
       ? deps.openMachine(cfg, n, machineLog, lapId, stateDir)
       : cfg.env.mode === "boxd"
         ? openBoxdLapMachine(cfg, n, machineLog, lapId, stateDir)
-        : openLapMachine(cfg, n, machineLog, lapId, stateDir);
+        : cfg.env.mode === "daytona"
+          ? openDaytonaLapMachine(cfg, n, machineLog, lapId, stateDir)
+          : cfg.env.mode === "e2b"
+            ? openE2bLapMachine(cfg, n, machineLog, lapId, stateDir)
+            : cfg.env.mode === "instavm"
+              ? openInstavmLapMachine(cfg, n, machineLog, lapId, stateDir)
+              : openLapMachine(cfg, n, machineLog, lapId, stateDir);
 
   // a stage's ledger row opens BEFORE the stage runs (the dashboard's live
   // stage and real durations read it) and closes however the stage ends:
@@ -406,7 +415,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   // host/compose stages load it from the synced ~/.pi/agent/extensions copy
   const webEnabled =
     (webToggle(cfg).search || webToggle(cfg).fetch) &&
-    (cfg.env.mode === "instabox" || cfg.env.mode === "boxd" ? extensionPresent() : ensureHostExtension());
+    (isMachineMode(cfg.env.mode) ? extensionPresent() : ensureHostExtension());
 
   // "where am I" brief builder — the per-stage runtime context every agent
   // gets (prompt preamble; host/compose modes also write it to disk beside
@@ -429,18 +438,30 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
           ? `your own ephemeral InstaBox machine "${machineNameFor(cfg.slug, n, lapId)}" — its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.instabox.repo_dir}; gh and the toolchain are preinstalled and signed in`
           : cfg.env.mode === "boxd"
             ? `your own ephemeral boxd microVM "${machineNameFor(cfg.slug, n, lapId)}" — hardware-isolated, its own kernel and root; the clone of ${cfg.repo} lives at ${cfg.env.boxd?.repo_dir}; git, gh, bun and the toolchain are preinstalled`
-            : cfg.env.mode === "compose"
-            ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
-            : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
+            : cfg.env.mode === "daytona"
+              ? `your own ephemeral Daytona sandbox "${machineNameFor(cfg.slug, n, lapId)}" — its own filesystem and network stack; the clone of ${cfg.repo} lives at ${cfg.env.daytona?.repo_dir}; git, gh (token via env), bun and the toolchain are preinstalled`
+              : cfg.env.mode === "e2b"
+                ? `your own ephemeral E2B sandbox "${machineNameFor(cfg.slug, n, lapId)}" — a hardware-isolated Firecracker microVM; the clone of ${cfg.repo} lives at ${cfg.env.e2b?.repo_dir}; git, gh (token via env), bun and the toolchain are preinstalled`
+                : cfg.env.mode === "instavm"
+                  ? `your own ephemeral InstaVM machine "${machineNameFor(cfg.slug, n, lapId)}" — a hardware-isolated microVM with root; the clone of ${cfg.repo} lives at ${cfg.env.instavm?.repo_dir}; git, gh (token via env) and the toolchain are preinstalled`
+                  : cfg.env.mode === "compose"
+                  ? `inside the product's own docker compose "worker" service — a root, ephemeral container; the repo and factory state are bind-mounted at their host paths; the model API resolves via the factory-injected host-gateway`
+                  : `on the factory VPS as plain processes (no container); the model API resolves via the factory-injected host-gateway`,
       cwd,
       toolchain:
         cfg.env.mode === "instabox"
           ? `whatever the machine snapshot ships — node, git, gh (signed in), curl; network egress allowed`
           : cfg.env.mode === "boxd"
             ? `whatever the snapshot ships — bun, git, gh (token via env), python3, curl; network egress allowed`
-            : cfg.env.mode === "compose"
-            ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
-            : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
+            : cfg.env.mode === "daytona"
+              ? `whatever the snapshot ships — bun, node, git, gh (token via env), python3, curl; network egress allowed (platform egress policy applies)`
+              : cfg.env.mode === "e2b"
+                ? `whatever the template ships — bun, node, git, gh (token via env), python3, curl; outbound internet is open`
+                : cfg.env.mode === "instavm"
+                  ? `whatever the snapshot ships — bun, node, git, gh (token via env), python3, curl; network egress per the platform policy`
+                  : cfg.env.mode === "compose"
+                  ? `the worker image provides the runtime; the factory injects git identity + safe.directory and the pi binary at /usr/local/bin/pi; test servers bind INSIDE this container only`
+                  : `factory user environment on the VPS: node, bun, git, gh all on PATH`,
       webTools: webEnabled,
       uiLibraries: cfg.ui?.enabled !== false,
     });
@@ -1643,7 +1664,7 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           if (claimable.length === 0) return;
           // parallel mode (machine modes only, config-validated): lanes run
           // independent issues at once and land through the merge queue
-          if (cfg.scheduling?.parallel && (cfg.env.mode === "instabox" || cfg.env.mode === "boxd")) {
+          if (cfg.scheduling?.parallel && isMachineMode(cfg.env.mode)) {
             await runParallel(cfg, opts.stateDir, deps);
             return;
           }
