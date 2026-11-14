@@ -1,4 +1,4 @@
-# PRD-delivery acceptance — e2e regression, the drain-time walk, and the security audit
+# PRD-delivery acceptance — the verify-stage e2e gate, the drain-time walk, and the security audit
 
 Status: implemented 2026-11-13, opt-in per repo. The per-issue contract (the
 scenario gates) already proves each lap did its own job; this layer proves the
@@ -11,7 +11,7 @@ the repo config's `acceptance` block; all default OFF):
 
 ```jsonc
 "acceptance": {
-  "e2e": false,          // per-merge: run the authored browser suite on merged main
+  "e2e": false,          // verify gate: run the authored browser suite on every lap
   "prd_check": false,    // drain-time: walk the whole PRD against the live product
   "security": false,     // per-merge: penthera scan of merged main
   "severity_floor": "medium",
@@ -54,7 +54,11 @@ into the repair loop with the failing tests as findings — the agent fixes
 it before anything lands, and nothing files issues at merge time.
 Fail-fast: a product that failed its probes skips the browser. The gate
 skips while no suite exists (the drain-time walk authors one) or the flag
-is off; `acceptance.e2e_minutes` caps a run. Machine repos need the
+is off; `acceptance.e2e_minutes` caps a run. The runner exports `CI=1`,
+which gives failed tests one automatic retry — a flaky test gets a second
+chance before it blocks a merge, but the contract is still deterministic
+suites: the prd-acceptance skill's authoring rules say so, and a suite that
+needs retries to stay green is a bug in the suite. Machine repos need the
 browser in their golden snapshot — a re-`bake` with the flag on (the bake
 smoke fails loudly when a platform cannot carry one).
 
@@ -88,23 +92,19 @@ step individually caught — a hook failure is a receipt, never a lap error:
    that finding (gh 2.45 cannot read a close's `stateReason`, so the label
    is the signal). GitHub's default label set includes `wontfix`; if a repo
    removed it, create it again (`gh label create wontfix --repo R --color
-   F9D0C4`) or the suppression signal has nowhere to live. `[e2e-regression]` issues stay re-fileable either way —
-   a recurring failure is new evidence. Operator note: on a public repo
-   with `security: true` and no `security_public`, every merge runs the
-   full scan and files nothing, and `status` shows `last_security: fail`
-   for as long as findings above the floor exist — that is the gate
-   working, not a stuck scan.
-2. **the e2e suite** (`acceptance.e2e` + a suite exists) — against merged
-   main: host/compose repos run it host-side on the published port; machine
-   modes boot a short-lived `pdf-<slug>-i0` acceptance machine, bootstrap
-   `origin/main`, ship the suite over the exec channel, run `e2e run` in-box,
-   destroy the machine. A failing suite files one deduped
-   `[e2e-regression]` issue carrying the failing steps.
-3. The pre-existing scenario regression (`runPostMergeRegression`) is
-   unchanged and runs alongside.
+   F9D0C4`) or the suppression signal has nowhere to live. Operator note: on
+   a public repo with `security: true` and no `security_public`, every merge
+   runs the full scan and files nothing, and `status` shows
+   `last_security: fail` for as long as findings above the floor exist —
+   that is the gate working, not a stuck scan.
+2. The pre-existing scenario regression (`runPostMergeRegression`) is
+   unchanged and runs alongside. The browser e2e suite is NOT here — it is a
+   verify-stage gate (§1): its failures block the merge through the repair
+   loop instead of filing issues after the fact.
 
-The suite result also updates `last_security`/receipts; `status` shows both
-verdicts per repo (`dark-factory acceptance SLUG --status`).
+`status` shows the security verdict per repo (`dark-factory acceptance SLUG
+--status`); the e2e gate's outcome lives in the verify evidence sidecar and
+the review prompt.
 
 ## 3. The drain-time PRD acceptance walk
 

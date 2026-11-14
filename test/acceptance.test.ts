@@ -10,10 +10,11 @@ import { parsePentheraReport, findingsAboveFloor, runSecurityScan, mayFileSecuri
 import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
 import { runVerify } from "../src/stages/verify";
+import { BOX_SUITE_DIR } from "../src/stages/acceptance";
 import { reapOrphanMachines } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
-import { ensureSource } from "../src/gitws";
+import { ensureSource, uncommitted } from "../src/gitws";
 import { GIT_ID } from "./world";
 import type { CallStageFn } from "../src/tick";
 
@@ -582,6 +583,7 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
     execSync(`git -C ${source} push -q origin factory/issue-1`);
     const machine = new FakeMachine(w, w.cfg, 1, 1, {});
     await machine.bootstrap(); // real laps bootstrap at plan/implement — verify rides an existing box
+    rmSync(BOX_SUITE_DIR, { recursive: true, force: true }); // FakeMachine runs in-box scripts locally: the "box" path is a real host dir, so stale reports from a sibling test would leak
     return { w, machine, issue: 1 };
   }
 
@@ -627,6 +629,60 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
     const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
     expect(v.pass).toBe(true);
     expect(v.e2e).toBeUndefined();
+  });
+
+  slowTest("host lane: the suite's scratch NEVER lands in the lap worktree (uncommitted stays empty)", async () => {
+    const w = makeMachineWorld();
+    w.cfg.env.mode = "host";
+    const port = 21500 + (process.pid % 300);
+    w.cfg.scenario = { ports: [port, port + 1], runtime: "runtime.json", holdout: undefined as any };
+    w.cfg.acceptance = { e2e: true, prd_check: false, security: false };
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "runtime.json"),
+      JSON.stringify({
+        name: "runtime",
+        port,
+        start: "python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1",
+        readiness_path: "/",
+        probes: [{ id: "root", description: "serves", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/", expect: "status:200" }],
+      })
+    );
+    const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    const source = await ensureSource(w.stateDir, w.cfg);
+    execSync(`git -C ${source} ${GIT_ID} checkout -q -b factory/issue-1`);
+    writeFileSync(join(source, "feature.txt"), "change\n");
+    execSync(`git -C ${source} ${GIT_ID} add -A`);
+    execSync(`git -C ${source} ${GIT_ID} commit -q -m "the change"`);
+    execSync(`git -C ${source} push -q origin factory/issue-1`);
+    const wt = join(w.stateDir, "worktrees", "toy", "issue-1");
+    mkdirSync(join(wt, ".."), { recursive: true });
+    execSync(`git -C ${source} worktree add --detach ${wt} factory/issue-1`);
+    process.env.PDF_E2E_TOOLCHAIN_DIR = fakeBoxToolchain("pass");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue: 1, worktree: wt, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e?.pass).toBe(true);
+      // the H2 invariant: the gate's scratch (server.log, run.log) must never
+      // dirty the lap worktree — the next repair attempt would otherwise hit
+      // the uncommitted gate and the agent could commit the logs into the PR
+      const dirty = await uncommitted(wt);
+      expect(dirty).toEqual([]);
+      expect(existsSync(join(wt, ".pdf-e2e-scratch"))).toBe(false);
+    } finally {
+      delete process.env.PDF_E2E_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("no toolchain → INFRA skip, not a gate failure: pass stays true and the receipt names it", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR; // /opt/pdf-e2e does not exist here
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true); // no attempt burn, no repair loop
+    expect(v.e2e).toBeUndefined();
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("e2e gate skipped (infra");
   });
 });
 

@@ -14,11 +14,11 @@ import type { RepoConfig } from "./types";
  *
  *  - runPostMergeExtras runs after EVERY squash-merge (serial post-merge
  *    block and the parallel merge queue alike): the penthera security scan
- *    against merged main. Report-only — failures file issues, the chain
+ *    against merged main, report-only — failures file issues, the chain
  *    always moves on ("nothing after the merge may route the lap into the
- *    error path"). The browser e2e suite lives in the verify gate now: it
- *    runs on the lap's own machine before the merge, where its failures
- *    route into the repair loop instead of onto the tracker.
+ *    error path"). The browser e2e suite is NOT here: it is a verify-stage
+ *    gate (src/stages/verify.ts) whose failures block the merge through the
+ *    repair loop.
  *  - maybeDrainAcceptance is the end-of-project gate: when a tick finds
  *    nothing claimable and every open issue is a deferred factory class, it
  *    runs the full PRD acceptance walk (the agent judges the live product
