@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readAcceptanceState, writeAcceptanceState, type AcceptanceLast } from "./acceptance-state";
 import { ensureSource } from "./gitws";
-import { fileFactoryIssues } from "./fileissues";
+import { fileFactoryIssues, WONTFIX_LABEL } from "./fileissues";
 import { repoVisibility, type GhApi } from "./gh";
 import { agentEnv } from "./agentenv";
 import { receipt } from "./receipts";
@@ -146,7 +146,7 @@ export async function runSecurityScan(
     // factory's keys (PATH/HOME ride the allowlist base; npx needs both)
     const res = await sh(
       ["npx", "-y", pentheraSpec(), "--repo", wt, "-o", reportPath, "--no-footer"],
-      { cwd: opts.stateDir, env: agentEnv([]), inheritEnv: false, timeoutMs: SCAN_TIMEOUT_MS, killGroup: true }
+      { cwd: opts.stateDir, env: agentEnv([], undefined, { always: false }), inheritEnv: false, timeoutMs: SCAN_TIMEOUT_MS, killGroup: true }
     );
     const raw = (() => {
       try {
@@ -220,6 +220,8 @@ export async function runSecurityScan(
           : "",
         "",
         "This issue is a fix order for the normal lap loop: plan the fix, implement it, keep the scenario and e2e gates green. The scanner's own diff suggestions were not applied — any fix must go through review.",
+        "",
+        `Not fixing this? Close it with the \`${WONTFIX_LABEL}\` label — the scan will not re-file the finding. A close without the label suppresses nothing (an incomplete fix or a regression comes back).`,
       ]
         .filter((s) => s !== "")
         .join("\n");
@@ -233,7 +235,7 @@ export async function runSecurityScan(
         },
       };
     });
-    const filed = await fileFactoryIssues(opts.stateDir, cfg.slug, gh, items, { via: "security scan", dedupeClosed: true });
+    const filed = await fileFactoryIssues(opts.stateDir, cfg.slug, gh, items, { via: "security scan", dedupeWontfix: true });
     receipt(opts.stateDir, `security scan on main: ${summary}, filed ${filed.length}`, cfg.slug);
     return { pass: false, summary, filed };
   } finally {

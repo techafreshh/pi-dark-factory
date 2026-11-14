@@ -16,7 +16,7 @@ import {
 } from "../acceptance-state";
 import { resolveScenarioPort, runScenario, runScenarioInMachine, loadScenario, type ScenarioSpec } from "../scenario";
 import { agentEnv } from "../agentenv";
-import { fileFactoryIssues } from "../fileissues";
+import { fileFactoryIssues, WONTFIX_LABEL } from "../fileissues";
 import { ensureSource, sourceDir } from "../gitws";
 import type { GhApi } from "../gh";
 import { buildMachineEnvFile, bootstrapScriptFor, type LapMachineLike, type MachineStageResult } from "../machine";
@@ -259,7 +259,8 @@ export async function bootAcceptanceMachine(cfg: RepoConfig, machine: LapMachine
  *  agent-influenced code runs under the allowlist, the same rule host-mode
  *  stages follow. PORT/APP_URL are exported by the command itself. */
 export function acceptanceSuiteEnv(cfg: RepoConfig): Record<string, string> {
-  return agentEnv(cfg.env.pass_env);
+  // the suite is a browser test runner, not a web-grounding agent
+  return agentEnv(cfg.env.pass_env, undefined, { always: false });
 }
 
 export interface SuiteRunResult {
@@ -623,6 +624,8 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
               `Found by the drain-time PRD acceptance walk on origin/${cfg.default_branch} (${mainHead.slice(0, 12)}, backlog generation ${st.gen}).`,
               "",
               "This issue is a build order like any other: plan from the requirement, implement, keep every gate green. The acceptance walk re-runs when the backlog drains again.",
+            "",
+            `Not going to build it? Close with the \`${WONTFIX_LABEL}\` label and the walk will not re-file this gap. A close without the label suppresses nothing.`,
             ]
               .filter(Boolean)
               .join("\n"),
@@ -633,7 +636,7 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
             },
           },
         ];
-        filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance", dedupeClosed: true })));
+        filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance", dedupeWontfix: true })));
       }
       const pass = verdict.delivered && verdict.gaps.length === 0;
       const last: AcceptanceLast = {

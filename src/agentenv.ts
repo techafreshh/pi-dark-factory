@@ -28,8 +28,14 @@ const PREFIXES = ["LC_", "XDG_", "NODE_", "SSL_CERT_", "DOCKER_"];
  *  extension reads it, and pre-grounding pass_env lists never carried it */
 const ALWAYS = ["TINYFISH_API_KEY"];
 
-export function agentEnv(passEnv: string[] = [], source: Record<string, string | undefined> = process.env): Record<string, string> {
-  const allow = new Set([...BASE, ...ALWAYS, ...passEnv]);
+export function agentEnv(
+  passEnv: string[] = [],
+  source: Record<string, string | undefined> = process.env,
+  /** non-agent callers (the penthera scan, the host-tools installer, the
+   *  e2e suite runner) don't ground with web tools — drop the force-keys */
+  opts: { always?: boolean } = {}
+): Record<string, string> {
+  const allow = new Set([...BASE, ...(opts.always === false ? [] : ALWAYS), ...passEnv]);
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(source)) {
     if (v === undefined) continue;

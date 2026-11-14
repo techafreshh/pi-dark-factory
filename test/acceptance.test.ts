@@ -247,23 +247,35 @@ describe("fileFactoryIssues (the generic filer)", () => {
     expect(gh.issues.find((i) => i.number === filed[0].issue)?.labels).toContain("security");
   });
 
-  test("dedupeClosed: a human-closed finding does not come back on the next scan", async () => {
+  test("dedupeWontfix: the FACTORY's own merge-close does NOT suppress — an incomplete fix or a regression re-files", async () => {
     const gh = new FakeGh();
     const first = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile3-")), "toy", gh, [
-      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
+      { title: "[security] injectable route (fid aaa)", body: "x", labels: ["security"] },
     ]);
     expect(first.length).toBe(1);
-    gh.issueClose(first[0].issue); // the human's standing decision
-    // sticky classes dedupe against closed issues...
+    // the factory's close-on-merge: PR body "Closes #n" + the post-merge
+    // issueClose — no wontfix label, so the close suppresses nothing
+    gh.issueClose(first[0].issue);
     const again = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile4-")), "toy", gh, [
-      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
-    ], { dedupeClosed: true });
-    expect(again.length).toBe(0);
-    // ...recurrence-evidence classes stay re-fileable
-    const third = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile5-")), "toy", gh, [
-      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
+      { title: "[security] injectable route (fid aaa)", body: "the fix was incomplete", labels: ["security"] },
+    ], { dedupeWontfix: true });
+    expect(again.length).toBe(1);
+  });
+
+  test("dedupeWontfix: a human wontfix close IS sticky", async () => {
+    const gh = new FakeGh();
+    const first = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile5-")), "toy", gh, [
+      { title: "[security] wontfixed one (fid bbb)", body: "x", labels: ["security"] },
     ]);
-    expect(third.length).toBe(1);
+    expect(first.length).toBe(1);
+    await gh.issueAddLabels(first[0].issue, ["wontfix"]); // the explicit human decision
+    gh.issueClose(first[0].issue);
+    const again = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile6-")), "toy", gh, [
+      { title: "[security] wontfixed one (fid bbb)", body: "x", labels: ["security"] },
+    ], { dedupeWontfix: true });
+    expect(again.length).toBe(0);
+    // the issue is CLOSED here, so only the closed+wontfix branch could have
+    // supplied the title — the open pass never sees it
   });
 
   test("a create failure skips the item without losing the batch", async () => {

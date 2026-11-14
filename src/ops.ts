@@ -1148,7 +1148,7 @@ export async function opsHostTools(stateDir: string): Promise<{ ok: boolean; lin
   // it gets the agentEnv allowlist, never the service environment with the
   // factory's keys — sudo -n sanitizes its own env, and PATH/HOME (npm,
   // agent-browser) ride the allowlist base
-  const res = await sh(["bash", "-c", hostToolsScript()], { env: agentEnv([]), inheritEnv: false, timeoutMs: 90 * 60_000, killGroup: true });
+  const res = await sh(["bash", "-c", hostToolsScript()], { env: agentEnv([], undefined, { always: false }), inheritEnv: false, timeoutMs: 90 * 60_000, killGroup: true });
   const lines = res.stdout.trim().split("\n").filter(Boolean);
   const ok = res.code === 0;
   receipt(stateDir, `host-tools: ${ok ? "OK" : `FAILED (exit ${res.code})`} — ${lines.filter((l) => /_OK|BROWSER|CHROME/.test(l)).join(", ") || "no capability lines"}`);

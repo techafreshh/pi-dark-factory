@@ -44,8 +44,9 @@ describe("labelNames (gh boundary normalization)", () => {
 
 describe("parseRepoVisibility (gh boundary normalization)", () => {
   test("the captured real shape — gh 2.45.0, `gh repo view --json visibility`", () => {
-    // verbatim capture from techafreshh/pi-dark-factory, 2026-11-14
-    expect(parseRepoVisibility('{"isPrivate":false,"visibility":"PUBLIC"}')).toBe("PUBLIC");
+    // verbatim capture: gh repo view techafreshh/pi-dark-factory --json visibility
+    // (gh 2.45.0, 2026-11-14 — exactly this, no isPrivate field)
+    expect(parseRepoVisibility('{"visibility":"PUBLIC"}')).toBe("PUBLIC");
     expect(parseRepoVisibility('{"visibility":"private"}')).toBe("PRIVATE"); // normalized uppercase defensively
   });
   test("unreadable answers fail through null (the publish gate then fails closed)", () => {

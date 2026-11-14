@@ -61,15 +61,20 @@ step individually caught — a hook failure is a receipt, never a lap error:
    so findings are filed only when the repo is private/internal or
    `acceptance.security_public: true` is set explicitly (default false). An
    unreadable visibility (gh failed) fails closed too — the scan still runs
-   and receipts, and the next merge's scan retries the filing. A human
-   closed-find decision is sticky: `[security]` and `[prd-gap]` issues are
-   deduped against CLOSED issues as well, so a "won't fix" close does not
-   come back on the next merge (an `[e2e-regression]` issue stays re-fileable
-   on purpose — a recurring failure is new evidence). Operator note: on a
-   public repo with `security: true` and no `security_public`, every merge
-   runs the full scan and files nothing, and `status` shows
-   `last_security: fail` for as long as findings above the floor exist —
-   that is the gate working, not a stuck scan.
+   and receipts, and the next merge's scan retries the filing.
+
+   **Sticky closes need the `wontfix` label.** The factory closes an issue
+   itself when it merges the fix, so a bare close suppresses nothing: a
+   finding that survives its own fix (or a regression) re-files on the next
+   scan, exactly as it should. A human who decides NOT to fix a finding
+   adds the `wontfix` label and closes it — the scan then never re-files
+   that finding (gh 2.45 cannot read a close's `stateReason`, so the label
+   is the signal). `[e2e-regression]` issues stay re-fileable either way —
+   a recurring failure is new evidence. Operator note: on a public repo
+   with `security: true` and no `security_public`, every merge runs the
+   full scan and files nothing, and `status` shows `last_security: fail`
+   for as long as findings above the floor exist — that is the gate
+   working, not a stuck scan.
 2. **the e2e suite** (`acceptance.e2e` + a suite exists) — against merged
    main: host/compose repos run it host-side on the published port; machine
    modes boot a short-lived `pdf-<slug>-i0` acceptance machine, bootstrap
@@ -186,5 +191,8 @@ create never loses the batch.
 3. Store/refresh the contract: slicing a backlog does it; otherwise
    `dark-factory prd SLUG --prd-file PRD.md`.
 4. Walk once by hand: `dark-factory acceptance SLUG` — expect either a PASS
-   or the first `[prd-gap]` issues.
+   or the first `[prd-gap]` issues. Both manual verbs take the repo lock for
+   the whole run (the walk can hold it for `prd_minutes` plus machine boot),
+   so ticks for that repo answer "a tick is live" until it finishes — run
+   them when the repo is idle.
 5. Watch `laps.log` for the per-merge `post-merge extras:` receipts.
