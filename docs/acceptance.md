@@ -41,7 +41,24 @@ the repo config's `acceptance` block; all default OFF):
 - `state/repos/<slug>/acceptance.json` — the verdicts: `{gen, last
   (PRD walk), last_security (penthera), runs (daily counters)}`.
 
-## 1. The per-merge regression hook
+## 1. The verify gate carries the e2e suite
+
+The authored browser suite is a **verify-stage gate**, not a post-merge
+hook: `runVerify` (src/stages/verify.ts) runs it in the same product-up
+window the scenario probes use — host/compose host-side, machine modes on
+the lap's OWN box (no machine boot per merge; the merge queue's re-verify
+after a rebase re-runs it in the still-alive lap box, which is exactly the
+"branch content = what main is about to become" moment). A failing suite
+is a **gate failure** like a failed probe: it blocks the merge and routes
+into the repair loop with the failing tests as findings — the agent fixes
+it before anything lands, and nothing files issues at merge time.
+Fail-fast: a product that failed its probes skips the browser. The gate
+skips while no suite exists (the drain-time walk authors one) or the flag
+is off; `acceptance.e2e_minutes` caps a run. Machine repos need the
+browser in their golden snapshot — a re-`bake` with the flag on (the bake
+smoke fails loudly when a platform cannot carry one).
+
+## 2. The post-merge audit
 
 After every squash-merge (serial post-merge block and the parallel merge
 queue's landing alike), `runPostMergeExtras` (src/postmerge.ts) runs, each
@@ -89,7 +106,7 @@ step individually caught — a hook failure is a receipt, never a lap error:
 The suite result also updates `last_security`/receipts; `status` shows both
 verdicts per repo (`dark-factory acceptance SLUG --status`).
 
-## 2. The drain-time PRD acceptance walk
+## 3. The drain-time PRD acceptance walk
 
 When a tick finds nothing claimable and every open issue is a deferred
 factory class (discovery/security/minor — `openIssuesAllDeferred`), the
@@ -127,7 +144,7 @@ at 2 automatic runs per UTC day so the loop cannot burn tokens forever;
 manual runs (`dark-factory acceptance SLUG`, `POST /repos/<slug>/acceptance/run`)
 bypass the cap.
 
-## 3. Provisioning the toolchain
+## 4. Provisioning the toolchain
 
 Browser e2e needs Chromium + node 22+ + the `e2e` package + agent-browser.
 One canonical script per lane (src/browserbake.ts) so every lane installs the
@@ -168,13 +185,15 @@ create never loses the batch.
   over-subscribe a platform that is already at its lap cap; the platform's
   own cap-reject and the 10-minute slot-queue deadline stay as the fallback.
   On a fleet at the edge of its caps, keep one pool slot of headroom.
-- **The extras run inside the lap's tick** — worst case the per-merge hook
-  adds a scan (≤10 min) + machine bootstrap (≤10 min) + the suite
-  (`e2e_minutes`) to a merge, inside the 12-minute chain budget; in parallel
-  mode a landing lane holds the merge queue through its extras. Every step
-  is individually try/caught, so the chain never enters the error path, but
-  the latency is real. If it bites, the knobs are `acceptance.e2e_minutes`,
-  `PDF_SECURITY_SCAN_MINUTES`, or turning off `acceptance.e2e` per repo.
+- **The e2e gate adds `e2e_minutes` to every lap's verify** (plus the
+  merge queue's re-verify after a rebase — the same box, no extra boot).
+  The post-merge extras still add a scan (≤10 min) inside the chain budget;
+  in parallel mode a landing lane holds the merge queue through its
+  penthera scan. Every step is individually try/caught, so the chain never
+  enters the error path. If the lap latency bites, the knobs are
+  `acceptance.e2e_minutes`, `PDF_SECURITY_SCAN_MINUTES`, or turning off
+  `acceptance.e2e` per repo (the drain walk still runs the suite at the
+  end — you lose only the per-merge attribution).
 
 ## Cost model
 
@@ -189,7 +208,9 @@ create never loses the batch.
 ## Rollout checklist (per repo)
 
 1. Patch the config: `dark-factory config SLUG --json '{"acceptance":{"e2e":true,"prd_check":true,"security":true}}'`
-2. Provision: `dark-factory host-tools` (host/compose) or re-`bake` (machine).
+2. Provision: `dark-factory host-tools` (host/compose) or re-`bake` (machine
+   repos — the verify gate's in-box suite and the walk's machine both need
+   the browser in the golden snapshot).
 3. Store/refresh the contract: slicing a backlog does it; otherwise
    `dark-factory prd SLUG --prd-file PRD.md`.
 4. Walk once by hand: `dark-factory acceptance SLUG` — expect either a PASS

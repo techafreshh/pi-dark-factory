@@ -42,6 +42,36 @@ RUN userdel -r node \
  && mkdir -p /home/factory/state /home/factory/.pi /opt/pi-dark-factory \
  && chown -R factory:factory /home/factory /opt/pi-dark-factory
 
+# Browser acceptance (docs/acceptance.md): Chromium + the e2e toolchain + the
+# security scanner, baked into the image so host/compose-mode repos get
+# browser e2e and penthera with NO per-container install — an apt-installed
+# browser would die with the container on every rebuild. Set
+# --build-arg FACTORY_BROWSER_TOOLS=0 for a lean image without them;
+# `foreman host-tools` verifies what this baked and skips what it finds.
+ARG FACTORY_BROWSER_TOOLS=1
+ARG PENTHERA_VERSION=2.4.0
+USER root
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      apt-get update \
+   && apt-get install -y --no-install-recommends chromium chromium-driver fonts-liberation libnss3 libatk-bridge2.0-0 libdrm2 libxkbcommon0 libgbm1 libasound2 \
+   && rm -rf /var/lib/apt/lists/* \
+   && mkdir -p -m 755 /home/factory/.pdf/e2e-toolchain /home/factory/.pdf/e2e-toolchain-browsers \
+   && chown -R factory:factory /home/factory/.pdf; \
+    fi
+USER factory
+# the toolchain lives at the path hostToolchainDir resolves to ($HOME/.pdf/e2e-toolchain,
+# browsers beside it) so the suite runner and `foreman host-tools` both find it
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      cd /home/factory/.pdf/e2e-toolchain \
+   && printf '{"name":"pdf-e2e-toolchain","private":true,"type":"module"}' > package.json \
+   && npm install --no-audit --no-fund --silent e2e @e2e-dev/web playwright-core \
+   && PLAYWRIGHT_BROWSERS_PATH=/home/factory/.pdf/e2e-toolchain-browsers node node_modules/playwright-core/cli.js install chromium \
+   && npm install -g --silent agent-browser \
+   && agent-browser install \
+   && npx -y penthera@${PENTHERA_VERSION} --version \
+   && npm cache clean --force; \
+    fi
+
 # The code dir MUST contain "pi-dark-factory": src/lock.ts recognizes live factory processes
 # by a cwd matching /pi-dark-factory/, and a path without it makes live tick locks look dead.
 WORKDIR /opt/pi-dark-factory

@@ -163,3 +163,16 @@ The header of the override file has the Caddy block (`reverse_proxy factoryd:807
 | `ports: !reset` is rejected | Compose older than 2.24 | upgrade Compose |
 
 Logs: `docker compose logs -f factoryd`, and `docker compose exec factoryd tail -f /home/factory/state/laps.log` for lap receipts. A full reset, which deletes the ledger, plans and OAuth logins, is `docker compose down -v`.
+
+
+## Browser acceptance and the security scanner
+
+The image bakes Chromium, the `e2e` toolchain (`~/.pdf/e2e-toolchain`,
+browsers beside it) and a pre-seeded penthera, so host/compose-mode repos
+get the verify-stage browser gate and per-merge security scans with no
+per-container install. Set `--build-arg FACTORY_BROWSER_TOOLS=0` for a
+lean image without them. `foreman host-tools` verifies what the image
+baked and skips what it finds (the apt branch needs sudo, which the
+factory user inside the container does not have — that is fine when the
+bake is present). The scanner's version pin is `PENTHERA_VERSION`
+(default 2.4.0, matching the captured report fixture).

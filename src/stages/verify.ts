@@ -8,6 +8,8 @@ import { branchName } from "./intake";
 import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir, withSourceLock } from "../gitws";
 import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
 import { repoDirFor } from "../machine";
+import { e2eSuiteExists } from "../acceptance-state";
+import { runE2eSuite, type E2eSummary, type SuiteRunResult } from "./acceptance";
 import { isMachineMode, type RepoConfig } from "../types";
 
 export interface GateFailure {
@@ -32,6 +34,9 @@ export interface VerifyOutcome {
   pass: boolean;
   failures: GateFailure[];
   scenarios: ScenarioResult[];
+  /** the authored browser suite's gate result, when the repo turned it on
+   *  and a suite exists (docs/acceptance.md) — a fail is a GateFailure too */
+  e2e?: SuiteRunResult;
   provenance?: VerifyProvenance;
 }
 
@@ -53,6 +58,7 @@ export function writeVerifyEvidence(
     prHead: string | null;
     failures: GateFailure[];
     scenarios: ScenarioResult[];
+    e2e?: { pass: boolean; summary: string };
   }
 ): string {
   const dir = join(stateDir, "repos", slug, "issues", String(issue), "verify-evidence");
@@ -203,9 +209,37 @@ export async function runVerify(
           : undefined,
       });
     }
-    scenarios.push(result);
+      scenarios.push(result);
     if (!result.pass) {
       failures.push({ gate: key, detail: summarizeScenario(result), repair: repairForScenario(result) });
+    }
+  }
+
+  // 4. the authored browser e2e suite (docs/acceptance.md) — the same gate
+  // class as the scenarios, one lane over: the lap's own machine (or the
+  // host) is already up for the probes, so the suite runs here instead of
+  // booting a separate box per merge. Failures are GATE failures — they
+  // route into the repair loop with the failing steps as findings, exactly
+  // like a failed probe; nothing files issues at merge time anymore.
+  // Fail-fast: a product that failed its probes would only waste the
+  // browser's time. Skipped entirely while no suite exists (the drain-time
+  // walk authors it) or the flag is off.
+  let e2e: SuiteRunResult | undefined;
+  if (failures.length === 0 && cfg.acceptance?.e2e && e2eSuiteExists(opts.stateDir, cfg.slug) && cfg.scenario.runtime) {
+    const spec = loadScenario(join(opts.stateDir, "repos", cfg.slug, cfg.scenario.runtime));
+    spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
+    e2e = await runE2eSuite(cfg, spec, {
+      stateDir: opts.stateDir,
+      machine: opts.machine,
+      repoDir: isMachineMode(cfg.env.mode) ? repoDirFor(cfg) : undefined,
+      scratchDir: opts.worktree,
+    });
+    if (!e2e.pass) {
+      failures.push({
+        gate: "e2e",
+        detail: e2e.summary,
+        repair: repairForE2e(e2e.report),
+      });
     }
   }
 
@@ -216,8 +250,20 @@ export async function runVerify(
     prHead,
     failures,
     scenarios,
+    e2e: e2e ? { pass: e2e.pass, summary: e2e.summary } : undefined,
   });
-  return { pass: failures.length === 0, failures, scenarios, provenance: { worktreeHead, prHead, sidecar } };
+  return { pass: failures.length === 0, failures, scenarios, e2e, provenance: { worktreeHead, prHead, sidecar } };
+}
+
+/** The e2e gate's repair evidence: the failing tests with their recorded
+ *  errors — the implementing agent reproduces from these, not from a
+ *  one-line verdict. (The full report.json stays in factory state.) */
+function repairForE2e(report: E2eSummary | null): string | undefined {
+  if (!report || report.failures.length === 0) return undefined;
+  return report.failures
+    .slice(0, 10)
+    .map((f) => `✗ ${f.file} :: ${f.testId} (${f.status})${f.error ? `: ${f.error}` : ""}`)
+    .join("\n");
 }
 
 export function scenarioSummary(scenarios: ScenarioResult[]): string {

@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ShRes } from "../sh";
 import type { Ledger } from "../ledger";
 import {
   acceptanceRunningPath,
@@ -160,15 +161,18 @@ export const boxToolchainDir = () => process.env.PDF_E2E_BOX_TOOLCHAIN_DIR ?? "/
 /** The command that runs the suite against the product the scenario runner
  *  already started ($PORT is exported by both lanes). The suite resolves the
  *  toolchain through a symlinked node_modules — ESM import specifiers ignore
- *  NODE_PATH, a symlink walks the real tree. Prints "PDFE2ERC=<n>" then the
- *  report.json base64 (or PDFE2ENOREPORT), and EXITS with the suite's rc. */
+ *  NODE_PATH, a symlink walks the real tree — and browsers come from the
+ *  toolchain-browsers dir beside it in BOTH lanes (the host-tools install and
+ *  the Docker bake put them there; the default ~/.cache path is never
+ *  relied on). Prints "PDFE2ERC=<n>" then the report.json base64 (or
+ *  PDFE2ENOREPORT), and EXITS with the suite's rc. */
 export function e2eRunCommand(opts: { suiteDir: string; toolchainDir: string; inBox: boolean }): string {
   return [
     `cd ${opts.suiteDir}`,
     `[ -e node_modules ] || ln -sfn ${opts.toolchainDir}/node_modules node_modules`,
     `export APP_URL="http://127.0.0.1:$PORT"`,
     `export CI=1`,
-    ...(opts.inBox ? [`export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`] : []),
+    `export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`,
     `npx --no-install e2e run > run.log 2>&1`,
     `RC=$?`,
     `echo "PDFE2ERC=$RC"`,
@@ -198,9 +202,16 @@ const b64TarOf = async (dir: string, timeoutMs = 60_000): Promise<string> => {
   return res.stdout.trim();
 };
 
+/** The machine seam the suite needs — a LapMachineLike satisfies it
+ *  structurally, and so does runVerify's narrow machine shape, so the SAME
+ *  runner serves the verify gate (the lap's box) and the drain walk. */
+export type SuiteMachine = {
+  bash(script: string, opts?: { timeoutMs?: number }): Promise<ShRes>;
+};
+
 /** Ship the suite files into the box (b64 tar over the exec channel — the
  *  same channel skills ride). */
-async function shipSuiteInBox(machine: LapMachineLike, suiteDir: string, boxDir: string): Promise<void> {
+async function shipSuiteInBox(machine: SuiteMachine, suiteDir: string, boxDir: string): Promise<void> {
   const b64 = await b64TarOf(suiteDir);
   if (!b64) throw new Error(`could not tar the e2e suite at ${suiteDir}`);
   const res = await machine.bash(
@@ -285,7 +296,7 @@ function readReportSafe(suiteDir: string): string {
 export async function runE2eSuite(
   cfg: RepoConfig,
   runtimeSpec: ScenarioSpec,
-  opts: { stateDir: string; machine?: LapMachineLike; repoDir?: string; scratchDir?: string }
+  opts: { stateDir: string; machine?: SuiteMachine; repoDir?: string; scratchDir?: string }
 ): Promise<SuiteRunResult> {
   const suiteDir = e2eSuiteDir(opts.stateDir, cfg.slug);
   const timeoutMs = (cfg.acceptance?.e2e_minutes ?? 10) * 60_000;

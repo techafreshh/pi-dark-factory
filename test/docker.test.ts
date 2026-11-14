@@ -41,6 +41,32 @@ describe("Dockerfile", () => {
   test("ps is installed (foreman cleanup shells out to it)", () => {
     expect(dockerfile).toMatch(/\bprocps\b/);
   });
+
+  test("browser acceptance is baked: chromium, the e2e toolchain, browsers path, penthera pre-seed", () => {
+    // docs/acceptance.md — host/compose repos under the Compose install get
+    // browser e2e and the scanner from the IMAGE, not from a per-container
+    // apt install that dies on every rebuild (an old image must rebuild).
+    expect(dockerfile).toContain("apt-get install -y --no-install-recommends chromium");
+    expect(dockerfile).toContain("/home/factory/.pdf/e2e-toolchain");
+    expect(dockerfile).toContain("e2e @e2e-dev/web playwright-core");
+    expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/home/factory/.pdf/e2e-toolchain-browsers");
+    expect(dockerfile).toContain("npx -y penthera@${PENTHERA_VERSION}");
+    // the bake happens AFTER useradd (the home must exist): the apt layer as
+    // root, the toolchain layer as the factory user
+    expect(dockerfile).toContain("ARG FACTORY_BROWSER_TOOLS=1");
+    const useraddIdx = dockerfile.indexOf("useradd -m -u 1000");
+    const chromiumIdx = dockerfile.indexOf("apt-get install -y --no-install-recommends chromium");
+    const toolchainIdx = dockerfile.indexOf('printf \'{"name":"pdf-e2e-toolchain"');
+    expect(chromiumIdx).toBeGreaterThan(useraddIdx);
+    expect(toolchainIdx).toBeGreaterThan(chromiumIdx);
+    // nothing about the bake leaks secrets: no token names anywhere in it
+    const bake = dockerfile.slice(dockerfile.indexOf("ARG FACTORY_BROWSER_TOOLS=1"));
+    expect(bake.slice(0, bake.indexOf("EXPOSE"))).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|API_KEY=/);
+  });
+
+  test("the bake is opt-out with one build arg", () => {
+    expect(dockerfile).toContain("FACTORY_BROWSER_TOOLS=0");
+  });
 });
 
 describe("compose.yml", () => {
