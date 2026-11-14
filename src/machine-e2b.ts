@@ -28,6 +28,7 @@
  */
 import { Sandbox } from "e2b";
 import {
+  stageShape,
   buildMachineEnvFile,
   bootstrapScriptFor,
   InfraUnavailableError,
@@ -41,7 +42,7 @@ import { execWrapper, parseWrap, raceDeadline, stageScriptFor } from "./machine-
 import { machineNameFor } from "./instabox";
 import { resolveSnapshotName } from "./sharedbase";
 import { buildPiArgs } from "./pi";
-import type { ModelSpec, RepoConfig, StageModels } from "./types";
+import type { ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 import { branchName } from "./stages/intake";
 import { dirname } from "node:path";
 
@@ -263,7 +264,7 @@ export class E2bLapMachine implements LapMachineLike {
   }
 
   async callStage(
-    stage: "plan" | "implement" | "review",
+    stage: StageName,
     o: {
       models: StageModels;
       prompt: string;
@@ -273,9 +274,9 @@ export class E2bLapMachine implements LapMachineLike {
       timeoutMs: number;
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
-    if (stage === "plan" || stage === "implement") await this.bootstrap();
-    const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    const shape = stageShape(stage); // see machine.ts — acceptance: no gates/restore/bootstrap
+    if (shape.bootstrap) await this.bootstrap();
+    const envFile = buildMachineEnvFile(this.cfg, { gates: shape.gates, restore: shape.restore, branch: branchName(this.issue), base: this.cfg.default_branch });
     const sbx = await this.ensure();
     // the create TTL counts from NOW and its expiry action is a silent kill —
     // refresh it before every stage so a lap that lives stage-to-stage never
@@ -285,7 +286,7 @@ export class E2bLapMachine implements LapMachineLike {
     } catch {}
     const res = await callE2bStage(sbx, {
       models: o.models,
-      gates,
+      gates: shape.gates,
       branch: branchName(this.issue),
       base: this.cfg.default_branch,
       envFile,

@@ -11,7 +11,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readBases, readSharedBase } from "./sharedbase";
-import { opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsLogs, opsModels, opsOnboard, opsPause, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
+import { opsAcceptanceRun, opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsHostTools, opsLogs, opsModels, opsOnboard, opsPause, opsPrdSet, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsSecurityScan, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
 import { repoLockHeld } from "./lock";
 import { spawnRepoTick, startAllocator, startScheduler } from "./scheduler";
 import { poolStatus } from "./allocator";
@@ -244,6 +244,30 @@ export function startFactoryd(opts: FactorydOpts) {
           // deduped GitHub issues (preview default — nothing files without it)
           const body = await readJson(req);
           return respond(await opsDiscoveries(opts.stateDir, slug, body?.file === true));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/prd")) {
+          // store/replace the PRD text without slicing (docs/acceptance.md) —
+          // the delivery contract the drain-time acceptance walks judge
+          const body = await readJson(req);
+          if (typeof body.prd_text !== "string" || !body.prd_text.trim()) {
+            return fail(422, "body must be {prd_text} — the client reads the PRD from the product repo and ships its text");
+          }
+          return respond(opsPrdSet(opts.stateDir, slug, body.prd_text));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/acceptance/run")) {
+          // the drain-time PRD acceptance walk on demand — runs an agent stage
+          // (minutes; the client uses its slow timeout; bypasses the daily cap)
+          const body = await readJson(req);
+          return respond(await opsAcceptanceRun(opts.stateDir, slug, { force: body?.force !== false }));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/security/scan")) {
+          // the penthera scan against merged main on demand (minutes)
+          return respond(await opsSecurityScan(opts.stateDir, slug));
+        }
+        if (req.method === "POST" && path === "/host-tools") {
+          // host-side browser/scanner toolchain install+verify (can run long:
+          // apt + browser downloads; the client uses its extra-long timeout)
+          return respond(await opsHostTools(opts.stateDir));
         }
         if (req.method === "POST" && tickEnd === undefined && path.endsWith("/config")) {
           return respond(await opsSetConfig(opts.stateDir, slug, await readJson(req)));

@@ -27,6 +27,7 @@
  */
 import { Daytona, type Sandbox } from "@daytona/sdk";
 import {
+  stageShape,
   buildMachineEnvFile,
   bootstrapScriptFor,
   InfraUnavailableError,
@@ -40,7 +41,7 @@ import { execWrapper, parseWrap, raceDeadline, stageScriptFor } from "./machine-
 import { machineNameFor } from "./instabox";
 import { resolveSnapshotName } from "./sharedbase";
 import { buildPiArgs } from "./pi";
-import type { ModelSpec, RepoConfig, StageModels } from "./types";
+import type { ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 import { branchName } from "./stages/intake";
 import { dirname } from "node:path";
 
@@ -235,7 +236,7 @@ export class DaytonaLapMachine implements LapMachineLike {
   }
 
   async callStage(
-    stage: "plan" | "implement" | "review",
+    stage: StageName,
     o: {
       models: StageModels;
       prompt: string;
@@ -245,15 +246,16 @@ export class DaytonaLapMachine implements LapMachineLike {
       timeoutMs: number;
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
-    // same rules as every driver: plan and implement bootstrap the clone,
-    // implement alone gates and pushes, plan and review are undone
-    if (stage === "plan" || stage === "implement") await this.bootstrap();
-    const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    // same rules as every driver (stageShape): plan and implement bootstrap
+    // the clone, implement alone gates and pushes, plan and review are
+    // undone — acceptance does none of those (see machine.ts stageShape)
+    const shape = stageShape(stage);
+    if (shape.bootstrap) await this.bootstrap();
+    const envFile = buildMachineEnvFile(this.cfg, { gates: shape.gates, restore: shape.restore, branch: branchName(this.issue), base: this.cfg.default_branch });
     const sbx = await this.ensure();
     const res = await callDaytonaStage(sbx, {
       models: o.models,
-      gates,
+      gates: shape.gates,
       branch: branchName(this.issue),
       base: this.cfg.default_branch,
       envFile,

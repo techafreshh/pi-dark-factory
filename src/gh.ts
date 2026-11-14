@@ -234,6 +234,35 @@ export async function repoDefaultBranch(repo: string): Promise<string> {
   return name;
 }
 
+/** Parse `gh repo view --json visibility` — the captured real shape (gh
+ *  2.45.0) is {"visibility":"PUBLIC"}: the word, UPPERCASE, no isPrivate
+ *  field. Parsers stay pure so the boundary rule can pin them to this
+ *  capture. */
+export function parseRepoVisibility(stdout: string): string | null {
+  try {
+    const raw = JSON.parse(stdout) as any;
+    const v = raw?.visibility;
+    return typeof v === "string" && v ? v.toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** PUBLIC | PRIVATE | INTERNAL, or null when the answer is unreadable (a
+ *  rate limit, an expired token, a network blip). The security audit's
+ *  publish gate treats null as DO NOT FILE — the gate exists to prevent a
+ *  one-way disclosure, so the failure mode that publishes is the wrong
+ *  default; the cost of failing closed is a missed filing that the next
+ *  merge's scan retries (docs/acceptance.md). */
+export async function repoVisibility(repo: string): Promise<string | null> {
+  try {
+    const res = await sh(["gh", "repo", "view", repo, "--json", "visibility"]);
+    return parseRepoVisibility(shOk(res, "gh repo view"));
+  } catch {
+    return null;
+  }
+}
+
 /**
  * CI gate: poll the PR's checks until every required check is present and
  * non-PENDING. Any required FAILURE fails fast. A required check that never

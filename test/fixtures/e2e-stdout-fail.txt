@@ -1,0 +1,29 @@
+
+ RUN  e2e v0.23.1 /tmp/pf-e2e
+      run 01a1d62d-5b9f-74b9-953d-d531ba404838 · targets: web
+
+   × |web| tests/example.e2e.ts > app opens 998ms
+     → nothing answered at http://127.0.0.1:4173/ (ERR_CONNECTION_REFUSED); sta…
+ ❯ |web| tests/example.e2e.ts (1 test | 1 failed) 998ms
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |web| tests/example.e2e.ts > app opens
+APP_UNREACHABLE: nothing answered at http://127.0.0.1:4173/ (ERR_CONNECTION_REFUSED); start the app there, point the target's app.url at where it runs, or give the target an app.command so the runner starts it
+ ❯ app 1 error logged
+   × network error: GET / net::ERR_CONNECTION_REFUSED
+ ❯ trace .e2e/results/example-app-opens-b7d57535871b62b9/trace.md
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed | 0 passed (1)
+      Tests  1 failed | 0 passed (1)
+   Start at  18:31:00
+   Duration  1.55s
+     Traces  .e2e/results/ (1 page, trace.md in each test's directory)
+
+     Failed  × |web| tests/example.e2e.ts:4 > app opens
+               APP_UNREACHABLE: nothing answered at http://127.0.0.1:4173/ (ERR_CONNECTION_REFUSED); start the app there, point the target's app.url at where it runs, or give the target an app.command so the runner starts it
+               trace .e2e/results/example-app-opens-b7d57535871b62b9/trace.md
+

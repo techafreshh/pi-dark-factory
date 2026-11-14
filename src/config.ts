@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { MACHINE_MODES, isMachineMode, type ModelEntry, type ModelSpec, type RepoConfig, type StageModels } from "./types";
+import { MACHINE_MODES, SECURITY_SEVERITIES, isMachineMode, type ModelEntry, type ModelSpec, type RepoConfig, type StageModels } from "./types";
 
 const DEFAULTS = {
   attempts: 3,
@@ -22,6 +22,21 @@ const DEFAULTS = {
   // serial, normal priority, own platform only: parallel mode and spill-over
   // are opt-in per repo (docs/parallel-mode.md)
   scheduling: { priority: "normal" as const, spill_over: false, parallel: false, max_lanes: 3 },
+  // PRD-delivery acceptance (docs/acceptance.md): every capability opt-in,
+  // default off — an autonomous factory must not start spending acceptance
+  // tokens or filing issues because a config was half-written. The caps are
+  // shared defaults so a repo enabling e2e/prd_check without tuning them is
+  // still bounded. security_public stays false so a public tracker never
+  // becomes a live disclosure channel by default.
+  acceptance: {
+    e2e: false,
+    prd_check: false,
+    security: false,
+    security_public: false,
+    severity_floor: "medium" as const,
+    e2e_minutes: 10,
+    prd_minutes: 25,
+  },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -168,6 +183,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
     ui: { ...DEFAULTS.ui, ...(raw.ui ?? {}) },
     limits: { ...DEFAULTS.limits, ...(raw.limits ?? {}) },
     scheduling: { ...DEFAULTS.scheduling, ...(raw.scheduling ?? {}) },
+    acceptance: { ...DEFAULTS.acceptance, ...(raw.acceptance ?? {}) },
     pi: {
       ...DEFAULTS.pi,
       ...raw.pi,
@@ -209,6 +225,7 @@ export function parseRepoConfig(raw: any, where: string): RepoConfig {
   if (daily !== undefined && (!Number.isInteger(daily) || daily < 0))
     throw new Error(`config limits.daily_attempts must be a whole number, 0 for no ceiling (got ${JSON.stringify(daily)})`);
   validateScheduling(cfg);
+  validateAcceptance(cfg);
   const web = cfg.pi.web!;
   for (const k of ["search", "fetch"] as const) {
     if (web[k] !== undefined && typeof web[k] !== "boolean")
@@ -245,5 +262,24 @@ function validateScheduling(cfg: RepoConfig) {
     // the config defaults (every machine block is always merged in), so no
     // per-platform cross-requirement remains — a target whose fleet snapshot
     // was never baked fails the spilled lap at machine create, loudly.
+  }
+}
+
+/** acceptance block checks (docs/acceptance.md) — booleans strict like the
+ *  other toggles (a string "true" from a hand edit would silently disable a
+ *  feature the operator meant to turn on), the floor one of penthera's
+ *  severity words, the caps whole minutes so a typo'd 10e9 or "ten" fails
+ *  here instead of turning a hung run into a stuck tick. */
+function validateAcceptance(cfg: RepoConfig) {
+  const a = cfg.acceptance!;
+  for (const k of ["e2e", "prd_check", "security", "security_public"] as const) {
+    if (a[k] !== undefined && typeof a[k] !== "boolean")
+      throw new Error(`config acceptance.${k} must be true or false (got ${JSON.stringify(a[k])})`);
+  }
+  if (a.severity_floor !== undefined && !(SECURITY_SEVERITIES as readonly string[]).includes(a.severity_floor))
+    throw new Error(`config acceptance.severity_floor must be one of ${SECURITY_SEVERITIES.join(" | ")} (got ${JSON.stringify(a.severity_floor)})`);
+  for (const k of ["e2e_minutes", "prd_minutes"] as const) {
+    if (a[k] !== undefined && (!Number.isInteger(a[k]) || a[k]! < 1))
+      throw new Error(`config acceptance.${k} must be a whole number of minutes, at least 1 (got ${JSON.stringify(a[k])})`);
   }
 }

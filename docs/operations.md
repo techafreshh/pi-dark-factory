@@ -79,6 +79,10 @@ bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues 
 bun src/foreman.ts bake <slug>                  # instabox: build the repo's golden snapshot
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
+bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge
+bun src/foreman.ts acceptance <slug>            # run the drain-time PRD walk now (docs/acceptance.md)
+bun src/foreman.ts security-scan <slug>         # penthera scan of merged main; findings file issues
+bun src/foreman.ts host-tools                   # install/verify the host browser + scanner toolchain
 ```
 
 `--state-dir <path>` overrides the state root (default `$PI_FACTORY_STATE` or `./state`).

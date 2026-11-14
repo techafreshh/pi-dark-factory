@@ -4,6 +4,8 @@
  * decide how to print it.
  */
 import { isDuplicateTitle } from "./dedupe";
+import { readAcceptanceState, writeAcceptanceState, prdPath } from "./acceptance-state";
+import { fileFactoryIssues } from "./fileissues";
 import { poolStatus, type PoolStatus, type SlotRequestRow } from "./allocator";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as mvSync, rmSync, writeFileSync } from "node:fs";
@@ -29,7 +31,11 @@ import { DISCOVERY_LABEL, MINOR_LABEL } from "./stages/intake";
 import { readBases, resolveSnapshotName } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
-import { bumpInputsEpoch } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
+import { bumpInputsEpoch, makeCallStage, openLapMachineFor } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
+import { browserBakeScript, hostToolsScript } from "./browserbake";
+import { runSecurityScan } from "./security";
+import { runPrdAcceptance } from "./stages/acceptance";
+import { agentEnv } from "./agentenv";
 import { isMachineMode, type RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
@@ -45,7 +51,19 @@ export const SAFE_SLUG = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
 
 export interface OpsStatus {
   version: string;
-  repos: { slug: string; repo: string; chain: number; in_flight: number }[];
+  repos: {
+    slug: string;
+    repo: string;
+    chain: number;
+    in_flight: number;
+    /** PRD-delivery acceptance summary (docs/acceptance.md) */
+    acceptance: {
+      prd_stored: boolean;
+      gen: number;
+      last?: import("./acceptance-state").AcceptanceLast;
+      last_security?: import("./acceptance-state").AcceptanceLast;
+    };
+  }[];
   issues: ReturnType<Ledger["listIssues"]>;
   laps: ReturnType<Ledger["recentLaps"]>;
   stages: ReturnType<Ledger["recentStages"]>;
@@ -82,9 +100,27 @@ export async function opsStatus(stateDir: string, slug?: string): Promise<OpsSta
         const inFlight = ledger
           .listIssues(cfg.repo)
           .filter((r) => r.state === "in_progress").length;
-        return { slug: cfg.slug, repo: cfg.repo, chain, in_flight: inFlight };
+        const acceptance = readAcceptanceState(stateDir, cfg.slug);
+        return {
+          slug: cfg.slug,
+          repo: cfg.repo,
+          chain,
+          in_flight: inFlight,
+          acceptance: {
+            prd_stored: existsSync(prdPath(stateDir, cfg.slug)),
+            gen: acceptance.gen,
+            last: acceptance.last,
+            last_security: acceptance.last_security,
+          },
+        };
       } catch (e: any) {
-        return { slug: entry, repo: `unloadable: ${e.message?.slice(0, 80)}`, chain: 0, in_flight: 0 };
+        return {
+          slug: entry,
+          repo: `unloadable: ${e.message?.slice(0, 80)}`,
+          chain: 0,
+          in_flight: 0,
+          acceptance: { prd_stored: false, gen: 0 },
+        };
       }
     };
     const rows = await Promise.all(readdirSync(reposDir).filter((e) => e !== "source").map(probe));
@@ -201,6 +237,10 @@ export async function opsOnboard(
     skip_labels: [] as string[],
     trusted_authors: [] as string[],
     limits: { daily_attempts: 60 },
+    // PRD-delivery acceptance (docs/acceptance.md): every capability opt-in —
+    // a repo turns on e2e / prd_check / security through a config patch after
+    // onboarding, once it has a runtime scenario the product can serve from
+    acceptance: { e2e: false, prd_check: false, security: false },
     env: {
       mode: "host",
       compose_file: "docker-compose.yml",
@@ -351,6 +391,17 @@ export async function opsBake(stateDir: string, slug: string): Promise<{
       throw new Error(`bake script failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(0, 500)}`);
     }
   }
+  if (browserAcceptanceOn(cfg)) {
+    // the browser toolchain rides into THIS repo's golden snapshot (the
+    // in-box smoke at its end fails the bake loudly when the platform
+    // cannot carry a browser — docs/acceptance.md egress caveat)
+    receipt(stateDir, `bake ${slug}: installing the browser toolchain (acceptance on)`, slug);
+    const script = `set -eu\nprintf %s ${Buffer.from(browserBakeScript(), "utf8").toString("base64")} | base64 -d | bash\n`;
+    const res = await machineBash(conn, script, { timeoutMs: 90 * 60_000 });
+    if (res.code !== 0) {
+      throw new Error(`browser toolchain bake failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(0, 500)}`);
+    }
+  }
 
   const snapName = ibx.snapshot || `${sanitizeMachinePart(slug)}-base`;
   let snap;
@@ -426,10 +477,19 @@ function bakeCloneScriptFor(cfg: RepoConfig, repoDir: string): string {
     .join("\n");
 }
 
-function bakeScriptRunner(cfg: RepoConfig, repoDir: string): string {
+export function bakeScriptRunner(cfg: RepoConfig, repoDir: string): string {
   const bake = (cfg.env.daytona?.bake ?? "").trim();
-  if (!bake) return `set -eu\ncd ${escapeSh(repoDir)}\necho BAKE_SKIPPED\n`;
-  return `set -eu\ncd ${escapeSh(repoDir)}\nprintf %s ${Buffer.from(bake, "utf8").toString("base64")} | base64 -d | bash\n`;
+  const parts = [`set -eu\ncd ${escapeSh(repoDir)}`];
+  if (bake) parts.push(`printf %s ${Buffer.from(bake, "utf8").toString("base64")} | base64 -d | bash`);
+  else parts.push(`echo BAKE_SKIPPED`);
+  if (browserAcceptanceOn(cfg)) parts.push(browserBakeScript());
+  return parts.join("\n");
+}
+
+/** browser acceptance turned on for this repo (either capability needs the
+ *  toolchain baked into the golden snapshot / installed on the host) */
+function browserAcceptanceOn(cfg: RepoConfig): boolean {
+  return !!(cfg.acceptance?.e2e || cfg.acceptance?.prd_check);
 }
 
 /** Write env.<platform>.snapshot = <name> into the repo config the way the
@@ -570,6 +630,11 @@ async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise
   t = t.runCmd(`${auth}git clone ${cloneUrl} ${ex.repo_dir}`);
   const bake = (ex.bake ?? "").trim();
   if (bake) t = t.runCmd(`cd ${ex.repo_dir} && ${bake}`);
+  if (browserAcceptanceOn(cfg)) {
+    receipt(stateDir, `bake ${slug}: adding the browser toolchain to the template build`, slug);
+    // system installs as root; the toolchain at /opt stays world-readable
+    t = t.runCmd(browserBakeScript(), { user: "root" });
+  }
   // Template.build caps: 1 h build, 20 concurrent (Hobby and Pro)
   const info = await Template.build(t, snapName, { cpuCount: 2, memoryMB: 4096, onBuildLogs: (chunk) => receipt(stateDir, `bake ${slug}: ${redact(String(chunk).trimEnd()).slice(0, 200)}`, slug) });
   const config_updated = writeSnapshotToConfig(stateDir, slug, "e2b", snapName);
@@ -608,9 +673,9 @@ async function bakeInstavm(stateDir: string, cfg: RepoConfig, slug: string): Pro
   } catch {}
   const bake = (ix.bake ?? "").trim();
   const ghToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
-  const postBuild = bake
-    ? `cd ${escapeSh(ix.repo_dir)} && ${bake}`
-    : `cd ${escapeSh(ix.repo_dir)} && echo BAKE_SKIPPED`;
+  const postBuild =
+    (bake ? `cd ${escapeSh(ix.repo_dir)} && ${bake}` : `cd ${escapeSh(ix.repo_dir)} && echo BAKE_SKIPPED`) +
+    (browserAcceptanceOn(cfg) ? `\n${browserBakeScript()}` : "");
   const body = {
     oci_image: "ubuntu:24.04",
     name: snapName,
@@ -874,43 +939,31 @@ export async function fileDiscoveries(
   deduped: { issue: number; attempt: number; title: string; claim: string; why: string; severity?: "major" | "minor" }[],
   opts: { alsoSeen?: string[] } = {}
 ): Promise<{ issue: number; title: string }[]> {
-  const open = await gh.issueList("open", 100);
-  const filed: { issue: number; title: string }[] = [];
-  // duplicates by normalized title or heavy word overlap (src/dedupe.ts),
-  // against open issues, titles parallel siblings filed this tick, and this
-  // batch itself
-  const seen = [...open.map((i) => i.title), ...(opts.alsoSeen ?? [])];
-  for (const d of deduped) {
-    const title = `[discovery] ${d.title}`;
-    if (seen.some((t) => isDuplicateTitle(t, title))) continue;
-    seen.push(title);
-    const body = [
-      d.claim,
-      "",
-      `Why it matters: ${d.why}`,
-      "",
-      `Severity: ${d.severity === "minor" ? "minor — consistency/hygiene/polish; deferred until the PRD backlog drains (owner policy 2026-11-02)" : "major — a bug the current build's user can hit"}`,
-      "",
-      "Acceptance: the plan stage derives concrete acceptance from the claim above — demonstrate the resolved state, not just the absence of the old one. The repo's scenario gates must stay green and the review must judge the claim addressed.",
-      "",
-      `Harvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.`,
-    ].join("\n");
-    const n = await gh.issueCreate(title, body);
-    filed.push({ issue: n, title });
-    const labels = d.severity === "minor" ? [DISCOVERY_LABEL, MINOR_LABEL] : [DISCOVERY_LABEL];
-    try {
-      await gh.issueAddLabels(n, labels);
-    } catch {
-      // the label may not exist yet — create it once and retry (best-effort:
-      // a label failure must never lose a filed discovery)
-      try {
-        for (const l of labels)
-          await sh(["gh", "label", "create", l, "--repo", gh.repo, "--description", l === MINOR_LABEL ? "minor discovery — deferred until the product backlog drains" : "harvested reviewer discovery (future-bug candidate)", "--force"]);
-        await gh.issueAddLabels(n, labels);
-      } catch {}
-    }
-  }
-  return filed;
+  return fileFactoryIssues(
+    stateDir,
+    slug,
+    gh,
+    deduped.map((d) => ({
+      title: `[discovery] ${d.title}`,
+      body: [
+        d.claim,
+        "",
+        `Why it matters: ${d.why}`,
+        "",
+        `Severity: ${d.severity === "minor" ? "minor — consistency/hygiene/polish; deferred until the PRD backlog drains (owner policy 2026-11-02)" : "major — a bug the current build's user can hit"}`,
+        "",
+        "Acceptance: the plan stage derives concrete acceptance from the claim above — demonstrate the resolved state, not just the absence of the old one. The repo's scenario gates must stay green and the review must judge the claim addressed.",
+        "",
+        `Harvested from review of issue #${d.issue} (attempt ${d.attempt}) — preview-gated filing, deduped by title.`,
+      ].join("\n"),
+      labels: d.severity === "minor" ? [DISCOVERY_LABEL, MINOR_LABEL] : [DISCOVERY_LABEL],
+      labelDescriptions: {
+        [MINOR_LABEL]: "minor discovery — deferred until the product backlog drains",
+        [DISCOVERY_LABEL]: "harvested reviewer discovery (future-bug candidate)",
+      },
+    })),
+    opts
+  );
 }
 
 export async function opsProveGates(
@@ -1085,6 +1138,72 @@ export async function opsScenarioTest(
   }
 }
 
+/** Install/verify the HOST-side acceptance toolchain (docs/acceptance.md):
+ *  Chromium, the `e2e` framework, agent-browser, penthera. host/compose
+ *  repos run their browsers here; machine repos carry their own (bake).
+ *  Idempotent; receipts the outcome. */
+export async function opsHostTools(stateDir: string): Promise<{ ok: boolean; lines: string[] }> {
+  receipt(stateDir, "host-tools: installing/verifying the browser + scanner toolchain");
+  // the installer downloads and RUNS setup scripts (npm postinstall, apt):
+  // it gets the agentEnv allowlist, never the service environment with the
+  // factory's keys — sudo -n sanitizes its own env, and PATH/HOME (npm,
+  // agent-browser) ride the allowlist base
+  const res = await sh(["bash", "-c", hostToolsScript()], { env: agentEnv([], undefined, { always: false }), inheritEnv: false, timeoutMs: 90 * 60_000, killGroup: true });
+  const lines = res.stdout.trim().split("\n").filter(Boolean);
+  const ok = res.code === 0;
+  receipt(stateDir, `host-tools: ${ok ? "OK" : `FAILED (exit ${res.code})`} — ${lines.filter((l) => /_OK|BROWSER|CHROME/.test(l)).join(", ") || "no capability lines"}`);
+  try {
+    writeFileSync(
+      join(stateDir, "host-tools.json"),
+      JSON.stringify({ at: new Date().toISOString(), ok, tail: lines.slice(-6) }, null, 2) + "\n"
+    );
+  } catch {}
+  if (!ok) throw new Error(`host-tools failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(0, 500)}`);
+  return { ok, lines };
+}
+
+/** Run the drain-time PRD acceptance walk on demand (manual runs bypass the
+ *  daily cap but still need the stored PRD and a runtime scenario). Takes
+ *  the repo lock like prove-gates: the walk shares the acceptance machine
+ *  name, the scenario ports and the marker with a live tick, so the two
+ *  must never overlap. */
+export async function opsAcceptanceRun(stateDir: string, slug: string, opts: { force?: boolean } = {}): Promise<ReturnType<typeof runPrdAcceptance>> {
+  const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  if (!acquireRepoLock(stateDir, slug)) {
+    throw new Error(`a tick is live for ${slug} (repo lock held) — run the acceptance walk when the repo is idle`);
+  }
+  const ledger = new Ledger(join(stateDir, "factory.db"));
+  try {
+    return await runPrdAcceptance(cfg, {
+      stateDir,
+      gh: new Gh(cfg.repo),
+      ledger,
+      callStage: makeCallStage(cfg, stateDir),
+      openMachine: (c, log) => openLapMachineFor(c, 0, log, 0, stateDir),
+      log: (m) => receipt(stateDir, m, slug),
+    }, { force: opts.force ?? true });
+  } finally {
+    ledger.db.close();
+    releaseRepoLock(stateDir, slug);
+  }
+}
+
+/** Run the penthera security scan against merged main on demand (the same
+ *  runner the per-merge hook uses — findings file exactly as it files).
+ *  Repo lock: the scan's worktree root is swept at start, so two concurrent
+ *  scans (or a scan against a live tick's work) would trample each other. */
+export async function opsSecurityScan(stateDir: string, slug: string): Promise<Awaited<ReturnType<typeof runSecurityScan>>> {
+  const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  if (!acquireRepoLock(stateDir, slug)) {
+    throw new Error(`a tick is live for ${slug} (repo lock held) — run the security scan when the repo is idle`);
+  }
+  try {
+    return await runSecurityScan(cfg, new Gh(cfg.repo), { stateDir, atDrain: true });
+  } finally {
+    releaseRepoLock(stateDir, slug);
+  }
+}
+
 const SLICER_TIMEOUT_MS = 900_000;
 
 /**
@@ -1170,7 +1289,7 @@ async function slice(prdText: string, cfg: RepoConfig, max: number): Promise<Ret
 
 const CONFIG_PATCH_ALLOW = [
   "models", "env", "timeouts", "merge", "default_branch", "attempts", "skip_labels", "trusted_authors", "pi", "discoveries", "limits",
-  "scheduling",
+  "scheduling", "acceptance",
 ];
 
 function deepMerge(base: any, patch: any): any {
@@ -1430,8 +1549,39 @@ export async function opsBacklog(
     numbers.push(num);
     created.push({ number: num, title: s.title });
   }
+  // the PRD is the delivery contract the acceptance features check against
+  // (docs/acceptance.md) — persist it beside the config, and bump the
+  // generation so a stale acceptance PASS from the previous backlog can
+  // never survive a re-slice
+  const prdFile = prdPath(stateDir, slug);
+  try {
+    writeFileSync(prdFile, prdText.trimEnd() + "\n");
+    const st = readAcceptanceState(stateDir, slug);
+    writeAcceptanceState(stateDir, slug, { ...st, gen: st.gen + 1 });
+    receipt(stateDir, `backlog: prd.md stored (acceptance generation ${st.gen + 1})`, slug);
+  } catch (e) {
+    // the backlog itself is done — a PRD write failure only degrades the
+    // acceptance features, never the slice, but it must be visible
+    receipt(stateDir, `backlog: could not store prd.md (acceptance checks will skip this repo): ${e instanceof Error ? e.message.slice(0, 200) : e}`, slug);
+  }
   receipt(stateDir, `backlog: ${numbers.length} issues resolved for ${cfg.repo}`, slug);
   return { sliced: sliced.length, existing: sliced.length - fresh.length, preview, created };
+}
+
+/** Store or replace the PRD text without slicing a new backlog — the lever
+ *  when the issues already exist (or a human maintains them) but the
+ *  acceptance walk needs the current contract. Bumps the acceptance
+ *  generation like a re-slice: a new contract invalidates a stale PASS. */
+export function opsPrdSet(stateDir: string, slug: string, prdText: string): { path: string; gen: number } {
+  const dir = repoCfgDir(stateDir, slug);
+  if (!existsSync(join(dir, "config.json"))) throw new Error("repo " + slug + " is not onboarded");
+  const text = prdText.trim();
+  if (!text) throw new Error("prd text is empty — nothing to store");
+  writeFileSync(prdPath(stateDir, slug), text + "\n");
+  const st = readAcceptanceState(stateDir, slug);
+  writeAcceptanceState(stateDir, slug, { ...st, gen: st.gen + 1 });
+  receipt(stateDir, `prd stored (${text.length} chars, acceptance generation ${st.gen + 1})`, slug);
+  return { path: prdPath(stateDir, slug), gen: st.gen + 1 };
 }
 
 /** Pause/resume a repo's lane on the tick wheel. A paused repo is skipped
@@ -1625,11 +1775,32 @@ export async function reapOrphanMachines(
   const anyInstabox = !!instaboxClientCfg || anyOf(instaboxBySlug, "instabox");
   if (anyInstabox && instaboxBySlug.size > 0)
     reaped += await reapInstaboxMachines(stateDir, ledger, log, instaboxBySlug, instaboxClientCfg ?? instaboxBySlug.values().next().value!);
-  if (anyOf(boxdBySlug, "boxd")) reaped += await reapBoxdMachines(ledger, log, boxdBySlug, opts.boxdClient);
-  if (anyOf(daytonaBySlug, "daytona")) reaped += await reapDaytonaMachines(ledger, log, daytonaBySlug, opts.daytonaClient);
-  if (anyOf(e2bBySlug, "e2b")) reaped += await reapE2bMachines(ledger, log, e2bBySlug, opts.e2bClient);
-  if (anyOf(instavmBySlug, "instavm")) reaped += await reapInstavmMachines(ledger, log, instavmBySlug, opts.instavmClient);
+  if (anyOf(boxdBySlug, "boxd")) reaped += await reapBoxdMachines(stateDir, ledger, log, boxdBySlug, opts.boxdClient);
+  if (anyOf(daytonaBySlug, "daytona")) reaped += await reapDaytonaMachines(stateDir, ledger, log, daytonaBySlug, opts.daytonaClient);
+  if (anyOf(e2bBySlug, "e2b")) reaped += await reapE2bMachines(stateDir, ledger, log, e2bBySlug, opts.e2bClient);
+  if (anyOf(instavmBySlug, "instavm")) reaped += await reapInstavmMachines(stateDir, ledger, log, instavmBySlug, opts.instavmClient);
   return reaped;
+}
+
+/**
+ * The acceptance-walk carve-out: `pdf-<slug>-i0[-g<n>]` machines belong to no
+ * lap (issue 0) — they are protected ONLY by their walker's marker (a live
+ * pid), the same discipline as the scen-test lane. A dead pid or missing
+ * marker means the walk crashed and the machine is a quota-eating stray.
+ */
+export function acceptanceMachineLive(stateDir: string, name: string): boolean {
+  const m = /^pdf-(.+)-i0(?:-g\d+)?$/.exec(name ?? "");
+  if (!m) return false;
+  try {
+    const marker = JSON.parse(readFileSync(join(stateDir, "repos", m[1], "acceptance.running"), "utf8"));
+    if (typeof marker.pid === "number") {
+      try {
+        process.kill(marker.pid, 0);
+        return true; // the walker's tick process is alive
+      } catch {}
+    }
+  } catch {}
+  return false;
 }
 
 /**
@@ -1641,6 +1812,7 @@ export async function reapOrphanMachines(
  * unreadable right now still keeps its in-flight box.
  */
 async function reapBoxdMachines(
+  stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
   boxdBySlug: Map<string, RepoConfig>,
@@ -1668,6 +1840,7 @@ async function reapBoxdMachines(
     for (const m of machines) {
       const hit = MACHINE_NAME_RE.exec(m.name ?? "");
       if (!hit || m.labels?.factory !== "1") continue;
+      if (acceptanceMachineLive(stateDir, m.name ?? "")) continue; // a live acceptance walk (issue 0 + marker)
       const repo = boxdBySlug.get(hit[1])?.repo ?? m.labels?.repo;
       const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
       if (row && row.state === "in_progress") continue; // a lap is live in it
@@ -1691,6 +1864,7 @@ async function reapBoxdMachines(
  * repo label. A Sandbox object from the SDK's list iterator carries id/name.
  */
 async function reapDaytonaMachines(
+  stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
   daytonaBySlug: Map<string, RepoConfig>,
@@ -1712,6 +1886,7 @@ async function reapDaytonaMachines(
     for (const m of found) {
       const hit = MACHINE_NAME_RE.exec(m.name ?? "");
       if (!hit || (m as any).labels?.factory !== "1") continue;
+      if (acceptanceMachineLive(stateDir, m.name ?? "")) continue; // a live acceptance walk (issue 0 + marker)
       const repo = daytonaBySlug.get(hit[1])?.repo ?? (m as any).labels?.repo;
       const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
       if (row && row.state === "in_progress") continue; // a lap is live in it
@@ -1734,6 +1909,7 @@ async function reapDaytonaMachines(
  * lap sandbox is created with; the live-lap guard reads the repo metadata.
  */
 async function reapE2bMachines(
+  stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
   e2bBySlug: Map<string, RepoConfig>,
@@ -1754,6 +1930,7 @@ async function reapE2bMachines(
     for (const m of all) {
       const name = (m as any).metadata?.name;
       const hit = MACHINE_NAME_RE.exec(name ?? "");
+      if (acceptanceMachineLive(stateDir, name ?? "")) continue; // a live acceptance walk (issue 0 + marker)
       if (!hit || (m as any).metadata?.factory !== "1") continue;
       const repo = e2bBySlug.get(hit[1])?.repo ?? (m as any).metadata?.repo;
       const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
@@ -1777,6 +1954,7 @@ async function reapE2bMachines(
  * VM is created with; the live-lap guard reads the repo metadata.
  */
 async function reapInstavmMachines(
+  stateDir: string,
   ledger: Pick<Ledger, "getIssue">,
   log: (m: string) => void,
   instavmBySlug: Map<string, RepoConfig>,
@@ -1797,6 +1975,7 @@ async function reapInstavmMachines(
     for (const m of all) {
       const name = m?.metadata?.name;
       const hit = MACHINE_NAME_RE.exec(name ?? "");
+      if (acceptanceMachineLive(stateDir, name ?? "")) continue; // a live acceptance walk (issue 0 + marker)
       if (!hit || m?.metadata?.factory !== "1") continue;
       const repo = instavmBySlug.get(hit[1])?.repo ?? m?.metadata?.repo;
       const row = repo ? ledger.getIssue(repo, Number(hit[2])) : null;
@@ -1835,6 +2014,7 @@ async function reapInstaboxMachines(
     const hit = MACHINE_NAME_RE.exec(m.name ?? "");
     const testHit = /^pdf-(.+)-scen-test$/.exec(m.name ?? "");
     if (!hit && !testHit) continue;
+    if (acceptanceMachineLive(stateDir, m.name ?? "")) continue; // a live acceptance walk (issue 0 + marker)
     const slugOf = (hit ?? testHit)![1];
     if (testHit) {
       // a scenario-test machine belongs to no lap — it is protected ONLY by

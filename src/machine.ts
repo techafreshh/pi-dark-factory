@@ -30,7 +30,7 @@ import { parseEventStream } from "./pievents";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { dirname } from "node:path";
 import { InstaBox, machineNameFor, type InstaMachine, type InstaSshToken } from "./instabox";
-import type { ModelSpec, RepoConfig, StageModels } from "./types";
+import type { ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 import { extensionFiles, webToggle } from "./webtools";
 import { collectSkillsB64 } from "./skills";
 import { branchName } from "./stages/intake";
@@ -597,15 +597,37 @@ export interface MachineStageOpts {
   timeoutMs: number;
 }
 
+/**
+ * What a stage does to its machine, per stage name — the one table every
+ * callStage implementation branches on. implement runs the gates; plan and
+ * review get their clone edits undone afterwards (PDF_RESTORE); plan and
+ * implement bootstrap the clone first. The acceptance walk (docs/acceptance.md)
+ * is none of those: it runs on a machine the walk itself booted and
+ * bootstrapped, the product is still serving from the clone while the agent
+ * works, and the machine is destroyed when the walk ends — so no gates, no
+ * reset-under-a-live-server, no re-bootstrap.
+ */
+export function stageShape(stage: StageName): { gates: boolean; restore: boolean; bootstrap: boolean } {
+  return {
+    gates: stage === "implement",
+    restore: stage === "plan" || stage === "review",
+    bootstrap: stage === "plan" || stage === "implement",
+  };
+}
+
 /** What a lap needs from its machine — LapMachine (instabox) and
  *  BoxdLapMachine (boxd) both provide it; tests inject fakes through
  *  TickDeps.openMachine. */
 export interface LapMachineLike {
   readonly name: string;
   issue: number;
+  /** boot (or find) the platform machine — every driver's callStage calls
+   *  it internally too, but a driver that must prepare the box before any
+   *  stage (the acceptance walk ships its suite first) calls it up front */
+  ensure(): Promise<unknown>;
   bash(script: string, opts?: { timeoutMs?: number }): Promise<ShRes>;
   bootstrap(): Promise<void>;
-  callStage(stage: "plan" | "implement" | "review", o: MachineStageOpts): Promise<MachineStageResult & { stage: "plan" | "implement" | "review" }>;
+  callStage(stage: StageName, o: MachineStageOpts): Promise<MachineStageResult & { stage: StageName }>;
   destroy(): Promise<void>;
 }
 
@@ -725,7 +747,7 @@ export class LapMachine implements LapMachineLike {
    * review change in the clone is undone after them (PDF_RESTORE).
    */
   async callStage(
-    stage: "plan" | "implement" | "review",
+    stage: StageName,
     o: {
       models: StageModels;
       prompt: string;
@@ -736,12 +758,12 @@ export class LapMachine implements LapMachineLike {
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
     const conn = await this.ssh();
-    if (stage === "plan" || stage === "implement") await this.bootstrap();
-    const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    const shape = stageShape(stage);
+    if (shape.bootstrap) await this.bootstrap();
+    const envFile = buildMachineEnvFile(this.cfg, { gates: shape.gates, restore: shape.restore, branch: branchName(this.issue), base: this.cfg.default_branch });
     const res = await callMachineStage(conn, {
       models: o.models,
-      gates,
+      gates: shape.gates,
       branch: branchName(this.issue),
       base: this.cfg.default_branch,
       envFile,

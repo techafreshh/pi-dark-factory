@@ -112,6 +112,10 @@ bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues 
 bun src/foreman.ts bake <slug>                  # instabox: build the repo's golden snapshot
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
+bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge
+bun src/foreman.ts acceptance <slug>            # run the drain-time PRD acceptance walk now (opt-in)
+bun src/foreman.ts security-scan <slug>         # penthera scan of merged main; findings file issues
+bun src/foreman.ts host-tools                   # install/verify the host browser + scanner toolchain
 ```
 
 ## Remote clients
@@ -130,7 +134,7 @@ Full verb manuals: [cli/README.md](cli/README.md).
 ```
 src/                 the engine: ledger, tick, stages, gates, the machine drivers (instabox, boxd,
                         daytona, e2b, instavm) + compose, factoryd
-pi-skills/           skill content shipped into every lap agent (ui router, agent-browser, …)
+pi-skills/           skill content shipped into every lap agent (ui router, agent-browser, prd-acceptance, …)
 cli/                 the @techafresh/dark-factory npm client
 bin/dashboard.ts     read-only telemetry dashboard server (UI in dashboard-ui/)
 bin/backup.ts        hourly ledger + state backups to S3-compatible storage
@@ -155,6 +159,7 @@ docs/                deep dives (below)
 | [Discoveries](docs/discoveries.md) | severity, deferral, and the recursion gate |
 | [Key router](docs/keyrouter.md) | multi-key provider failover |
 | [Parallel mode](docs/parallel-mode.md) | machine-slot allocator, parallel lanes, merge queue |
+| [Acceptance](docs/acceptance.md) | PRD-delivery e2e regression, the drain-time PRD walk, the penthera security audit |
 | [Development](docs/development.md) | tests, and why boundary stubs must use recorded real shapes |
 
 ## Limitations
@@ -167,6 +172,9 @@ docs/                deep dives (below)
 - Machine modes are bounded by your platform's cap (InstaBox entry tier ≈ 5 concurrent
   machines; boxd: your org's limit; Daytona Tier 1 ≈ 5 two-vCPU sandboxes; E2B Hobby: 10
   sandboxes at 1 h each; InstaVM Free: 5 VMs).
+- Browser acceptance (the PRD walk, the e2e regression) needs Chromium reachable from
+  wherever it runs; a platform whose egress allowlist blocks the browser installs fails its
+  bake loudly — [docs/acceptance.md](docs/acceptance.md) explains the smoke and the lanes.
 - Lap and backlog mutations spend real provider tokens. Spend is bounded by per-stage timeouts,
   attempt caps and a per-repo daily ceiling (`limits.daily_attempts`, default 60 implement
   attempts per UTC day), not by a dollar meter. When every model a stage tries answers `402`

@@ -13,7 +13,7 @@ import type { CheckState, GhApi } from "../src/gh";
 import { Ledger } from "../src/ledger";
 import type { LapMachineLike, MachineStageOpts, MachineStageResult, ShRes } from "../src/machine";
 import type { CallStageFn, TickDeps } from "../src/tick";
-import type { IssueLite, PrLite, RepoConfig } from "../src/types";
+import type { IssueLite, PrLite, RepoConfig, StageName } from "../src/types";
 
 export const GIT_ID = "-c user.email=t@t.io -c user.name=Test";
 export const FAKE_REPO_DIR = "/fake/box/repo";
@@ -37,7 +37,7 @@ export class FakeGh implements GhApi {
       this.issues
         .filter((i) => state === "all" || (this.states[i.number] ?? "open") === "open")
         .slice(0, limit)
-        .map((i) => ({ ...i, author: i.author ?? "acme" }))
+        .map((i) => ({ ...i, author: i.author ?? "acme", state: this.states[i.number] ?? "open" }))
     );
   }
   viewerLogin(): Promise<string | null> {
@@ -186,6 +186,8 @@ export interface MachineBehavior {
   implement?: (clone: string, issue: number, round: number) => void | Promise<void>;
   plan?: (issue: number) => string;
   review?: (issue: number, round: number) => string;
+  /** the acceptance walk's final text (the GAPS/VERDICT contract) */
+  acceptance?: () => string;
 }
 
 const ok = (text: string): MachineStageResult => ({
@@ -218,6 +220,10 @@ export class FakeMachine implements LapMachineLike {
     return { code, stdout, stderr, timedOut: false };
   }
 
+  async ensure(): Promise<unknown> {
+    return this; // the fake box always exists
+  }
+
   async bootstrap(): Promise<void> {
     const branch = `factory/issue-${this.issue}`;
     if (!existsSync(join(this.clone, ".git"))) execSync(`git clone -q ${this.w.origin} ${this.clone}`);
@@ -230,9 +236,14 @@ export class FakeMachine implements LapMachineLike {
     }
   }
 
-  async callStage(stage: "plan" | "implement" | "review", _o: MachineStageOpts): Promise<MachineStageResult & { stage: typeof stage }> {
+  async callStage(stage: StageName, _o: MachineStageOpts): Promise<MachineStageResult & { stage: typeof stage }> {
     this.stages.push(stage);
     this.prompts.push(_o.prompt);
+    if (stage === "acceptance") {
+      // the acceptance walk's agent: the behavior's canned final text (the
+      // GAPS/VERDICT contract) or a clean DELIVERED verdict
+      return { ...ok(this.b.acceptance?.() ?? "VERDICT: DELIVERED"), stage };
+    }
     if (stage === "plan") {
       await this.bootstrap();
       return { ...ok(this.b.plan?.(this.issue) ?? `PLAN: implement issue ${this.issue}.`), stage };

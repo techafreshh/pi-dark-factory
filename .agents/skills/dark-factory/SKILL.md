@@ -434,6 +434,10 @@ Every verb takes `--help`. Exit codes: 0 ok, 1 error or failed verdict, 2 usage.
 | `pause SLUG` / `unpause SLUG` | stop / resume a repo's ticks |
 | `unblock SLUG N [--prune] [--force]` | drop the ledger row (± close PR, delete branch) |
 | `cleanup` | orphaned machines, stale workers, caches |
+| `prd SLUG --prd-file F` | **writes** the stored PRD the acceptance walks judge (no slicing; bumps the generation) |
+| `acceptance SLUG [--status]` | **spends tokens**: run the drain-time PRD walk now (files `[prd-gap]` issues); `--status` reads the verdicts |
+| `security-scan SLUG` | penthera scan of merged main; findings above the floor **file** `[security]` issues |
+| `host-tools` | install/verify the host browser + scanner toolchain (once per VPS) |
 
 CLI quirks (v0.1.2):
 - **`-f` does not follow.** Use `--follow`.
@@ -457,3 +461,4 @@ details are in the repo's `docs/operations.md`.
 | `ui.enabled:false` or other non-allowlisted config | edit `state/repos/SLUG/config.json` |
 | offboard a repo | `pause` it, move `state/repos/SLUG` aside, `cleanup`. Ledger rows stay as history |
 | dashboard, backups, restore | `pi-factory-dashboard`, `pi-factory-backup.timer`, `bun bin/backup.ts list \| restore <id> <empty-dir>` |
+| browser acceptance (PRD walk / e2e regression / security audit) | patch the repo config `{"acceptance":{"e2e":true,"prd_check":true,"security":true}}`, run `host-tools` (host/compose repos) or re-`bake` the repo (machine repos — the toolchain rides into the snapshot, and the bake fails loudly when a platform cannot carry a browser), then `acceptance SLUG` to walk the PRD once. Backlog slicing stores the PRD automatically; `prd` updates it without re-slicing. Details: `docs/acceptance.md` |

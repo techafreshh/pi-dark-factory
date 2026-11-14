@@ -12,6 +12,7 @@ import { openDaytonaLapMachine } from "./machine-daytona";
 import { openE2bLapMachine } from "./machine-e2b";
 import { openInstavmLapMachine } from "./machine-instavm";
 import { acquireSlot, bindLease, configForPool, lanePools, releaseSlot, type SlotLease } from "./allocator";
+import { maybeDrainAcceptance, runPostMergeExtras } from "./postmerge";
 import { runParallel, type MergeQueue } from "./parallel";
 import { Ledger } from "./ledger";
 import { blockedComment, mergedComment, needsContextComment, noActionComment, stuckSummaryComment } from "./notify";
@@ -31,6 +32,24 @@ import { reapOrphanMachines } from "./ops";
 import { acquireRepoLock, acquireTickLock, releaseRepoLock, releaseTickLock } from "./lock";
 import { isMachineMode, type IssueLite, type ModelSpec, type RepoConfig, type StageModels, type StageName } from "./types";
 
+/** The per-mode lap-machine factory, shared by the lap loop and the
+ *  acceptance hooks (the acceptance family boots it at issue 0). Tests
+ *  inject their own through TickDeps.openMachine. */
+export function openLapMachineFor(cfg: RepoConfig, issue: number, log: (m: string) => void, lapId: number, stateDir: string): LapMachineLike {
+  switch (cfg.env.mode) {
+    case "boxd":
+      return openBoxdLapMachine(cfg, issue, log, lapId, stateDir);
+    case "daytona":
+      return openDaytonaLapMachine(cfg, issue, log, lapId, stateDir);
+    case "e2b":
+      return openE2bLapMachine(cfg, issue, log, lapId, stateDir);
+    case "instavm":
+      return openInstavmLapMachine(cfg, issue, log, lapId, stateDir);
+    default:
+      return openLapMachine(cfg, issue, log, lapId, stateDir);
+  }
+}
+
 export interface CallStageArgs {
   models: StageModels;
   prompt: string;
@@ -42,6 +61,9 @@ export interface CallStageArgs {
   name: string;
   /** "where am I" brief — written to the cwd and prepended to the prompt */
   runtimeContext?: string;
+  /** override the stage-budget wall clock (the acceptance walk's
+   *  prd_minutes instead of timeouts.acceptance_minutes) */
+  timeoutMs?: number;
 }
 
 export type CallStageFn = (
@@ -81,7 +103,7 @@ export function makeCallStage(cfg: RepoConfig, stateDir: string): CallStageFn {
       sessionDir: a.sessionDir,
       systemPrompt: a.systemPrompt,
       extraArgs: cfg.pi.extra_args,
-      timeoutMs: stageMinutes(cfg, stage) * 60_000,
+      timeoutMs: a.timeoutMs ?? stageMinutes(cfg, stage) * 60_000,
       quietMs: QUIET_KILL_MS,
       passEnv: cfg.env.pass_env,
     };
@@ -354,15 +376,7 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
   const openMachine = (): LapMachineLike =>
     deps.openMachine
       ? deps.openMachine(cfg, n, machineLog, lapId, stateDir)
-      : cfg.env.mode === "boxd"
-        ? openBoxdLapMachine(cfg, n, machineLog, lapId, stateDir)
-        : cfg.env.mode === "daytona"
-          ? openDaytonaLapMachine(cfg, n, machineLog, lapId, stateDir)
-          : cfg.env.mode === "e2b"
-            ? openE2bLapMachine(cfg, n, machineLog, lapId, stateDir)
-            : cfg.env.mode === "instavm"
-              ? openInstavmLapMachine(cfg, n, machineLog, lapId, stateDir)
-              : openLapMachine(cfg, n, machineLog, lapId, stateDir);
+      : openLapMachineFor(cfg, n, machineLog, lapId, stateDir);
 
   // a stage's ledger row opens BEFORE the stage runs (the dashboard's live
   // stage and real durations read it) and closes however the stage ends:
@@ -928,6 +942,17 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
         repoReceipt(cfg.slug, stateDir, `post-merge regression pass errored (chain unaffected): ${e instanceof Error ? e.message : e}`);
       }
     }
+    // acceptance extras (docs/acceptance.md): the penthera security scan and
+    // the authored e2e suite against merged main — every mode, report-only,
+    // each step individually caught (the chain always moves on)
+    if (cfg.acceptance?.security || cfg.acceptance?.e2e) {
+      try {
+        const extra = await runPostMergeExtras(cfg, deps.gh, { stateDir, pr, openMachineFor: (c, log) => openLapMachineFor(c, 0, log, 0, stateDir) });
+        if (extra) repoReceipt(cfg.slug, stateDir, `post-merge extras: ${extra}`);
+      } catch (e) {
+        repoReceipt(cfg.slug, stateDir, `post-merge extras errored (chain unaffected): ${e instanceof Error ? e.message.slice(0, 200) : e}`);
+      }
+    }
     outcome = "merged";
     break outer;
   }
@@ -1137,6 +1162,16 @@ async function landViaQueue(a: {
   set("merging");
   await deps.gh.prMerge(pr, cfg.merge.method, cfg.merge.delete_branch, anchor);
   set("merged");
+  // acceptance extras ride every landing path (docs/acceptance.md) — the
+  // queue holds its turn through re-verify, so main is fresh here too
+  if (cfg.acceptance?.security || cfg.acceptance?.e2e) {
+    try {
+      const extra = await runPostMergeExtras(cfg, deps.gh, { stateDir, pr, openMachineFor: (c, log) => openLapMachineFor(c, 0, log, 0, stateDir) });
+      if (extra) repoReceipt(cfg.slug, stateDir, `post-merge extras: ${extra}`);
+    } catch (e) {
+      repoReceipt(cfg.slug, stateDir, `post-merge extras errored (chain unaffected): ${e instanceof Error ? e.message.slice(0, 200) : e}`);
+    }
+  }
   return { kind: "merged" };
 }
 
@@ -1661,14 +1696,30 @@ async function tickBody(opts: { stateDir: string; repoSlug?: string; concurrency
           // manual tick. Strictly ordered one-lap-at-a-time still holds inside a
           // repo (that ordering is what keeps main conflict-free), and
           // MAX_LAPS bounds a pathological loop — the chain continues next tick.
-          if (claimable.length === 0) return;
+          if (claimable.length === 0) {
+            await maybeDrainAcceptance(cfg, opts.stateDir, {
+              gh: deps.gh,
+              ledger: deps.ledger,
+              callStage: deps.callStage,
+              openMachineFor: (c, log) => openLapMachineFor(c, 0, log, 0, opts.stateDir),
+            });
+            return;
+          }
           // parallel mode (machine modes only, config-validated): lanes run
           // independent issues at once and land through the merge queue
           if (cfg.scheduling?.parallel && isMachineMode(cfg.env.mode)) {
             await runParallel(cfg, opts.stateDir, deps);
-            return;
+          } else {
+            await runChain(cfg, opts.stateDir, deps, claimable);
           }
-          await runChain(cfg, opts.stateDir, deps, claimable);
+          // the chain/lanes drained their intake this tick — the end-of-
+          // project gate runs here too (it re-checks drain-ness itself)
+          await maybeDrainAcceptance(cfg, opts.stateDir, {
+            gh: deps.gh,
+            ledger: deps.ledger,
+            callStage: deps.callStage,
+            openMachineFor: (c, log) => openLapMachineFor(c, 0, log, 0, opts.stateDir),
+          });
         } catch (e: any) {
           repoReceipt(cfg.slug, opts.stateDir, `tick error on ${cfg.slug}: ${e.message?.slice(0, 300)}`);
         } finally {

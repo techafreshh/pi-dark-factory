@@ -196,9 +196,41 @@ export interface RepoConfig {
     parallel?: boolean;
     max_lanes?: number;
   };
+  /** PRD-delivery acceptance (docs/acceptance.md). All opt-in, default off:
+   *  e2e runs the repo's authored browser suite against merged main after
+   *  every merge; prd_check walks the whole stored PRD against the live
+   *  product when the backlog drains (gaps become issues the laps fix);
+   *  security scans merged main with penthera per merge. e2e and prd_check
+   *  need a browser toolchain — host/compose repos via `foreman host-tools`,
+   *  machine repos via a re-`bake` (the toolchain rides into the snapshot). */
+  acceptance?: {
+    /** per-merge e2e regression suite on merged main */
+    e2e?: boolean;
+    /** drain-time full PRD acceptance walk (files [prd-gap] issues) */
+    prd_check?: boolean;
+    /** penthera security scan per merge (files [security] issues) */
+    security?: boolean;
+    /** file [security] issues even on a PUBLIC repo. Default false: on a
+     *  public tracker a published finding is a live disclosure (file, line,
+     *  sink) minutes after the merge that introduced it — the scan still
+     *  runs and receipts, it just does not publish. Private repos always
+     *  file. */
+    security_public?: boolean;
+    /** penthera findings below this stay receipt-only (default medium) */
+    severity_floor?: SecuritySeverity;
+    /** wall-clock cap of one e2e suite run (default 10) */
+    e2e_minutes?: number;
+    /** wall-clock cap of the drain-time acceptance walk (default 25) */
+    prd_minutes?: number;
+  };
 }
 
 export type SchedulingPriority = "high" | "normal" | "low";
+
+/** penthera's severity axis (the JSON report's `findings[].severity`) and the
+ *  acceptance block's severity_floor scale, ordered weakest to strongest. */
+export const SECURITY_SEVERITIES = ["low", "medium", "high", "critical"] as const;
+export type SecuritySeverity = (typeof SECURITY_SEVERITIES)[number];
 
 export interface IssueLite {
   number: number;
@@ -226,4 +258,8 @@ export interface Usage {
   cost?: number;
 }
 
-export type StageName = "plan" | "implement" | "review";
+/** "acceptance" is the drain-time PRD walk (docs/acceptance.md): an agent
+ *  stage like plan/implement/review, recorded in stage_runs, but it runs no
+ *  gates, undoes nothing, and bootstraps nothing (the walk prepares its own
+ *  machine and keeps the product serving while the agent works). */
+export type StageName = "plan" | "implement" | "review" | "acceptance";

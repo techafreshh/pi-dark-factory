@@ -1,0 +1,176 @@
+{
+  "schemaVersion": "report-1",
+  "run": {
+    "id": "01a1d62c-7a78-7c29-9b32-d0a2a39b9502",
+    "specVersion": "0.1",
+    "runner": {
+      "name": "e2e",
+      "version": "0.23.1"
+    },
+    "status": "passed",
+    "exitCode": 0,
+    "startedAt": "2026-11-13T18:30:02.509Z",
+    "finishedAt": "2026-11-13T18:30:04.287Z",
+    "project": {
+      "id": "unportable-f3e07407a6e8ab509f7c1adbf0926ef6",
+      "configDigest": "9e695ab0529482d27b73e4c4da965239dc2134cd1aa6aed377bab2bfc30cf859"
+    },
+    "environment": {
+      "ci": false,
+      "trustNoticeShown": false,
+      "os": "linux 6.8.0-134-generic",
+      "arch": "x64",
+      "runtime": "node v22.23.1"
+    },
+    "targets": [
+      {
+        "id": "web",
+        "index": 0,
+        "platform": "web",
+        "baseOrigin": "http://127.0.0.1:4173",
+        "environment": "test",
+        "engine": {
+          "name": "web",
+          "version": "0.16.0",
+          "spiVersion": 1
+        },
+        "capabilities": [
+          "actions",
+          "artifacts",
+          "browser",
+          "keyboard",
+          "location",
+          "observation",
+          "pointer",
+          "state"
+        ],
+        "artifactCapabilities": [
+          "screenshot",
+          "video"
+        ],
+        "stateCapability": true
+      }
+    ],
+    "serialGroups": [],
+    "results": [
+      {
+        "id": "b7d57535871b62b9504b92cbd13f832eec398a229df1a67dcdf78e376aca9549",
+        "testId": "tests/example.e2e.ts::app%20opens",
+        "kind": "test",
+        "declarationIndex": 0,
+        "titlePath": [
+          "app opens"
+        ],
+        "file": "tests/example.e2e.ts",
+        "source": {
+          "file": "tests/example.e2e.ts",
+          "line": 4,
+          "column": 1
+        },
+        "targetId": "web",
+        "platform": "web",
+        "agent": "default",
+        "repeat": 0,
+        "tags": [],
+        "selected": true,
+        "status": "passed",
+        "attempts": [
+          {
+            "id": "01a1d62c-8007-7f91-bc84-6516c8b35e03",
+            "index": 0,
+            "status": "passed",
+            "startedAt": "2026-11-13T18:30:03.016Z",
+            "durationMs": 1199,
+            "artifacts": [],
+            "secondaryErrors": [],
+            "cleanup": "complete",
+            "environment": {
+              "browser": "chromium 158.0.8127.18",
+              "user agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/158.0.8127.18 Safari/537.36"
+            },
+            "steps": [
+              {
+                "id": "01a1d62c-8007-7f91-bc84-6516c8b35e03:0",
+                "index": 0,
+                "kind": "app",
+                "api": "app.open",
+                "label": "/",
+                "status": "passed",
+                "startedAt": "2026-11-13T18:30:03.810Z",
+                "durationMs": 267,
+                "events": [],
+                "artifacts": [],
+                "screen": {
+                  "location": "http://127.0.0.1:4173/",
+                  "nodes": 29,
+                  "changes": []
+                },
+                "source": {
+                  "file": "tests/example.e2e.ts",
+                  "line": 5,
+                  "column": 13
+                }
+              },
+              {
+                "id": "01a1d62c-8007-7f91-bc84-6516c8b35e03:1",
+                "index": 1,
+                "kind": "assertion",
+                "api": "expect.toBeVisible",
+                "label": "locator(\"body\")",
+                "status": "passed",
+                "startedAt": "2026-11-13T18:30:04.085Z",
+                "durationMs": 111,
+                "events": [
+                  {
+                    "kind": "poll",
+                    "name": "expect",
+                    "startedAt": "2026-11-13T18:30:04.086Z",
+                    "durationMs": 111,
+                    "status": "passed",
+                    "count": 1
+                  }
+                ],
+                "artifacts": [],
+                "source": {
+                  "file": "tests/example.e2e.ts",
+                  "line": 6,
+                  "column": 41
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "errors": [],
+    "summary": {
+      "discovered": 1,
+      "selected": 1,
+      "executed": 1,
+      "passed": 1,
+      "failed": 0,
+      "interrupted": 0,
+      "flaky": 0,
+      "skipped": 0
+    },
+    "limits": {
+      "maxAgentContextBytes": 16384,
+      "maxLedgerBytes": 8192,
+      "maxObservationBytes": 262144,
+      "maxEventsPerStep": 1000,
+      "maxModelTokensPerCall": 64000
+    },
+    "usage": {
+      "discoveredResults": 1,
+      "maxAgentContextBytes": 0,
+      "maxLedgerBytes": 0,
+      "maxObservationBytes": 0,
+      "artifactBytes": 0,
+      "downloads": 0,
+      "events": 1,
+      "modelTokens": 0,
+      "maxModelCallsInStep": 0,
+      "maxActionStepsInStep": 0
+    }
+  }
+}

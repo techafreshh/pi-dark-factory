@@ -1,0 +1,35 @@
+  ▸ Scanning for hardcoded secrets...
+  ▸ Checking pinned runtime versions against advisories...
+  ▸ Looking for eval, vm and exec sinks...
+  ▸ Checking GitHub Actions workflows...
+  ▸ Checking headers, cookies, CORS and login rate limits...
+  ▸ Locating API routes directory...
+  ▸ Scanning for Express/Hono/Fastify routes...
+  ▸ Classifying trust boundaries...
+  ▸ Detecting risky code patterns...
+**Penthera: Fix now.** 6 problems (2 to act on, 4 to check first), 0 likely noise, 1 info in the full report. Scanned: repo.
+
+### Act on
+
+1. **command-injection in server.js** [critical] in `server.js:9`. Data derived from the request reaches a code-execution sink in `server.js`: exec on line 9 (from the request). Fix: Use execFile or spawn with an argument array and no shell, and validate the input against an allowlist. `code-pattern`
+2. **Generic API key assignment in source** [high] in `server.js:3`. Possible secret in `server.js`: `API_KEY = "sk-l…3456"` `secrets`
+
+### Check first
+
+- **Missing Content-Security-Policy** [medium, possible match] in `server.js`. No CSP, inline scripts and third-party resources are unrestricted.
+- **Missing X-Frame-Options** [low, possible match] in `server.js`. Page can be embedded in iframes (clickjacking risk).
+- **Missing X-Content-Type-Options** [low, possible match] in `server.js`. Browser may MIME-sniff responses (XSS aid).
+- **Missing Strict-Transport-Security** [low, possible match] in `server.js`. No Strict-Transport-Security header, so a browser may reach the site over plain HTTP first.
+
+Checked one and it is not a problem? `penthera memory suppress <fid> --reason "<why>"`. It sets the finding aside on this machine; add the fid and reason to penthera.suppress.json to share that with your team. Both apply to scans with --memory, and the report lists what they hide. The fid is next to each finding in the JSON and Markdown reports.
+
+### Not checked
+
+- The scan reported nothing it skipped. No finding is still not proof of safety: Penthera reports what its rules match.
+
+### Next
+
+- `npx penthera fix --plan --repo /tmp/pf-penthera`: A fix recipe matches 5 of the 6 problems. It shows each diff and changes nothing until you approve one
+- `npx penthera deps .`: Dependency behaviour was not part of this run
+- `npx penthera agents .`: AI agent config was not part of this run
+exit=1
