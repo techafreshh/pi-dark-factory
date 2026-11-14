@@ -1158,12 +1158,18 @@ export async function opsHostTools(stateDir: string): Promise<{ ok: boolean; lin
 }
 
 /** Run the drain-time PRD acceptance walk on demand (manual runs bypass the
- *  daily cap but still need the stored PRD and a runtime scenario). */
+ *  daily cap but still need the stored PRD and a runtime scenario). Takes
+ *  the repo lock like prove-gates: the walk shares the acceptance machine
+ *  name, the scenario ports and the marker with a live tick, so the two
+ *  must never overlap. */
 export async function opsAcceptanceRun(stateDir: string, slug: string, opts: { force?: boolean } = {}): Promise<ReturnType<typeof runPrdAcceptance>> {
   const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
+  if (!acquireRepoLock(stateDir, slug)) {
+    throw new Error(`a tick is live for ${slug} (repo lock held) — run the acceptance walk when the repo is idle`);
+  }
   const ledger = new Ledger(join(stateDir, "factory.db"));
   try {
-    const result = await runPrdAcceptance(cfg, {
+    return await runPrdAcceptance(cfg, {
       stateDir,
       gh: new Gh(cfg.repo),
       ledger,
@@ -1171,18 +1177,26 @@ export async function opsAcceptanceRun(stateDir: string, slug: string, opts: { f
       openMachine: (c, log) => openLapMachineFor(c, 0, log, 0, stateDir),
       log: (m) => receipt(stateDir, m, slug),
     }, { force: opts.force ?? true });
-    return result;
   } finally {
     ledger.db.close();
+    releaseRepoLock(stateDir, slug);
   }
 }
 
 /** Run the penthera security scan against merged main on demand (the same
- *  runner the per-merge hook uses — findings file exactly as it files). */
+ *  runner the per-merge hook uses — findings file exactly as it files).
+ *  Repo lock: the scan's worktree root is swept at start, so two concurrent
+ *  scans (or a scan against a live tick's work) would trample each other. */
 export async function opsSecurityScan(stateDir: string, slug: string): Promise<Awaited<ReturnType<typeof runSecurityScan>>> {
   const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
-  const result = await runSecurityScan(cfg, new Gh(cfg.repo), { stateDir, atDrain: true });
-  return result;
+  if (!acquireRepoLock(stateDir, slug)) {
+    throw new Error(`a tick is live for ${slug} (repo lock held) — run the security scan when the repo is idle`);
+  }
+  try {
+    return await runSecurityScan(cfg, new Gh(cfg.repo), { stateDir, atDrain: true });
+  } finally {
+    releaseRepoLock(stateDir, slug);
+  }
 }
 
 const SLICER_TIMEOUT_MS = 900_000;

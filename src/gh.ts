@@ -234,6 +234,23 @@ export async function repoDefaultBranch(repo: string): Promise<string> {
   return name;
 }
 
+/** PUBLIC | PRIVATE | INTERNAL (gh 2.45 returns the UPPERCASE word; the
+ *  captured shape is {"isPrivate":false,"visibility":"PUBLIC"}), or null
+ *  when the answer is unreadable — callers fail toward their safe default.
+ *  The security audit consults it before filing findings on a public repo
+ *  (docs/acceptance.md: a critical finding published as a public issue
+ *  minutes after its merge is a live disclosure). */
+export async function repoVisibility(repo: string): Promise<string | null> {
+  try {
+    const res = await sh(["gh", "repo", "view", repo, "--json", "visibility"]);
+    const raw = JSON.parse(shOk(res, "gh repo view")) as any;
+    const v = raw?.visibility;
+    return typeof v === "string" ? v.toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * CI gate: poll the PR's checks until every required check is present and
  * non-PENDING. Any required FAILURE fails fast. A required check that never

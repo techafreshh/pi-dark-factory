@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { e2eSuiteExists, prdPath } from "./acceptance-state";
+import { e2eSuiteExists, prdPath, withAcceptanceMarker } from "./acceptance-state";
 import { fileFactoryIssues } from "./fileissues";
 import { ensureSource } from "./gitws";
 import { listClaimable, DISCOVERY_LABEL, MINOR_LABEL, PRD_GAP_LABEL, SECURITY_LABEL, E2E_REGRESSION_LABEL } from "./stages/intake";
@@ -47,17 +47,26 @@ async function runMergedMainSuite(cfg: RepoConfig, gh: GhApi, opts: { stateDir: 
   if (isMachineMode(cfg.env.mode)) {
     const machine = opts.openMachineFor(cfg, (m) => m);
     try {
-      await bootAcceptanceMachine(cfg, machine);
-      res = await runE2eSuite(cfg, spec, { stateDir, machine, repoDir: ((cfg.env as any)[cfg.env.mode]?.repo_dir as string) ?? "" });
+      // the marker is the ONLY janitor protection an issue-0 machine has —
+      // the per-merge regression machine carries it exactly like the walk's
+      res = await withAcceptanceMarker(stateDir, cfg.slug, async () => {
+        await bootAcceptanceMachine(cfg, machine);
+        return runE2eSuite(cfg, spec, { stateDir, machine, repoDir: ((cfg.env as any)[cfg.env.mode]?.repo_dir as string) ?? "" });
+      });
     } finally {
       await machine.destroy().catch(() => {});
     }
   } else {
     // host / compose: one detached worktree of merged main — the same shape
-    // runPostMergeRegression uses for the scenario lanes (verify.ts)
+    // runPostMergeRegression uses for the scenario lanes (verify.ts). A
+    // crash between `worktree add` and the finally leaves the tree behind
+    // and would block every later run, so the root is cleared first.
     const src = await ensureSource(stateDir, cfg);
     const root = join(stateDir, "repos", cfg.slug, "issues", "accept-main");
     const wt = join(root, "wt");
+    await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 }); // stale leftover, if any
+    await sh(["rm", "-rf", root], { timeoutMs: 30_000 });
+    await sh(["git", "-C", src, "worktree", "prune"], { timeoutMs: 30_000 });
     const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${cfg.default_branch}`], { timeoutMs: 120_000 });
     if (added.code !== 0) throw new Error(`could not worktree merged main: ${added.stderr.trim().slice(0, 200)}`);
     try {
@@ -81,9 +90,9 @@ async function runMergedMainSuite(cfg: RepoConfig, gh: GhApi, opts: { stateDir: 
       : [res.summary]),
     failures.length > 10 ? `\n… and ${failures.length - 10} more` : "",
     "",
-    "Fix order for the lap loop: reproduce from the failing step above, repair, and keep the scenario + e2e gates green. Full report: state/repos/" +
+    "Fix order for the lap loop: reproduce from the failing step above, repair, and keep the scenario + e2e gates green. Host-lane runs keep the full report at state/repos/" +
       cfg.slug +
-      "/e2e/.e2e/report.json",
+      "/e2e/.e2e/report.json; in-box (machine-mode) runs keep it in the machine — the failing steps above are the evidence.",
   ].join("\n");
   const filed = await fileFactoryIssues(
     stateDir,
@@ -159,7 +168,8 @@ export async function maybeDrainAcceptance(
   if (!open || !openIssuesAllDeferred(open)) return;
 
   const log = (m: string) => m; // runPrdAcceptance receipts the outcomes itself
-  const r = await runPrdAcceptance(cfg, {
+  // the walk receipts its own outcomes; wiring/cap refusals stay quiet
+  await runPrdAcceptance(cfg, {
     stateDir,
     gh: deps.gh,
     ledger: deps.ledger,
@@ -167,7 +177,4 @@ export async function maybeDrainAcceptance(
     openMachine: deps.openMachineFor,
     log,
   });
-  if (r.reason && r.ran === false && !/already DELIVERED|daily acceptance cap/.test(r.reason)) {
-    // quiet on wiring/caps; the walk receipts everything it does itself
-  }
 }

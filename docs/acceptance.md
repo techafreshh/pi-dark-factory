@@ -138,6 +138,22 @@ All three classes file through `fileFactoryIssues` (src/fileissues.ts) —
 title-deduped against open issues, labels created on demand, one failed
 create never loses the batch.
 
+## Deliberate trade-offs (review 2026-11-14)
+
+- **Acceptance machines are not counted in the fleet slot pools** — the same
+  standing rule as bake and `scen-test` machines (docs/parallel-mode.md,
+  "Not in scope"). A per-merge regression or a drain walk can therefore
+  over-subscribe a platform that is already at its lap cap; the platform's
+  own cap-reject and the 10-minute slot-queue deadline stay as the fallback.
+  On a fleet at the edge of its caps, keep one pool slot of headroom.
+- **The extras run inside the lap's tick** — worst case the per-merge hook
+  adds a scan (≤10 min) + machine bootstrap (≤10 min) + the suite
+  (`e2e_minutes`) to a merge, inside the 12-minute chain budget; in parallel
+  mode a landing lane holds the merge queue through its extras. Every step
+  is individually try/caught, so the chain never enters the error path, but
+  the latency is real. If it bites, the knobs are `acceptance.e2e_minutes`,
+  `PDF_SECURITY_SCAN_MINUTES`, or turning off `acceptance.e2e` per repo.
+
 ## Cost model
 
 - The per-merge penthera scan is token-free (static tool).

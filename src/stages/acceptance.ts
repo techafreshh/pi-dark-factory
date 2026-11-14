@@ -5,6 +5,7 @@ import type { Ledger } from "../ledger";
 import {
   acceptanceRunningPath,
   acceptanceRunsToday,
+  withAcceptanceMarker,
   e2eSuiteDir,
   e2eSuiteExists,
   prdPath,
@@ -14,6 +15,7 @@ import {
   type AcceptanceLast,
 } from "../acceptance-state";
 import { resolveScenarioPort, runScenario, runScenarioInMachine, loadScenario, type ScenarioSpec } from "../scenario";
+import { agentEnv } from "../agentenv";
 import { fileFactoryIssues } from "../fileissues";
 import { ensureSource, sourceDir } from "../gitws";
 import type { GhApi } from "../gh";
@@ -72,10 +74,14 @@ export interface AcceptanceGap {
 export function parseAcceptanceVerdict(text: string): { delivered: boolean | null; gaps: AcceptanceGap[] } {
   const gaps: AcceptanceGap[] = [];
   let inGaps = false;
+  let sawDelivered = false;
+  let sawGapsVerdict = false;
+  // the WHOLE text is scanned: a verdict line placed first must not hide
+  // GAPS bullets that follow it (the verdict only wins when no gaps parsed)
   for (const raw of text.split("\n")) {
     const line = raw.trim();
-    if (/^VERDICT\s*:\s*DELIVERED/i.test(line)) return { delivered: gaps.length === 0, gaps };
-    if (/^VERDICT\s*:\s*GAPS/i.test(line)) inGaps = true;
+    if (/^VERDICT\s*:\s*DELIVERED/i.test(line)) sawDelivered = true;
+    if (/^VERDICT\s*:\s*GAPS/i.test(line)) sawGapsVerdict = true;
     if (/^#{1,4}\s*GAPS?/i.test(line) || /^GAPS?\s*:?\s*$/i.test(line)) inGaps = true;
     // a new markdown heading (other than GAPS) ends the section
     else if (/^#{1,4}\s/.test(line)) inGaps = false;
@@ -94,6 +100,8 @@ export function parseAcceptanceVerdict(text: string): { delivered: boolean | nul
     });
   }
   if (gaps.length > 0) return { delivered: false, gaps };
+  if (sawDelivered) return { delivered: true, gaps: [] };
+  if (sawGapsVerdict) return { delivered: false, gaps: [] }; // "gaps" claimed but none parsable — fail, file nothing
   return { delivered: null, gaps: [] };
 }
 
@@ -244,6 +252,16 @@ export async function bootAcceptanceMachine(cfg: RepoConfig, machine: LapMachine
   }
 }
 
+/** The env the authored suite runs under wherever it executes on the VPS
+ *  (the host lane of the drain walk) — the agentEnv allowlist, never the
+ *  factory's service environment. The suite files are written by an agent
+ *  that read live product pages (untrusted data) and are then executed:
+ *  agent-influenced code runs under the allowlist, the same rule host-mode
+ *  stages follow. PORT/APP_URL are exported by the command itself. */
+export function acceptanceSuiteEnv(cfg: RepoConfig): Record<string, string> {
+  return agentEnv(cfg.env.pass_env);
+}
+
 export interface SuiteRunResult {
   pass: boolean;
   summary: string;
@@ -279,6 +297,7 @@ export async function runE2eSuite(
       bash: (script: string, t?: number) => opts.machine!.bash(script, { timeoutMs: t }),
       repoDir: opts.repoDir ?? "",
     };
+    let report: E2eSummary | null = null;
     const result = await runScenarioInMachine(spec, target, {
       readinessSeconds: cfg.timeouts.readiness_seconds,
       defaultProbeMs: cfg.timeouts.probe_ms,
@@ -286,11 +305,12 @@ export async function runE2eSuite(
       reservedPorts: cfg.scenario.ports,
       onReady: async ({ port }) => {
         const res = await target.bash(`export PORT=${port}\n` + e2eRunCommand({ suiteDir: boxDir, toolchainDir: boxToolchainDir(), inBox: true }), timeoutMs + 60_000);
-        const { rc, report } = parseE2eRunOutput(res.stdout);
-        return report && report.status === "passed" ? null : summarizeE2e(report, rc);
+        const parsed = parseE2eRunOutput(res.stdout);
+        report = parsed.report;
+        return report && report.status === "passed" ? null : summarizeE2e(report, parsed.rc);
       },
     });
-    return { pass: result.pass, summary: result.pass ? "suite passed" : result.error ?? "suite failed", report: null };
+    return { pass: result.pass, summary: result.pass ? "suite passed" : result.error ?? "suite failed", report };
   }
 
   const worktree = opts.scratchDir!;
@@ -411,7 +431,7 @@ async function acceptanceWindow(
       const suiteDir = e2eSuiteDir(stateDir, slug);
       const res = await sh(
         ["bash", "-c", `export PORT=${args.port}\n` + e2eRunCommand({ suiteDir, toolchainDir: hostToolchainDir(), inBox: false })],
-        { cwd: suiteDir, timeoutMs, killGroup: true }
+        { cwd: suiteDir, env: acceptanceSuiteEnv(cfg), inheritEnv: false, timeoutMs, killGroup: true }
       );
       const report = parseE2eReport(readReportSafe(suiteDir));
       suiteSummary = summarizeE2e(report, res.code);
@@ -487,7 +507,6 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
   const { stateDir } = deps;
   const slug = cfg.slug;
   const filed: { issue: number; title: string }[] = [];
-  const marker = acceptanceRunningPath(stateDir, slug);
   const prd = readPrdSafe(stateDir, slug);
   if (!prd) return { ran: false, filed, reason: "no prd.md stored (slice a backlog or POST /repos/<slug>/prd first)" };
 
@@ -509,133 +528,135 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
   if (machineMode && !deps.openMachine) return { ran: false, filed, reason: "machine mode but no openMachine dep (internal wiring bug)" };
   if (!machineMode && !deps.callStage) return { ran: false, filed, reason: "host mode but no callStage dep (internal wiring bug)" };
   if (!cfg.scenario.runtime) return { ran: false, filed, reason: "no runtime scenario configured — the walk cannot serve the product" };
+  const runtimeFile = cfg.scenario.runtime;
 
   recordAcceptanceRun(stateDir, slug);
-  writeFileSync(marker, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + "\n");
   let machine: LapMachineLike | null = null;
   let scratchRoot = "";
   // the window's final agent text — the verdict source. The onReady seam
   // communicates pass/fail by return value, so the text rides a holder.
   const holder: { text: string } = { text: "" };
-  try {
-    const spec = loadScenario(join(stateDir, "repos", slug, cfg.scenario.runtime));
-    spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
+  // the walk's machine is issue-0: the marker is its only janitor protection
+  return withAcceptanceMarker(stateDir, slug, async () => {
+    try {
+      const spec = loadScenario(join(stateDir, "repos", slug, runtimeFile));
+      spec.port = resolveScenarioPort(spec, cfg.scenario.ports);
 
-    if (machineMode) {
-      machine = deps.openMachine!(cfg, (m) => deps.log(m));
-      // the clone lands on origin/main (the scenario-test bench's shape),
-      // NOT an issue branch — then the suite ships before the window opens
-      await bootAcceptanceMachine(cfg, machine);
-      if (e2eSuiteExists(stateDir, slug)) await shipSuiteInBox(machine, e2eSuiteDir(stateDir, slug), "/tmp/pdf-e2e-suite");
-      const target = {
-        bash: (script: string, t?: number) => machine!.bash(script, { timeoutMs: t }),
-        repoDir: repoDirOf(cfg),
-      };
-      const result = await runScenarioInMachine({ ...spec, probes: [] }, target, {
-        readinessSeconds: cfg.timeouts.readiness_seconds,
-        defaultProbeMs: cfg.timeouts.probe_ms,
-        key: `${slug}-accept`,
-        reservedPorts: cfg.scenario.ports,
-        onReady: async ({ port }) => {
-          holder.text = await acceptanceWindow(cfg, deps, { port, prd, machine, cwd: target.repoDir });
-          return null; // the window's own verdict is parsed below; never fail the window here
-        },
-      });
-      if (!result.pass && result.error) throw new Error(`acceptance window failed: ${result.error}`);
-    } else {
-      scratchRoot = mkdtempSync(join(tmpdir(), `pdf-accept-${slug}-`));
-      const src = sourceDir(stateDir, slug);
-      const wt = join(scratchRoot, "wt");
-      const add = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${cfg.default_branch}`], { timeoutMs: 120_000 });
-      if (add.code !== 0) throw new Error(`could not worktree merged main: ${add.stderr.trim().slice(0, 200)}`);
-      const envBuild =
-        cfg.env.mode === "compose"
-          ? buildStageCmd(cfg, wt, stateDir, `pdf-${slug}-accept`, {
-              extraEnv: { PORT: String(spec.port), WORKTREE: wt },
-              publishPorts: true,
-            })
-          : undefined;
-      try {
-        const result = await runScenario({ ...spec, probes: [] }, join(scratchRoot, "scratch"), {
+      if (machineMode) {
+        machine = deps.openMachine!(cfg, (m) => deps.log(m));
+        // the clone lands on origin/main (the scenario-test bench's shape),
+        // NOT an issue branch — then the suite ships before the window opens
+        await bootAcceptanceMachine(cfg, machine);
+        if (e2eSuiteExists(stateDir, slug)) await shipSuiteInBox(machine, e2eSuiteDir(stateDir, slug), "/tmp/pdf-e2e-suite");
+        const target = {
+          bash: (script: string, t?: number) => machine!.bash(script, { timeoutMs: t }),
+          repoDir: repoDirOf(cfg),
+        };
+        const result = await runScenarioInMachine({ ...spec, probes: [] }, target, {
           readinessSeconds: cfg.timeouts.readiness_seconds,
           defaultProbeMs: cfg.timeouts.probe_ms,
-          worktree: wt,
-          preClean: `pdf-${slug}-`,
-          passEnv: cfg.env.pass_env,
-          wrap: envBuild ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) } : undefined,
+          key: `${slug}-accept`,
+          reservedPorts: cfg.scenario.ports,
           onReady: async ({ port }) => {
-            holder.text = await acceptanceWindow(cfg, deps, { port, prd, machine: null, cwd: wt });
-            return null;
+            holder.text = await acceptanceWindow(cfg, deps, { port, prd, machine, cwd: target.repoDir });
+            return null; // the window's own verdict is parsed below; never fail the window here
           },
         });
         if (!result.pass && result.error) throw new Error(`acceptance window failed: ${result.error}`);
-      } finally {
-        await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 60_000 });
+      } else {
+        scratchRoot = mkdtempSync(join(tmpdir(), `pdf-accept-${slug}-`));
+        const src = sourceDir(stateDir, slug);
+        const wt = join(scratchRoot, "wt");
+        const add = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${cfg.default_branch}`], { timeoutMs: 120_000 });
+        if (add.code !== 0) throw new Error(`could not worktree merged main: ${add.stderr.trim().slice(0, 200)}`);
+        const envBuild =
+          cfg.env.mode === "compose"
+            ? buildStageCmd(cfg, wt, stateDir, `pdf-${slug}-accept`, {
+                extraEnv: { PORT: String(spec.port), WORKTREE: wt },
+                publishPorts: true,
+              })
+            : undefined;
+        try {
+          const result = await runScenario({ ...spec, probes: [] }, join(scratchRoot, "scratch"), {
+            readinessSeconds: cfg.timeouts.readiness_seconds,
+            defaultProbeMs: cfg.timeouts.probe_ms,
+            worktree: wt,
+            preClean: `pdf-${slug}-`,
+            passEnv: cfg.env.pass_env,
+            wrap: envBuild ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) } : undefined,
+            onReady: async ({ port }) => {
+              holder.text = await acceptanceWindow(cfg, deps, { port, prd, machine: null, cwd: wt });
+              return null;
+            },
+          });
+          if (!result.pass && result.error) throw new Error(`acceptance window failed: ${result.error}`);
+        } finally {
+          await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 60_000 });
+        }
       }
-    }
 
-    // ── verdict + filing (fail closed on an unparsable walk) ──
-    const verdict = parseAcceptanceVerdict(holder.text);
-    if (verdict.delivered === null) {
+      // ── verdict + filing (fail closed on an unparsable walk) ──
+      const verdict = parseAcceptanceVerdict(holder.text);
+      if (verdict.delivered === null) {
+        const last: AcceptanceLast = {
+          status: "fail",
+          main_head: mainHead,
+          gen: st.gen,
+          at: new Date().toISOString(),
+          summary: "acceptance walk produced no parsable verdict (VERDICT/GAPS missing) — no gaps filed, fail closed",
+        };
+        writeAcceptanceState(stateDir, slug, { ...readAcceptanceState(stateDir, slug), last });
+        return { ran: true, pass: false, summary: last.summary, filed };
+      }
+      for (const g of verdict.gaps) {
+        const items = [
+          {
+            title: `[prd-gap] ${g.requirement.slice(0, 120)}`,
+            body: [
+              `Requirement (from the PRD): ${g.requirement}`,
+              "",
+              `What is missing or wrong: ${g.gap}`,
+              g.repro ? `\nReproduction: ${g.repro}` : "",
+              "",
+              `Severity: ${g.severity === "minor" ? "minor — polish/edge; deferred until the product backlog drains" : "major — a PRD deliverable the current build does not deliver"}`,
+              "",
+              `Found by the drain-time PRD acceptance walk on origin/${cfg.default_branch} (${mainHead.slice(0, 12)}, backlog generation ${st.gen}).`,
+              "",
+              "This issue is a build order like any other: plan from the requirement, implement, keep every gate green. The acceptance walk re-runs when the backlog drains again.",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            labels: [PRD_GAP_LABEL, ...(g.severity === "minor" ? ["minor"] : [])],
+            labelDescriptions: {
+              [PRD_GAP_LABEL]: "PRD deliverable gap found by the acceptance walk",
+              minor: "minor gap — deferred until the product backlog drains",
+            },
+          },
+        ];
+        filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance" })));
+      }
+      const pass = verdict.delivered && verdict.gaps.length === 0;
       const last: AcceptanceLast = {
-        status: "fail",
+        status: pass ? "pass" : "fail",
         main_head: mainHead,
         gen: st.gen,
         at: new Date().toISOString(),
-        summary: "acceptance walk produced no parsable verdict (VERDICT/GAPS missing) — no gaps filed, fail closed",
+        summary: pass
+          ? `prd acceptance: DELIVERED (all PRD requirements verified against the live product)`
+          : `prd acceptance: ${verdict.gaps.length} gap(s) filed (${verdict.gaps.filter((g) => g.severity === "major").length} major)`,
       };
       writeAcceptanceState(stateDir, slug, { ...readAcceptanceState(stateDir, slug), last });
-      return { ran: true, pass: false, summary: last.summary, filed };
+      receipt(stateDir, `acceptance walk: ${last.summary}${filed.length ? ` — filed ${filed.length} issue(s)` : ""}`, slug);
+      return { ran: true, pass, summary: last.summary, filed };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      receipt(stateDir, `acceptance walk errored (nothing filed): ${msg.slice(0, 300)}`, slug);
+      return { ran: true, pass: false, summary: `walk errored: ${msg.slice(0, 200)}`, filed, reason: "error" };
+    } finally {
+      if (machine) await machine.destroy().catch(() => {});
+      if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
     }
-    for (const g of verdict.gaps) {
-      const items = [
-        {
-          title: `[prd-gap] ${g.requirement.slice(0, 120)}`,
-          body: [
-            `Requirement (from the PRD): ${g.requirement}`,
-            "",
-            `What is missing or wrong: ${g.gap}`,
-            g.repro ? `\nReproduction: ${g.repro}` : "",
-            "",
-            `Severity: ${g.severity === "minor" ? "minor — polish/edge; deferred until the product backlog drains" : "major — a PRD deliverable the current build does not deliver"}`,
-            "",
-            `Found by the drain-time PRD acceptance walk on origin/${cfg.default_branch} (${mainHead.slice(0, 12)}, backlog generation ${st.gen}).`,
-            "",
-            "This issue is a build order like any other: plan from the requirement, implement, keep every gate green. The acceptance walk re-runs when the backlog drains again.",
-          ]
-            .filter(Boolean)
-            .join("\n"),
-          labels: [PRD_GAP_LABEL, ...(g.severity === "minor" ? ["minor"] : [])],
-          labelDescriptions: {
-            [PRD_GAP_LABEL]: "PRD deliverable gap found by the acceptance walk",
-            minor: "minor gap — deferred until the product backlog drains",
-          },
-        },
-      ];
-      filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance" })));
-    }
-    const pass = verdict.delivered && verdict.gaps.length === 0;
-    const last: AcceptanceLast = {
-      status: pass ? "pass" : "fail",
-      main_head: mainHead,
-      gen: st.gen,
-      at: new Date().toISOString(),
-      summary: pass
-        ? `prd acceptance: DELIVERED (all PRD requirements verified against the live product)`
-        : `prd acceptance: ${verdict.gaps.length} gap(s) filed (${verdict.gaps.filter((g) => g.severity === "major").length} major)`,
-    };
-    writeAcceptanceState(stateDir, slug, { ...readAcceptanceState(stateDir, slug), last });
-    receipt(stateDir, `acceptance walk: ${last.summary}${filed.length ? ` — filed ${filed.length} issue(s)` : ""}`, slug);
-    return { ran: true, pass, summary: last.summary, filed };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    receipt(stateDir, `acceptance walk errored (nothing filed): ${msg.slice(0, 300)}`, slug);
-    return { ran: true, pass: false, summary: `walk errored: ${msg.slice(0, 200)}`, filed, reason: "error" };
-  } finally {
-    rmSync(marker, { force: true });
-    if (machine) await machine.destroy().catch(() => {});
-    if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
-  }
+  });
 }
 
 function readPrdSafe(stateDir: string, slug: string): string | null {

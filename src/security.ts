@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { readAcceptanceState, writeAcceptanceState, type AcceptanceLast } from "./acceptance-state";
 import { ensureSource } from "./gitws";
 import { fileFactoryIssues } from "./fileissues";
-import type { GhApi } from "./gh";
+import { repoVisibility, type GhApi } from "./gh";
+import { agentEnv } from "./agentenv";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { SECURITY_SEVERITIES, type RepoConfig, type SecuritySeverity } from "./types";
@@ -28,9 +29,12 @@ import { SECURITY_SEVERITIES, type RepoConfig, type SecuritySeverity } from "./t
 import { SECURITY_LABEL, PRD_GAP_LABEL, E2E_REGRESSION_LABEL } from "./stages/intake";
 export { SECURITY_LABEL, PRD_GAP_LABEL, E2E_REGRESSION_LABEL };
 
-/** npx spec override — pin or downgrade from factoryd.env without a deploy
- *  (e.g. PDF_PENTHERA_SPEC=penthera@2.4.0 when a release misbehaves). */
-const pentheraSpec = () => process.env.PDF_PENTHERA_SPEC ?? "penthera@latest";
+/** npx spec for the scanner — PINNED to the version the parsers' captured
+ *  fixture (test/fixtures/penthera-report.json) was recorded against, and
+ *  bumped deliberately. `latest` would download and execute whatever the
+ *  registry serves at merge time, on a schedule nobody controls.
+ *  Overridable from factoryd.env without a deploy (PDF_PENTHERA_SPEC). */
+export const pentheraSpec = () => process.env.PDF_PENTHERA_SPEC ?? "penthera@2.4.0";
 
 const SCAN_TIMEOUT_MS =
   (Number(process.env.PDF_SECURITY_SCAN_MINUTES) > 0 ? Number(process.env.PDF_SECURITY_SCAN_MINUTES) : 10) * 60_000;
@@ -45,6 +49,14 @@ function severityRank(s: string): number {
 function floorRank(floor: string): number {
   const i = (SECURITY_SEVERITIES as readonly string[]).indexOf(floor);
   return i >= 0 ? i : severityRank("medium");
+}
+
+/** The publish gate for [security] findings, pure for the tests: a PUBLIC
+ *  tracker files nothing unless acceptance.security_public is set (a
+ *  published finding is a live disclosure); private/internal repos — and an
+ *  unreadable visibility (the receipt names it) — file as before. */
+export function mayFileSecurityFindings(visibility: string | null, cfg: RepoConfig): boolean {
+  return visibility !== "PUBLIC" || cfg.acceptance?.security_public === true;
 }
 
 /** The findings the scan would file: severity at or above the floor, ordered
@@ -108,10 +120,15 @@ export async function runSecurityScan(
   gh: GhApi,
   opts: { stateDir: string; pr?: number; atDrain?: boolean }
 ): Promise<SecurityScanResult> {
-  const floor = floorRank(cfg.acceptance?.severity_floor ?? "medium");
   const src = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
   const rev = await sh(["git", "-C", src, "rev-parse", `origin/${cfg.default_branch}`], { timeoutMs: 30_000 });
   const mainHead = rev.stdout.trim();
+  // publish gate: on a PUBLIC repo, a filed finding is a live disclosure
+  // (file, line, sink) minutes after the merge that introduced it — the scan
+  // runs and receipts either way; filing needs a private repo or an explicit
+  // acceptance.security_public
+  const visibility = await repoVisibility(cfg.repo);
+  const mayFile = mayFileSecurityFindings(visibility, cfg);
   const scanRoot = join(opts.stateDir, "repos", cfg.slug, "issues", "security");
   rmSync(scanRoot, { recursive: true, force: true });
   mkdirSync(scanRoot, { recursive: true });
@@ -122,9 +139,12 @@ export async function runSecurityScan(
   }
   const reportPath = join(scanRoot, "penthera-report.json");
   try {
+    // the scanner is downloaded code running as the factory user: it gets
+    // the agentEnv allowlist, never the service environment with the
+    // factory's keys (PATH/HOME ride the allowlist base; npx needs both)
     const res = await sh(
       ["npx", "-y", pentheraSpec(), "--repo", wt, "-o", reportPath, "--no-footer"],
-      { cwd: opts.stateDir, timeoutMs: SCAN_TIMEOUT_MS, killGroup: true }
+      { cwd: opts.stateDir, env: agentEnv([]), inheritEnv: false, timeoutMs: SCAN_TIMEOUT_MS, killGroup: true }
     );
     const raw = (() => {
       try {
@@ -161,6 +181,14 @@ export async function runSecurityScan(
 
     if (above.length === 0) return { pass: true, summary, filed: [] };
 
+    if (!mayFile) {
+      // public repo + no explicit opt-in: the scan's facts stay in the
+      // receipt and the acceptance-state verdict, never on the tracker
+      const note = `${summary} — findings NOT filed: ${visibility} repo, and filing needs acceptance.security_public (a public issue would disclose the finding live)`;
+      receipt(opts.stateDir, `security scan on main: ${note}`, cfg.slug);
+      return { pass: false, summary: note, note, filed: [] };
+    }
+
     // cap the batch: a misconfigured repo with hundreds of matches must not
     // open a hundred issues in one merge — the overflow rides the last issue
     const MAX = 10;
@@ -168,7 +196,9 @@ export async function runSecurityScan(
     const overflow = above.slice(MAX);
     const provenance = opts.atDrain
       ? `Drain-time security audit of \`origin/${cfg.default_branch}\` (${mainHead.slice(0, 12)}) — penthera ${pentheraSpec().replace("penthera@", "v")}`
-      : `Per-merge security audit of \`origin/${cfg.default_branch}\` after PR #${opts.pr} (${mainHead.slice(0, 12)}) — penthera ${pentheraSpec().replace("penthera@", "v")}`;
+      : opts.pr != null
+        ? `Per-merge security audit of \`origin/${cfg.default_branch}\` after PR #${opts.pr} (${mainHead.slice(0, 12)}) — penthera ${pentheraSpec().replace("penthera@", "v")}`
+        : `Security audit of \`origin/${cfg.default_branch}\` (${mainHead.slice(0, 12)}) — penthera ${pentheraSpec().replace("penthera@", "v")}`;
     const items = batch.map((f) => {
       const minor = severityRank(String(f.severity)) <= severityRank("low");
       const where = f.path ? [`${f.path}${f.line != null ? `:${f.line}` : ""}`] : [];

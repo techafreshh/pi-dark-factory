@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupWorlds, FakeGh, FakeMachine, makeMachineWorld, type World } from "./world";
 import { e2eSuiteExists, prdPath, readAcceptanceState, acceptanceRunsToday, recordAcceptanceRun, writeAcceptanceState, readPrd } from "../src/acceptance-state";
-import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir } from "../src/stages/acceptance";
-import { parsePentheraReport, findingsAboveFloor, runSecurityScan } from "../src/security";
+import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir, acceptanceSuiteEnv } from "../src/stages/acceptance";
+import { parsePentheraReport, findingsAboveFloor, runSecurityScan, mayFileSecurityFindings, pentheraSpec } from "../src/security";
 import { fileFactoryIssues } from "../src/fileissues";
-import { maybeDrainAcceptance, openIssuesAllDeferred } from "../src/postmerge";
+import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
 import { reapOrphanMachines } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
@@ -62,6 +62,16 @@ describe("parseAcceptanceVerdict (lenient, fail closed)", () => {
     expect(v.delivered).toBe(false);
     expect(v.gaps.length).toBe(1);
   });
+  test("a verdict line placed FIRST does not hide GAPS bullets that follow it", () => {
+    const v = parseAcceptanceVerdict("VERDICT: DELIVERED\n\nGAPS:\n- auth :: login page never built :: major :: POST /login 404s");
+    expect(v.delivered).toBe(false);
+    expect(v.gaps.length).toBe(1);
+  });
+  test("VERDICT: GAPS with no parsable bullets fails and files nothing", () => {
+    const v = parseAcceptanceVerdict("hard to express\nVERDICT: GAPS");
+    expect(v.delivered).toBe(false);
+    expect(v.gaps).toEqual([]);
+  });
 });
 
 describe("parseE2eReport (captured e2e 0.23.1 shapes)", () => {
@@ -114,6 +124,24 @@ describe("e2eRunCommand (the suite runner both lanes share)", () => {
   test("in-box lane: browsers path rides explicitly", () => {
     const cmd = e2eRunCommand({ suiteDir: "/tmp/pdf-e2e-suite", toolchainDir: boxToolchainDir(), inBox: true });
     expect(cmd).toContain(`PLAYWRIGHT_BROWSERS_PATH=${boxToolchainDir()}-browsers`);
+  });
+});
+
+describe("acceptanceSuiteEnv (agent-authored code runs under the allowlist)", () => {
+  test("a factory service secret never reaches the suite's environment", () => {
+    process.env.PDF_SENTINEL_FACTORY_SECRET = "topsecret";
+    process.env.PDF_SENTINEL_PASS_RIDES = "explicitly-forwarded";
+    try {
+      const cfg = parseRepoConfig({ repo: "acme/toy", models: { default: { provider: "x", model: "y" } }, env: { pass_env: ["PDF_SENTINEL_PASS_RIDES"] } }, "t");
+      const env = acceptanceSuiteEnv(cfg);
+      expect(env.PDF_SENTINEL_FACTORY_SECRET).toBeUndefined();
+      expect(env.PDF_SENTINEL_PASS_RIDES).toBe("explicitly-forwarded");
+      expect(env.PATH).toBeTruthy();
+      expect(env.HOME).toBeTruthy();
+    } finally {
+      delete process.env.PDF_SENTINEL_FACTORY_SECRET;
+      delete process.env.PDF_SENTINEL_PASS_RIDES;
+    }
   });
 });
 
@@ -184,6 +212,17 @@ describe("penthera report parsing (captured 2.4.0 shape)", () => {
     // an unknown floor word degrades to medium, never to "file everything"
     expect(findingsAboveFloor(all, "cosmic").map((f: any) => f.severity)).toEqual(["critical", "high", "medium"]);
   });
+  test("publish gate: a PUBLIC tracker files nothing without the explicit opt-in", () => {
+    const cfg = (over: any) => parseRepoConfig({ repo: "acme/toy", models: { default: { provider: "x", model: "y" } }, ...over }, "t");
+    expect(mayFileSecurityFindings("PUBLIC", cfg({}))).toBe(false);
+    expect(mayFileSecurityFindings("PUBLIC", cfg({ acceptance: { security_public: true } }))).toBe(true);
+    expect(mayFileSecurityFindings("PRIVATE", cfg({}))).toBe(true);
+    expect(mayFileSecurityFindings(null, cfg({}))).toBe(true); // gh broke — the receipt names it
+  });
+  test("the scanner spec is PINNED to the version the fixture was captured against", () => {
+    delete process.env.PDF_PENTHERA_SPEC;
+    expect(pentheraSpec()).toBe("penthera@2.4.0");
+  });
 });
 
 describe("fileFactoryIssues (the generic filer)", () => {
@@ -232,6 +271,7 @@ describe("acceptance config block", () => {
     expect(cfg.acceptance!.e2e).toBe(false);
     expect(cfg.acceptance!.prd_check).toBe(false);
     expect(cfg.acceptance!.security).toBe(false);
+    expect(cfg.acceptance!.security_public).toBe(false);
     expect(cfg.acceptance!.severity_floor).toBe("medium");
     expect(cfg.acceptance!.e2e_minutes).toBe(10);
     expect(cfg.acceptance!.prd_minutes).toBe(25);
@@ -471,6 +511,38 @@ describe("maybeDrainAcceptance (the end-of-project gate)", () => {
       openIssuesAllDeferred([{ labels: ["discovery", "minor"] }, { labels: ["security"] }, { labels: ["prd-gap", "minor"] }])
     ).toBe(true);
     expect(openIssuesAllDeferred([])).toBe(true);
+  });
+});
+
+describe("runPostMergeExtras — the per-merge e2e regression (fake machine lane)", () => {
+  slowTest("the acceptance machine carries the janitor marker for its whole lifetime", async () => {
+    const { w, openMachineFor } = makeWalkWorld({ acceptance: () => "VERDICT: DELIVERED" });
+    // an authored suite (the walk normally authors it) — its in-box run will
+    // fail here (no toolchain), which is exactly the filing path we exercise
+    const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    const markerPath = join(w.stateDir, "repos", "toy", "acceptance.running");
+    const markerDuringBoot: boolean[] = [];
+    const wrapped = (c: any, log?: any) => {
+      const m = openMachineFor(c, log) as FakeMachine;
+      const orig = m.ensure.bind(m);
+      m.ensure = async () => {
+        markerDuringBoot.push(existsSync(markerPath));
+        return orig();
+      };
+      return m;
+    };
+    const lines: string[] = [];
+    const extra = await runPostMergeExtras(w.cfg, w.gh, { stateDir: w.stateDir, pr: 42, openMachineFor: wrapped });
+    lines.push(extra);
+    expect(markerDuringBoot.length).toBeGreaterThan(0);
+    expect(markerDuringBoot.every(Boolean)).toBe(true); // protected while booting
+    expect(existsSync(markerPath)).toBe(false); // and the marker is gone after
+    expect(w.machines.every((m) => m.destroyed)).toBe(true);
+    // the failing suite filed its deduped regression issue (report-only)
+    expect(w.gh.created.filter((c) => c.title.startsWith("[e2e-regression]")).length).toBe(1);
+    expect(extra).toContain("e2e regression");
   });
 });
 

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -63,6 +63,20 @@ export function acceptanceRunningPath(stateDir: string, slug: string): string {
   return join(stateDir, "repos", slug, "acceptance.running");
 }
 
+/** Run `fn` under the walker's marker — the ONLY thing protecting a
+ *  `pdf-<slug>-i0` machine from the janitor (a live pid; a dead runner's
+ *  machine is a quota-eating stray). Every code path that boots an
+ *  acceptance machine wraps its lifetime in this: the drain walk and the
+ *  per-merge e2e regression alike. */
+export async function withAcceptanceMarker<T>(stateDir: string, slug: string, fn: () => Promise<T>): Promise<T> {
+  writeFileSync(acceptanceRunningPath(stateDir, slug), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + "\n");
+  try {
+    return await fn();
+  } finally {
+    rmSync(acceptanceRunningPath(stateDir, slug), { force: true });
+  }
+}
+
 export function readPrd(stateDir: string, slug: string): string | null {
   const p = prdPath(stateDir, slug);
   if (!existsSync(p)) return null;
@@ -72,15 +86,19 @@ export function readPrd(stateDir: string, slug: string): string | null {
 
 /** True when a suite with at least one test file exists. A directory with
  *  only a config is not a suite — the drain-time authoring step creates
- *  tests, and a config alone would run zero tests and pass vacuously. */
+ *  tests, and a config alone would run zero tests and pass vacuously. The
+ *  accepted suffixes are exactly what the collectors copy back (".e2e.ts" /
+ *  ".e2e.js", the e2e framework's convention) so detection and collection
+ *  can never disagree. */
 export function e2eSuiteExists(stateDir: string, slug: string): boolean {
   const dir = e2eSuiteDir(stateDir, slug);
   if (!existsSync(dir)) return false;
+  const isTest = (f: string) => f.endsWith(".e2e.ts") || f.endsWith(".e2e.js");
   try {
     for (const e of readdirSafe(dir)) {
-      if (e.endsWith(".e2e.ts") || e.endsWith(".e2e.js") || e.endsWith(".spec.ts") || e.endsWith(".spec.js")) return true;
+      if (isTest(e)) return true;
       const nested = join(dir, e);
-      if (!e.startsWith(".") && existsSync(nested) && readdirSafe(nested).some((f) => f.endsWith(".e2e.ts") || f.endsWith(".e2e.js"))) return true;
+      if (!e.startsWith(".") && existsSync(nested) && readdirSafe(nested).some(isTest)) return true;
     }
   } catch {}
   return false;

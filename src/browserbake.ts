@@ -13,6 +13,8 @@
  * mode; host/compose repos are unaffected.
  */
 
+import { pentheraSpec } from "./security";
+
 /** In-box toolchain location (bake target; the suite runner symlinks its
  *  node_modules into the suite dir and points PLAYWRIGHT_BROWSERS_PATH at
  *  the browsers beside it). Mirrored by stages/acceptance.boxToolchainDir. */
@@ -99,7 +101,7 @@ export function hostToolsScript(): string {
     `cat "$SMOKE_OUT"`,
     `grep -q CHROME_OK "$SMOKE_OUT" || { echo "HOSTTOOLS_FAILED: no launchable Chromium on the host"; exit 31; }`,
     `npx --no-install e2e --version`,
-    `npx -y penthera@latest --version 2>/dev/null || echo "HOSTTOOLS: penthera not reachable (security scans will fail until it is)"`,
+    `npx -y ${pentheraSpec()} --version 2>/dev/null || echo "HOSTTOOLS: penthera not reachable (security scans will fail until it is)"`,
     `echo HOSTTOOLS_OK`,
   ].join("\n");
 }

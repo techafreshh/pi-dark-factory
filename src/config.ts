@@ -26,8 +26,17 @@ const DEFAULTS = {
   // default off — an autonomous factory must not start spending acceptance
   // tokens or filing issues because a config was half-written. The caps are
   // shared defaults so a repo enabling e2e/prd_check without tuning them is
-  // still bounded.
-  acceptance: { e2e: false, prd_check: false, security: false, severity_floor: "medium" as const, e2e_minutes: 10, prd_minutes: 25 },
+  // still bounded. security_public stays false so a public tracker never
+  // becomes a live disclosure channel by default.
+  acceptance: {
+    e2e: false,
+    prd_check: false,
+    security: false,
+    security_public: false,
+    severity_floor: "medium" as const,
+    e2e_minutes: 10,
+    prd_minutes: 25,
+  },
   skip_labels: [] as string[],
   env: {
     mode: "host" as const,
@@ -263,7 +272,7 @@ function validateScheduling(cfg: RepoConfig) {
  *  here instead of turning a hung run into a stuck tick. */
 function validateAcceptance(cfg: RepoConfig) {
   const a = cfg.acceptance!;
-  for (const k of ["e2e", "prd_check", "security"] as const) {
+  for (const k of ["e2e", "prd_check", "security", "security_public"] as const) {
     if (a[k] !== undefined && typeof a[k] !== "boolean")
       throw new Error(`config acceptance.${k} must be true or false (got ${JSON.stringify(a[k])})`);
   }
