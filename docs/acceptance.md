@@ -69,7 +69,9 @@ step individually caught — a hook failure is a receipt, never a lap error:
    scan, exactly as it should. A human who decides NOT to fix a finding
    adds the `wontfix` label and closes it — the scan then never re-files
    that finding (gh 2.45 cannot read a close's `stateReason`, so the label
-   is the signal). `[e2e-regression]` issues stay re-fileable either way —
+   is the signal). GitHub's default label set includes `wontfix`; if a repo
+   removed it, create it again (`gh label create wontfix --repo R --color
+   F9D0C4`) or the suppression signal has nowhere to live. `[e2e-regression]` issues stay re-fileable either way —
    a recurring failure is new evidence. Operator note: on a public repo
    with `security: true` and no `security_public`, every merge runs the
    full scan and files nothing, and `status` shows `last_security: fail`

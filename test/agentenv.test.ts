@@ -23,4 +23,11 @@ describe("agentEnv (what an agent-run process may see)", () => {
     });
     expect(Object.keys(env).sort()).toEqual(["DOCKER_HOST", "LC_ALL", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "XDG_RUNTIME_DIR"]);
   });
+
+  test("always:false drops the force-keys — for non-agent callers (penthera, host-tools, the e2e suite)", () => {
+    const source = { TINYFISH_API_KEY: "s", PATH: "/bin" };
+    expect(agentEnv([], source).TINYFISH_API_KEY).toBe("s"); // agent stages keep it
+    expect(agentEnv([], source, { always: false }).TINYFISH_API_KEY).toBeUndefined();
+    expect(agentEnv([], source, { always: false }).PATH).toBe("/bin"); // the base still rides
+  });
 });

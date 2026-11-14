@@ -624,8 +624,8 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
               `Found by the drain-time PRD acceptance walk on origin/${cfg.default_branch} (${mainHead.slice(0, 12)}, backlog generation ${st.gen}).`,
               "",
               "This issue is a build order like any other: plan from the requirement, implement, keep every gate green. The acceptance walk re-runs when the backlog drains again.",
-            "",
-            `Not going to build it? Close with the \`${WONTFIX_LABEL}\` label and the walk will not re-file this gap. A close without the label suppresses nothing.`,
+              "",
+              `Not going to build it? Close with the \`${WONTFIX_LABEL}\` label and the walk will not re-file this gap. A close without the label suppresses nothing.`,
             ]
               .filter(Boolean)
               .join("\n"),
