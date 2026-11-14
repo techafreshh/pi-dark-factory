@@ -50,7 +50,10 @@ runtime-context line (build from scratch, never install libraries) — plus its 
 companions: `transitions-dev` (12 tuned CSS transition snippets with reduced-motion
 guards — the motion source for non-React stacks), `web-design-guidelines` (audits changed
 files against Vercel's LIVE-fetched a11y/interaction rulebook before a UI lap finishes),
-`create-readme` (builds a repo README from proven open-source patterns), and
+`create-readme` (builds a repo README from proven open-source patterns),
 `scenario-harness` (the runtime-verification contract: the `expect`-token grammar probes are
 judged with, what failed-probe reproduction data means, and why probes are the issue's
-contract rather than something to game).
+contract rather than something to game), and `prd-acceptance` (the acceptance agent's
+walk method — judge the live product against the stored PRD with agent-browser, author the
+`e2e` suite into the output dir, end with the parseable GAPS/VERDICT contract;
+[docs/acceptance.md](acceptance.md)).

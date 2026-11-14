@@ -1,0 +1,187 @@
+{
+  "schemaVersion": "report-1",
+  "run": {
+    "id": "01a1d62d-5b9f-74b9-953d-d531ba404838",
+    "specVersion": "0.1",
+    "runner": {
+      "name": "e2e",
+      "version": "0.23.1"
+    },
+    "status": "blocked",
+    "exitCode": 3,
+    "startedAt": "2026-11-13T18:31:00.024Z",
+    "finishedAt": "2026-11-13T18:31:01.562Z",
+    "project": {
+      "id": "unportable-f3e07407a6e8ab509f7c1adbf0926ef6",
+      "configDigest": "9e695ab0529482d27b73e4c4da965239dc2134cd1aa6aed377bab2bfc30cf859"
+    },
+    "environment": {
+      "ci": false,
+      "trustNoticeShown": false,
+      "os": "linux 6.8.0-134-generic",
+      "arch": "x64",
+      "runtime": "node v22.23.1"
+    },
+    "targets": [
+      {
+        "id": "web",
+        "index": 0,
+        "platform": "web",
+        "baseOrigin": "http://127.0.0.1:4173",
+        "environment": "test",
+        "engine": {
+          "name": "web",
+          "version": "0.16.0",
+          "spiVersion": 1
+        },
+        "capabilities": [
+          "actions",
+          "artifacts",
+          "browser",
+          "keyboard",
+          "location",
+          "observation",
+          "pointer",
+          "state"
+        ],
+        "artifactCapabilities": [
+          "screenshot",
+          "video"
+        ],
+        "stateCapability": true
+      }
+    ],
+    "serialGroups": [],
+    "results": [
+      {
+        "id": "b7d57535871b62b9504b92cbd13f832eec398a229df1a67dcdf78e376aca9549",
+        "testId": "tests/example.e2e.ts::app%20opens",
+        "kind": "test",
+        "declarationIndex": 0,
+        "titlePath": [
+          "app opens"
+        ],
+        "file": "tests/example.e2e.ts",
+        "source": {
+          "file": "tests/example.e2e.ts",
+          "line": 4,
+          "column": 1
+        },
+        "targetId": "web",
+        "platform": "web",
+        "agent": "default",
+        "repeat": 0,
+        "tags": [],
+        "selected": true,
+        "status": "failed",
+        "attempts": [
+          {
+            "id": "01a1d62d-6096-77b1-a913-814d431288de",
+            "index": 0,
+            "status": "failed",
+            "startedAt": "2026-11-13T18:31:00.502Z",
+            "durationMs": 998,
+            "artifacts": [
+              {
+                "id": "01a1d62d-6096-77b1-a913-814d431288de:artifact:0",
+                "kind": "screenshot",
+                "mediaType": "image/png",
+                "redaction": "complete",
+                "producer": {
+                  "kind": "attempt"
+                },
+                "path": "example-app-opens-b7d57535871b62b9/attempt-1/screenshots/001-failure.png",
+                "size": 4254,
+                "sha256": "3878570f4a62a0d65f57cf1754e0269e56ec797f4e36e26b44c172eb6e800401"
+              }
+            ],
+            "error": {
+              "category": "infrastructure",
+              "code": "APP_UNREACHABLE",
+              "message": "nothing answered at http://127.0.0.1:4173/ (ERR_CONNECTION_REFUSED); start the app there, point the target's app.url at where it runs, or give the target an app.command so the runner starts it",
+              "retryable": false,
+              "phase": "body"
+            },
+            "secondaryErrors": [],
+            "cleanup": "complete",
+            "failure": {
+              "screenshot": "01a1d62d-6096-77b1-a913-814d431288de:artifact:0"
+            },
+            "steps": [
+              {
+                "id": "01a1d62d-6096-77b1-a913-814d431288de:0",
+                "index": 0,
+                "kind": "app",
+                "api": "app.open",
+                "label": "/",
+                "status": "failed",
+                "startedAt": "2026-11-13T18:31:01.173Z",
+                "durationMs": 80,
+                "events": [
+                  {
+                    "kind": "navigation",
+                    "startedAt": "2026-11-13T18:31:01.289Z",
+                    "durationMs": 0,
+                    "status": "passed",
+                    "detail": "navigated to chrome-error://chromewebdata/"
+                  }
+                ],
+                "artifacts": [],
+                "source": {
+                  "file": "tests/example.e2e.ts",
+                  "line": 5,
+                  "column": 13
+                },
+                "error": {
+                  "category": "infrastructure",
+                  "code": "APP_UNREACHABLE",
+                  "message": "nothing answered at http://127.0.0.1:4173/ (ERR_CONNECTION_REFUSED); start the app there, point the target's app.url at where it runs, or give the target an app.command so the runner starts it",
+                  "retryable": false
+                }
+              }
+            ],
+            "appLog": [
+              {
+                "source": "network",
+                "level": "error",
+                "text": "GET http://127.0.0.1:4173/ net::ERR_CONNECTION_REFUSED",
+                "at": "2026-11-13T18:31:01.249Z",
+                "step": 0
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "errors": [],
+    "summary": {
+      "discovered": 1,
+      "selected": 1,
+      "executed": 1,
+      "passed": 0,
+      "failed": 1,
+      "interrupted": 0,
+      "flaky": 0,
+      "skipped": 0
+    },
+    "limits": {
+      "maxAgentContextBytes": 16384,
+      "maxLedgerBytes": 8192,
+      "maxObservationBytes": 262144,
+      "maxEventsPerStep": 1000,
+      "maxModelTokensPerCall": 64000
+    },
+    "usage": {
+      "discoveredResults": 1,
+      "maxAgentContextBytes": 0,
+      "maxLedgerBytes": 0,
+      "maxObservationBytes": 0,
+      "artifactBytes": 4254,
+      "downloads": 0,
+      "events": 1,
+      "modelTokens": 0,
+      "maxModelCallsInStep": 0,
+      "maxActionStepsInStep": 0
+    }
+  }
+}

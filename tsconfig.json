@@ -9,5 +9,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "test", "bin", "pi-extensions", "types"]
+  "include": ["src", "test", "bin", "pi-extensions", "types"],
+  "exclude": ["test/fixtures"]
 }

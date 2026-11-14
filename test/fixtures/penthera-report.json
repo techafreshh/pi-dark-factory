@@ -1,0 +1,551 @@
+{
+  "target": "/tmp/pf-penthera",
+  "mode": "repo",
+  "timestamp": "2026-11-13T18:28:46.503Z",
+  "duration": 53,
+  "apiRoot": null,
+  "attackSurface": [
+    {
+      "url": "/api/debug",
+      "filePath": "server.js",
+      "methods": [
+        "GET"
+      ],
+      "auth": [
+        "public"
+      ],
+      "inputs": [],
+      "externalCalls": [],
+      "securityPatterns": [
+        "RISK:command-injection"
+      ],
+      "hasParams": false,
+      "framework": "express",
+      "sourceLength": 391
+    },
+    {
+      "url": "/api/exec",
+      "filePath": "server.js",
+      "methods": [
+        "POST"
+      ],
+      "auth": [
+        "public"
+      ],
+      "inputs": [],
+      "externalCalls": [],
+      "securityPatterns": [
+        "RISK:command-injection"
+      ],
+      "hasParams": false,
+      "framework": "express",
+      "sourceLength": 391
+    }
+  ],
+  "boundaries": {
+    "public": [
+      {
+        "url": "/api/debug",
+        "filePath": "server.js",
+        "methods": [
+          "GET"
+        ],
+        "auth": [
+          "public"
+        ],
+        "inputs": [],
+        "externalCalls": [],
+        "securityPatterns": [
+          "RISK:command-injection"
+        ],
+        "hasParams": false,
+        "framework": "express",
+        "sourceLength": 391
+      },
+      {
+        "url": "/api/exec",
+        "filePath": "server.js",
+        "methods": [
+          "POST"
+        ],
+        "auth": [
+          "public"
+        ],
+        "inputs": [],
+        "externalCalls": [],
+        "securityPatterns": [
+          "RISK:command-injection"
+        ],
+        "hasParams": false,
+        "framework": "express",
+        "sourceLength": 391
+      }
+    ],
+    "userAuth": [],
+    "adminAuth": [],
+    "cronAuth": [],
+    "mixed": []
+  },
+  "executedProbes": [
+    "secret-scanning",
+    "runtime-advisories",
+    "code-sinks",
+    "ci-workflows",
+    "app-settings",
+    "trust-boundary",
+    "risky-patterns"
+  ],
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Generic API key assignment in source",
+      "description": "Possible secret in `server.js`: `API_KEY = \"sk-l…3456\"`",
+      "url": "server.js",
+      "line": 3,
+      "category": "secrets",
+      "source": "secret-scan",
+      "wstg": [
+        "WSTG-CONF-02",
+        "WSTG-CONF-05"
+      ],
+      "method": "secret-scan",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "confidence": "confirmed",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "1a3fe034ace83936"
+    },
+    {
+      "severity": "critical",
+      "title": "command-injection in server.js",
+      "description": "Data derived from the request reaches a code-execution sink in `server.js`: exec on line 9 (from the request). This file serves 2 routes: /api/debug, /api/exec.",
+      "remediation": "Use execFile or spawn with an argument array and no shell, and validate the input against an allowlist.",
+      "url": "server.js",
+      "file": "server.js",
+      "line": 9,
+      "pattern": "command-injection",
+      "category": "code-pattern",
+      "source": "static-analysis",
+      "confidence": "likely",
+      "wstg": [
+        "WSTG-INPV-01",
+        "WSTG-INPV-12"
+      ],
+      "method": "static-analysis",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "ac2e0420d8b6b922"
+    },
+    {
+      "severity": "low",
+      "title": "Missing X-Frame-Options",
+      "description": "Page can be embedded in iframes (clickjacking risk). The code does not set it; your host or CDN may. A scan of the live address shows what it really sends.",
+      "url": "server.js",
+      "category": "headers",
+      "source": "fix-probe:headers",
+      "file": "server.js",
+      "confidence": "potential",
+      "wstg": [
+        "WSTG-CONF-12",
+        "WSTG-CONF-14"
+      ],
+      "method": "fix-probe:headers",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "e29c69657495500f"
+    },
+    {
+      "severity": "medium",
+      "title": "Missing Content-Security-Policy",
+      "description": "No CSP, inline scripts and third-party resources are unrestricted. The code does not set it; your host or CDN may. A scan of the live address shows what it really sends.",
+      "url": "server.js",
+      "category": "headers",
+      "source": "fix-probe:headers",
+      "file": "server.js",
+      "confidence": "potential",
+      "wstg": [
+        "WSTG-CONF-12",
+        "WSTG-CONF-14"
+      ],
+      "method": "fix-probe:headers",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "489c5c5e32b8840b"
+    },
+    {
+      "severity": "low",
+      "title": "Missing X-Content-Type-Options",
+      "description": "Browser may MIME-sniff responses (XSS aid). The code does not set it; your host or CDN may. A scan of the live address shows what it really sends.",
+      "url": "server.js",
+      "category": "headers",
+      "source": "fix-probe:headers",
+      "file": "server.js",
+      "confidence": "potential",
+      "wstg": [],
+      "method": "fix-probe:headers",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "eeaabd43f54b1078"
+    },
+    {
+      "severity": "info",
+      "title": "Missing Referrer-Policy",
+      "description": "Referrer headers may leak internal URLs to third parties. The code does not set it; your host or CDN may. A scan of the live address shows what it really sends.",
+      "url": "server.js",
+      "category": "headers",
+      "source": "fix-probe:headers",
+      "file": "server.js",
+      "confidence": "potential",
+      "wstg": [],
+      "method": "fix-probe:headers",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "0690c2f2705729a2"
+    },
+    {
+      "severity": "low",
+      "title": "Missing Strict-Transport-Security",
+      "description": "No Strict-Transport-Security header, so a browser may reach the site over plain HTTP first. The code does not set it; your host or CDN may. A scan of the live address shows what it really sends.",
+      "category": "headers",
+      "url": "server.js",
+      "file": "server.js",
+      "confidence": "potential",
+      "source": "fix-probe:headers",
+      "wstg": [
+        "WSTG-CONF-12",
+        "WSTG-CONF-14"
+      ],
+      "method": "fix-probe:headers",
+      "collected_at": "2026-11-13T18:28:46.503Z",
+      "exploitability": "not-assessed",
+      "path": "server.js",
+      "fid": "a08812033593f0a4"
+    }
+  ],
+  "library": {
+    "enabled": false,
+    "reason": "package.json has no main, exports or bin, and there is no index.js"
+  },
+  "coverage": {
+    "schema": "penthera.coverage/1",
+    "files": 3,
+    "truncated": false,
+    "excludedDirs": [],
+    "rootOutputDirs": [],
+    "sourceFiles": 1,
+    "sourceFilesAnalysed": 1,
+    "families": [
+      {
+        "id": "secrets",
+        "label": "Secret scan",
+        "ran": true,
+        "examined": 3,
+        "skipped": {}
+      },
+      {
+        "id": "routes",
+        "label": "Route and code-pattern analysis",
+        "ran": true,
+        "examined": 1,
+        "skipped": {}
+      },
+      {
+        "id": "runtime-pins",
+        "label": "Runtime versions vs advisories",
+        "ran": true,
+        "examined": 0,
+        "skipped": {}
+      },
+      {
+        "id": "code-sinks",
+        "label": "eval, vm and exec sinks",
+        "ran": true,
+        "examined": 1,
+        "skipped": {}
+      },
+      {
+        "id": "app-settings",
+        "label": "Headers, cookies, CORS and login rate limits",
+        "ran": true,
+        "examined": 1,
+        "skipped": {}
+      }
+    ],
+    "notRun": [
+      {
+        "id": "deps",
+        "label": "Dependency behaviour",
+        "command": "penthera deps <path>"
+      },
+      {
+        "id": "agents",
+        "label": "AI agent config",
+        "command": "penthera agents <path>"
+      }
+    ],
+    "languages": [
+      {
+        "language": "JavaScript",
+        "files": 1,
+        "analysed": 1
+      }
+    ],
+    "blindSpots": {
+      "count": 0,
+      "byReason": {},
+      "paths": [],
+      "listed": 0
+    }
+  },
+  "profile": "standard",
+  "actionPlan": [
+    {
+      "id": "injection",
+      "action": "Fix the injection / input-handling flaw",
+      "why": "Injection flaws (SQLi, SSTI, SSRF, XSS, command injection, open redirect) let an attacker run code, read data, or redirect users. These are among the highest-impact web vulnerabilities.",
+      "fix": "Never build queries/commands/markup from raw input: use parameterised queries, context-aware output encoding, an allow-list for redirect targets and outbound URLs (SSRF), and a sandboxed template engine. Validate and canonicalise all user input.",
+      "effort": "involved",
+      "ownerAction": false,
+      "severity": "critical",
+      "references": [
+        "mitrecwe",
+        "owaspwstg42"
+      ],
+      "findings": [
+        {
+          "title": "command-injection in server.js",
+          "url": "server.js",
+          "severity": "critical"
+        }
+      ]
+    },
+    {
+      "id": "secrets",
+      "action": "Rotate the exposed secret and move it to a secret store",
+      "why": "A hardcoded credential in source is compromised the moment the repo is shared or leaked; attackers scan public and private repos for exactly this.",
+      "fix": "Treat the secret as burned: rotate/revoke it at the provider first, then remove it from source, load it from an environment variable or secret manager, and purge it from git history. Rotation is an owner action a tool must not perform for you.",
+      "effort": "moderate",
+      "ownerAction": true,
+      "severity": "high",
+      "references": [
+        "meli2019bad",
+        "basak2023secretbench"
+      ],
+      "findings": [
+        {
+          "title": "Generic API key assignment in source",
+          "url": "server.js",
+          "severity": "high"
+        }
+      ]
+    },
+    {
+      "id": "header-csp",
+      "action": "Add a Content-Security-Policy header",
+      "why": "CSP is the strongest defence-in-depth against cross-site scripting and data injection, it limits what scripts and resources the browser will load.",
+      "fix": "Start in report-only mode to avoid breakage, then enforce. On Vercel/Next.js set it in `next.config.js` headers or `vercel.json`; on Express use `helmet`'s `contentSecurityPolicy`. Begin with `default-src 'self'` and add sources as needed.",
+      "effort": "moderate",
+      "ownerAction": false,
+      "severity": "medium",
+      "references": [
+        "weichselbaum2016csp",
+        "hodges2012rfc6797",
+        "owaspwstg42"
+      ],
+      "findings": [
+        {
+          "title": "Missing Content-Security-Policy",
+          "url": "server.js",
+          "severity": "medium"
+        }
+      ]
+    },
+    {
+      "id": "header-generic",
+      "action": "Add the missing security response headers",
+      "why": "Headers like X-Frame-Options (clickjacking), X-Content-Type-Options (MIME sniffing), Referrer-Policy, Permissions-Policy, and HSTS are low-effort, high-value hardening.",
+      "fix": "Set them once at the edge/framework layer: `helmet()` on Express, a `headers()` entry in `next.config.js`, or a `headers` block in `vercel.json`. Include `Strict-Transport-Security: max-age=63072000; includeSubDomains`.",
+      "effort": "quick",
+      "ownerAction": false,
+      "severity": "low",
+      "references": [
+        "weichselbaum2016csp",
+        "hodges2012rfc6797",
+        "owaspwstg42"
+      ],
+      "findings": [
+        {
+          "title": "Missing X-Frame-Options",
+          "url": "server.js",
+          "severity": "low"
+        },
+        {
+          "title": "Missing X-Content-Type-Options",
+          "url": "server.js",
+          "severity": "low"
+        },
+        {
+          "title": "Missing Strict-Transport-Security",
+          "url": "server.js",
+          "severity": "low"
+        }
+      ]
+    }
+  ],
+  "brief": {
+    "schema": "penthera.brief/1",
+    "verdict": "Fix now",
+    "verdict_id": "fix",
+    "exit_code": 1,
+    "exit_reason": null,
+    "target": "/tmp/pf-penthera",
+    "scanned": [
+      "repo"
+    ],
+    "counts": {
+      "problems": 6,
+      "act": 2,
+      "check": 4,
+      "noise": 0,
+      "suppressed": 0,
+      "info": 1,
+      "total": 7
+    },
+    "act_on": [
+      {
+        "title": "command-injection in server.js",
+        "severity": "critical",
+        "mix": null,
+        "confidence": "likely",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js:9"
+        ],
+        "more": 0,
+        "why": "Data derived from the request reaches a code-execution sink in `server.js`: exec on line 9 (from the request).",
+        "fix": "Use execFile or spawn with an argument array and no shell, and validate the input against an allowlist.",
+        "rules": [
+          "code-pattern"
+        ]
+      },
+      {
+        "title": "Generic API key assignment in source",
+        "severity": "high",
+        "mix": null,
+        "confidence": "confirmed",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js:3"
+        ],
+        "more": 0,
+        "why": "Possible secret in `server.js`: `API_KEY = \"sk-l…3456\"`",
+        "fix": null,
+        "rules": [
+          "secrets"
+        ]
+      }
+    ],
+    "check_first": [
+      {
+        "title": "Missing Content-Security-Policy",
+        "severity": "medium",
+        "mix": null,
+        "confidence": "potential",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js"
+        ],
+        "more": 0,
+        "why": "No CSP, inline scripts and third-party resources are unrestricted.",
+        "fix": null,
+        "rules": [
+          "headers"
+        ]
+      },
+      {
+        "title": "Missing X-Frame-Options",
+        "severity": "low",
+        "mix": null,
+        "confidence": "potential",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js"
+        ],
+        "more": 0,
+        "why": "Page can be embedded in iframes (clickjacking risk).",
+        "fix": null,
+        "rules": [
+          "headers"
+        ]
+      },
+      {
+        "title": "Missing X-Content-Type-Options",
+        "severity": "low",
+        "mix": null,
+        "confidence": "potential",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js"
+        ],
+        "more": 0,
+        "why": "Browser may MIME-sniff responses (XSS aid).",
+        "fix": null,
+        "rules": [
+          "headers"
+        ]
+      },
+      {
+        "title": "Missing Strict-Transport-Security",
+        "severity": "low",
+        "mix": null,
+        "confidence": "potential",
+        "exploitability": "not-assessed",
+        "count": 1,
+        "where": [
+          "server.js"
+        ],
+        "more": 0,
+        "why": "No Strict-Transport-Security header, so a browser may reach the site over plain HTTP first.",
+        "fix": null,
+        "rules": [
+          "headers"
+        ]
+      }
+    ],
+    "likely_noise": [],
+    "not_checked": [
+      "The scan reported nothing it skipped. No finding is still not proof of safety: Penthera reports what its rules match."
+    ],
+    "next": [
+      {
+        "command": "penthera fix --plan --repo /tmp/pf-penthera",
+        "why": "A fix recipe matches 5 of the 6 problems. It shows each diff and changes nothing until you approve one"
+      },
+      {
+        "command": "penthera deps .",
+        "why": "Dependency behaviour was not part of this run"
+      },
+      {
+        "command": "penthera agents .",
+        "why": "AI agent config was not part of this run"
+      }
+    ],
+    "set_aside": {
+      "command": "penthera memory suppress <fid> --reason \"<why>\"",
+      "why": "It sets the finding aside on this machine; add the fid and reason to penthera.suppress.json to share that with your team. Both apply to scans with --memory, and the report lists what they hide. The fid is next to each finding in the JSON and Markdown reports"
+    },
+    "reports": [
+      "/tmp/pf-penthera-report.md"
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 # Development — tests and the boundary rule
 
-`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, the boxd lane through a stubbed SDK client, the daytona and e2b lanes through stubbed SDK seams, the instavm lane through a stubbed raw-REST client, and full tick integration.
+`bun install && bun test` covers parsers, ledger, probes, the spawner (fake pi binary), the scenario harness (real python3 server), the instabox client (fake API), machine stages through a fake ssh gateway, the boxd lane through a stubbed SDK client, the daytona and e2b lanes through stubbed SDK seams, the instavm lane through a stubbed raw-REST client, full tick integration, and the acceptance loops (the penthera/e2e parsers against REAL captured tool reports, the drain-time PRD walk end-to-end over a fake machine, the daily cap, the janitor's acceptance-machine guard).
 
 ## Development
 

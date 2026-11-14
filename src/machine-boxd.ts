@@ -21,11 +21,11 @@
  * reaps the box).
  */
 import { Boxd } from "@boxd-sh/sdk";
-import { buildMachineEnvFile, bootstrapScriptFor, outcomeFromRun, STAGE_DRIVER, InfraUnavailableError, isInfraTransportText, type LapMachineLike, type MachineStageResult, type ShRes } from "./machine";
+import { stageShape, buildMachineEnvFile, bootstrapScriptFor, outcomeFromRun, STAGE_DRIVER, InfraUnavailableError, isInfraTransportText, type LapMachineLike, type MachineStageResult, type ShRes } from "./machine";
 import { machineNameFor } from "./instabox";
 import { resolveSnapshotName } from "./sharedbase";
 import { buildPiArgs, type PiOutcome } from "./pi";
-import type { ModelSpec, RepoConfig, StageModels } from "./types";
+import type { ModelSpec, RepoConfig, StageModels, StageName } from "./types";
 import { branchName } from "./stages/intake";
 import { dirname } from "node:path";
 
@@ -297,7 +297,7 @@ export class BoxdLapMachine implements LapMachineLike {
   }
 
   async callStage(
-    stage: "plan" | "implement" | "review",
+    stage: StageName,
     o: {
       models: StageModels;
       prompt: string;
@@ -307,15 +307,17 @@ export class BoxdLapMachine implements LapMachineLike {
       timeoutMs: number;
     }
   ): Promise<MachineStageResult & { stage: typeof stage }> {
-    // same rules as LapMachine.callStage: plan and implement bootstrap the
-    // clone, implement alone gates and pushes, plan and review are undone
-    if (stage === "plan" || stage === "implement") await this.bootstrap();
-    const gates = stage === "implement";
-    const envFile = buildMachineEnvFile(this.cfg, { gates, restore: !gates, branch: branchName(this.issue), base: this.cfg.default_branch });
+    // same rules as LapMachine.callStage (stageShape): plan and implement
+    // bootstrap the clone, implement alone gates and pushes, plan and review
+    // are undone — acceptance does none of those (the walk manages its own
+    // machine and keeps the product serving from the clone)
+    const shape = stageShape(stage);
+    if (shape.bootstrap) await this.bootstrap();
+    const envFile = buildMachineEnvFile(this.cfg, { gates: shape.gates, restore: shape.restore, branch: branchName(this.issue), base: this.cfg.default_branch });
     const m = await this.ensure();
     const res = await callBoxdStage(this.client, m.id, {
       models: o.models,
-      gates,
+      gates: shape.gates,
       branch: branchName(this.issue),
       base: this.cfg.default_branch,
       envFile,

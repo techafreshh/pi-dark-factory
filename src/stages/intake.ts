@@ -21,8 +21,19 @@ export const DISCOVERY_LABEL = "discovery";
 
 /** Second-axis severity label on discoveries (never on product issues):
  *  minor discoveries defer to the roadmap — they claim only after the last
- *  product issue is claimable (owner policy 2026-11-02). */
+ *  product issue is claimable (owner policy 2026-11-02). The acceptance
+ *  classes (docs/acceptance.md) reuse it: a low-severity security finding
+ *  or a minor PRD gap files with this label and defers the same way. */
 export const MINOR_LABEL = "minor";
+
+/** The factory-authored issue classes of the acceptance loops
+ *  (docs/acceptance.md): security findings on merged main, PRD-deliverable
+ *  gaps from the drain-time walk, and per-merge e2e regressions. All file
+ *  via fileFactoryIssues with these labels; prioritizeDiscoveries below
+ *  orders them. */
+export const SECURITY_LABEL = "security";
+export const PRD_GAP_LABEL = "prd-gap";
+export const E2E_REGRESSION_LABEL = "e2e-regression";
 
 /** every `Depends on: #1, #2` mention in an issue body */
 export function parseDepends(body: string): number[] {
@@ -213,6 +224,11 @@ export async function pickClaimable(
  *
  * Claimability (dependency chains, foreign PRs, ledger state) is untouched;
  * stable partition inside each class keeps number order deterministic.
+ *
+ * The acceptance classes (docs/acceptance.md) ride the same two rules:
+ * [security] findings join majors at the front (a vulnerable main must not
+ * accumulate merges), [prd-gap] majors are product work, and every
+ * minor-labeled factory issue defers behind the roadmap.
  */
 export async function prioritizeDiscoveries(
   cfg: RepoConfig,
@@ -222,10 +238,17 @@ export async function prioritizeDiscoveries(
 ): Promise<IssueLite[]> {
   const labels = (i: IssueLite) => i.labels ?? [];
   const isDiscovery = (i: IssueLite) => labels(i).includes(DISCOVERY_LABEL);
+  const isSecurity = (i: IssueLite) => labels(i).includes(SECURITY_LABEL);
+  const isPrdGap = (i: IssueLite) => labels(i).includes(PRD_GAP_LABEL);
   const isMinor = (i: IssueLite) => labels(i).includes(MINOR_LABEL);
-  const majors = claimable.filter((i) => isDiscovery(i) && !isMinor(i));
-  const minors = claimable.filter((i) => isDiscovery(i) && isMinor(i));
-  const product = claimable.filter((i) => !isDiscovery(i));
+  // the FRONT: discovery majors and security findings (a vulnerable main
+  // must not accumulate merges); prd-gap majors are product work — they ARE
+  // the roadmap; every minor-labeled factory issue defers behind it
+  const isMajor = (i: IssueLite) => (isDiscovery(i) || isSecurity(i)) && !isMinor(i);
+  const isDeferred = (i: IssueLite) => (isDiscovery(i) || isSecurity(i) || isPrdGap(i)) && isMinor(i);
+  const majors = claimable.filter(isMajor);
+  const minors = claimable.filter(isDeferred);
+  const product = claimable.filter((i) => !isMajor(i) && !isDeferred(i));
   if (minors.length === 0) {
     if (majors.length === 0) return claimable;
     return [...majors, ...product];

@@ -237,6 +237,12 @@ export async function runScenario(
     /** the repo's env.pass_env: forwarded on top of the agentEnv allowlist —
      *  setup and start run agent-written product code on the VPS */
     passEnv?: string[];
+    /** Instead of the scenario's probes: what to do while the product is up.
+     *  The probes are one implementation of this window (the default); the
+     *  acceptance runs (docs/acceptance.md) put the e2e suite or the PRD-walk
+     *  agent stage here instead. Return null for green, or the failure line.
+     *  The default probe path is byte-identical when this is unset. */
+    onReady?: (ctx: { port: number; scratchDir: string; env: Record<string, string> }) => Promise<string | null>;
   }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
@@ -310,6 +316,10 @@ export async function runScenario(
   try {
     if (!(await ready(port, spec.readiness_path ?? "/", opts.readinessSeconds))) {
       return mkResults(false, `server never became ready within ${opts.readinessSeconds}s (see server.log)`);
+    }
+    if (opts.onReady) {
+      const err = await opts.onReady({ port, scratchDir, env });
+      return err ? mkResults(false, err) : { name: spec.name, pass: true, results: [] };
     }
     const results: ProbeResult[] = [];
     let pass = true;
@@ -387,7 +397,16 @@ const b64s = (s: string) => Buffer.from(s, "utf8").toString("base64");
 export async function runScenarioInMachine(
   spec: ScenarioSpec,
   target: MachineScenarioTarget,
-  opts: { readinessSeconds: number; defaultProbeMs: number; key: string; reservedPorts: number[] }
+  opts: {
+    readinessSeconds: number;
+    defaultProbeMs: number;
+    key: string;
+    reservedPorts: number[];
+    /** same seam as runScenario's onReady: replace the probes with whatever
+     *  should happen while the in-box server is up (the acceptance runs put
+     *  the e2e suite or the PRD-walk agent stage here). Null = green. */
+    onReady?: (ctx: { port: number; repoDir: string }) => Promise<string | null>;
+  }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
     name: spec.name,
@@ -478,6 +497,11 @@ export async function runScenarioInMachine(
         false,
         `server never became ready within ${opts.readinessSeconds}s — it never answered on its OWN loopback inside the machine (last code ${code}); no host mapping is involved, the server itself is down. In-box socket state: ${sockets || "unavailable"} (a listener with a FULL Recv-Q/backlog binds but never accepts). (machine server.log tail: ${detail})`
       );
+    }
+
+    if (opts.onReady) {
+      const err = await opts.onReady({ port, repoDir: target.repoDir });
+      return err ? mkResults(false, err) : { name: spec.name, pass: true, results: [] };
     }
 
     // probes — the scenario's own commands and expectations, verbatim,

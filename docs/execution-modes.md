@@ -177,3 +177,10 @@ deadline (rc 124), **git reachability from inside the box**, a ≥5-min continuo
 destroy. It records every raw response to `state/smoke/<platform>.json` — the boundary
 rule's captured shapes for the stub tests. Run it per platform before onboarding a repo
 onto that mode.
+
+Browser acceptance (docs/acceptance.md) rides the same gate: `foreman bake <slug>` on a
+repo with `acceptance.e2e`/`prd_check` installs the browser toolchain in-box and SMOKE-
+LAUNCHES Chromium before snapshotting — a platform whose egress allowlist blocks the
+apt/browser downloads fails the bake loudly (exit 31) instead of failing every future
+walk. InstaBox/boxd egress is unrestricted; Daytona Tier 1/2 and InstaVM Free are the
+ones to verify.

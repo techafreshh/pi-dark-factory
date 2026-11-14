@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 const TIMEOUT_FAST = 60_000;
 const TIMEOUT_SLOW = 900_000; // backlog slicing runs an LLM server-side
+const TIMEOUT_TOOLS = 3_600_000; // host-tools installs a browser toolchain (apt + downloads)
 const STREAM_IDLE_MS = 120_000; // session follow: abort when no bytes land
 const RECONNECT_MS = 5_000;
 
@@ -584,6 +585,57 @@ async function cmdCleanup(a, ctx) {
   return 0;
 }
 
+/* ── acceptance (docs/acceptance.md): PRD-delivery loops + security audit ── */
+
+async function cmdPrd(a, ctx) {
+  const slug = a._[0];
+  if (!a["prd-file"]) throw new Error("--prd-file is required");
+  let prd;
+  try {
+    prd = readFileSync(a["prd-file"], "utf8");
+  } catch {
+    throw new Error(`PRD file not found: ${a["prd-file"]}`);
+  }
+  const { body } = await ctx.api("POST", `/repos/${encodeURIComponent(slug)}/prd`, { prd_text: prd });
+  ctx.out(`prd stored at ${body.path} (acceptance generation ${body.gen})`);
+  return 0;
+}
+
+async function cmdAcceptance(a, ctx) {
+  const slug = a._[0];
+  const enc = encodeURIComponent(slug);
+  if (a.status) {
+    const { body } = await ctx.api("GET", "/status");
+    const repo = (body.repos ?? []).find((r) => r.slug === slug);
+    if (!repo) throw new Error(`repo ${slug} not found in status`);
+    const acc = repo.acceptance ?? {};
+    ctx.out(`prd stored: ${acc.prd_stored ? "yes" : "no"} · generation ${acc.gen ?? 0}`);
+    ctx.out(`walk verdict: ${acc.last ? `${acc.last.status} at ${acc.last.at}${acc.last.summary ? ` — ${acc.last.summary}` : ""}` : "never run"}`);
+    ctx.out(`security verdict: ${acc.last_security ? `${acc.last_security.status} at ${acc.last_security.at}${acc.last_security.summary ? ` — ${acc.last_security.summary}` : ""}` : "never run"}`);
+    return 0;
+  }
+  const { body } = await ctx.api("POST", `/repos/${enc}/acceptance/run`, {}, { timeout: TIMEOUT_SLOW });
+  ctx.out(body.ran ? `acceptance walk: ${body.summary ?? (body.pass ? "PASS" : "FAILED")}` : `not run: ${body.reason ?? "unknown reason"}`);
+  for (const f of body.filed ?? []) ctx.out(`  filed #${f.issue}: ${f.title}`);
+  return body.ran && body.pass === false ? 1 : 0;
+}
+
+async function cmdSecurityScan(a, ctx) {
+  const slug = a._[0];
+  const { body } = await ctx.api("POST", `/repos/${encodeURIComponent(slug)}/security/scan`, {}, { timeout: TIMEOUT_SLOW });
+  ctx.out(body.pass ? `security scan clean: ${body.summary}` : `security scan: ${body.summary}`);
+  for (const f of body.filed ?? []) ctx.out(`  filed #${f.issue}: ${f.title}`);
+  if (body.note) ctx.out(`  note: ${body.note}`);
+  return body.pass ? 0 : 1;
+}
+
+async function cmdHostTools(a, ctx) {
+  const { body } = await ctx.api("POST", "/host-tools", {}, { timeout: TIMEOUT_TOOLS });
+  for (const line of body.lines ?? []) ctx.out(`  ${line}`);
+  ctx.out(body.ok ? "host tools ready" : "host tools FAILED");
+  return body.ok ? 0 : 1;
+}
+
 const VERBS = {
   health: { min: 0, fn: cmdHealth },
   doctor: { min: 0, fn: cmdDoctor },
@@ -602,6 +654,10 @@ const VERBS = {
   unpause: { min: 1, fn: cmdUnpause },
   unblock: { min: 2, fn: cmdUnblock },
   cleanup: { min: 0, fn: cmdCleanup },
+  prd: { min: 1, fn: cmdPrd },
+  acceptance: { min: 1, fn: cmdAcceptance },
+  "security-scan": { min: 1, fn: cmdSecurityScan },
+  "host-tools": { min: 0, fn: cmdHostTools },
   setup: { min: 2, fn: cmdSetup, noApi: true },
   where: { min: 0, fn: cmdWhere, noApi: true },
 };
@@ -724,6 +780,24 @@ and worktree; --force overrides the in-progress guard — only after verifying
 the lap is actually dead.`,
   cleanup: `cleanup
 Prune caches and kill stale pi workers on the VPS.`,
+  prd: `prd SLUG --prd-file F
+Store or replace the repo's PRD text WITHOUT slicing a new backlog — the
+delivery contract the drain-time acceptance walk judges (backlog slicing
+stores it automatically; this updates it). Bumps the acceptance generation:
+a stale PASS never survives a new contract.`,
+  acceptance: `acceptance SLUG [--status]
+Run the drain-time PRD acceptance walk on demand (bypasses the daily cap):
+serves the product the way verify does, runs the authored e2e suite, then
+walks the whole stored PRD with agent-browser and files [prd-gap] issues for
+everything the build does not deliver. --status prints the stored verdicts.`,
+  "security-scan": `security-scan SLUG
+Run the penthera security scan against merged main on demand. Findings at or
+above the repo's acceptance.severity_floor file deduped [security] issues the
+laps then fix.`,
+  "host-tools": `host-tools
+Install/verify the HOST-side acceptance toolchain: Chromium, the e2e
+framework, agent-browser, penthera. Needed once per VPS for host/compose
+repos (machine-mode repos get the toolchain via a re-bake instead).`,
 };
 
 const USAGE = `dark-factory — drive a pi-dark-factory over HTTP(S) (Node >= 18, zero deps)
@@ -749,6 +823,10 @@ tick SLUG                        fire a lap now (pidfile arbitrates with the tim
 pause SLUG / unpause SLUG        pull a repo off / put it back on the tick wheel
 unblock SLUG ISSUE [--prune] [--force]               drop a ledger row (optionally close PR/branch)
 cleanup                          prune caches, kill stale pi workers
+prd SLUG --prd-file F            store/replace the PRD the acceptance walks judge
+acceptance SLUG [--status]       run (or read) the drain-time PRD acceptance walk
+security-scan SLUG               penthera scan of merged main, findings become issues
+host-tools                       install/verify the host browser + scanner toolchain
 
 Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config;
 inline --url / --key override everything (resolution: flags > env > file).

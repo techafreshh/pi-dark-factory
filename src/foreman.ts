@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
-import { readFileSync } from "node:fs";
-import { opsBacklog, opsBake, opsCleanup, opsLogs, opsOnboard, opsStatus, opsUnblock } from "./ops";
+import { readFileSync, writeFileSync } from "node:fs";
+import { opsAcceptanceRun, opsBacklog, opsBake, opsCleanup, opsHostTools, opsLogs, opsOnboard, opsPrdSet, opsSecurityScan, opsStatus, opsUnblock } from "./ops";
 import { runTick } from "./tick";
 
 const HELP = `pi-dark-factory foreman — local CLI over the ops core
@@ -27,6 +27,11 @@ Commands:
   cleanup                             prune blocked worktrees' dep caches, kill stale pi,
                                        reap leftover pdf-* lap machines (all machine platforms),
                                        report disk
+  prd <slug> --prd <path>             store/replace the PRD the acceptance walks judge
+  acceptance <slug>                   run the drain-time PRD acceptance walk now
+                                         (docs/acceptance.md; bypasses the daily cap)
+  security-scan <slug>                penthera scan of merged main; findings file issues
+  host-tools                          install/verify the host browser + scanner toolchain
 
 Options:
   --state-dir <path>    default: $PI_FACTORY_STATE or ./state
@@ -166,6 +171,35 @@ async function main() {
     }
     case "cleanup": {
       for (const line of await opsCleanup(stateDir)) console.log(line);
+      break;
+    }
+    case "prd": {
+      const s = pos[0];
+      const prd = typeof flags.prd === "string" ? flags.prd : undefined;
+      if (!s || !prd) throw new Error("prd needs <slug> and --prd <path>");
+      const r = opsPrdSet(stateDir, s, readFileSync(prd, "utf8"));
+      console.log(`prd stored at ${r.path} (acceptance generation ${r.gen})`);
+      break;
+    }
+    case "acceptance": {
+      if (!pos[0]) throw new Error("acceptance needs <slug>");
+      const r = await opsAcceptanceRun(stateDir, pos[0], { force: true });
+      console.log(r.ran ? `acceptance walk: ${r.summary ?? (r.pass ? "PASS" : "FAILED")}` : `not run: ${r.reason ?? "unknown reason"}`);
+      for (const f of r.filed) console.log(`  filed #${f.issue}: ${f.title}`);
+      break;
+    }
+    case "security-scan": {
+      if (!pos[0]) throw new Error("security-scan needs <slug>");
+      const r = await opsSecurityScan(stateDir, pos[0]);
+      console.log(r.pass ? `security scan clean: ${r.summary}` : `security scan: ${r.summary}`);
+      for (const f of r.filed) console.log(`  filed #${f.issue}: ${f.title}`);
+      if (r.note) console.log(`  note: ${r.note}`);
+      break;
+    }
+    case "host-tools": {
+      const r = await opsHostTools(stateDir);
+      for (const line of r.lines) console.log(`  ${line}`);
+      console.log("host tools ready");
       break;
     }
     default:

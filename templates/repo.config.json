@@ -54,6 +54,15 @@
     "parallel": false,
     "max_lanes": 3
   },
+  "acceptance": {
+    "_readme": "PRD-delivery acceptance (docs/acceptance.md), all opt-in. e2e: run the repo's authored browser e2e suite (state/repos/<slug>/e2e/) against merged main after every merge; prd_check: when the backlog drains, walk the stored PRD (prd.md, written at backlog slice time) against the live product with agent-browser and file [prd-gap] issues; security: scan merged main with penthera after every merge and file [security] findings above severity_floor. e2e and prd_check need a browser toolchain: host/compose repos install it with `foreman host-tools`, machine repos get it into their golden snapshot via a re-`foreman bake <slug>` (the toolchain rides along when either flag is on).",
+    "e2e": false,
+    "prd_check": false,
+    "security": false,
+    "severity_floor": "medium",
+    "e2e_minutes": 10,
+    "prd_minutes": 25
+  },
   "env": {
     "mode": "host",
     "compose_file": "docker-compose.yml",
