@@ -41,11 +41,27 @@ export async function fileFactoryIssues(
   slug: string,
   gh: GhApi,
   items: FactoryIssue[],
-  opts: { alsoSeen?: string[]; /** receipt tag recorded per filed issue, e.g. "security scan" */ via?: string } = {}
+  opts: {
+    alsoSeen?: string[];
+    /** receipt tag recorded per filed issue, e.g. "security scan" */
+    via?: string;
+    /** also dedupe against CLOSED issues — for classes where a human close
+     *  is a standing decision ("won't fix", "false positive"): a closed
+     *  [security] finding or [prd-gap] must not come back on the next
+     *  merge. Classes whose recurrence IS the evidence ([e2e-regression],
+     *  discoveries) stay open-only and leave this unset. */
+    dedupeClosed?: boolean;
+  } = {}
 ): Promise<{ issue: number; title: string }[]> {
   const open = await gh.issueList("open", 100);
   const filed: { issue: number; title: string }[] = [];
   const seen = [...open.map((i) => i.title), ...(opts.alsoSeen ?? [])];
+  if (opts.dedupeClosed) {
+    const all = await gh.issueList("all", 500);
+    for (const i of all) {
+      if ((i.state ?? "").toLowerCase() === "closed") seen.push(i.title);
+    }
+  }
   for (const item of items) {
     if (seen.some((t) => isDuplicateTitle(t, item.title))) continue;
     seen.push(item.title);

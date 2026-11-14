@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { authorLogin, labelNames } from "../src/gh";
+import { authorLogin, labelNames, parseRepoVisibility } from "../src/gh";
 
 describe("authorLogin (gh boundary normalization)", () => {
   test("the real gh shape — an author object — normalizes to the login", () => {
@@ -39,5 +39,19 @@ describe("labelNames (gh boundary normalization)", () => {
     expect(labelNames(undefined)).toEqual([]);
     expect(labelNames("discovery")).toEqual([]);
     expect(labelNames([])).toEqual([]);
+  });
+});
+
+describe("parseRepoVisibility (gh boundary normalization)", () => {
+  test("the captured real shape — gh 2.45.0, `gh repo view --json visibility`", () => {
+    // verbatim capture from techafreshh/pi-dark-factory, 2026-11-14
+    expect(parseRepoVisibility('{"isPrivate":false,"visibility":"PUBLIC"}')).toBe("PUBLIC");
+    expect(parseRepoVisibility('{"visibility":"private"}')).toBe("PRIVATE"); // normalized uppercase defensively
+  });
+  test("unreadable answers fail through null (the publish gate then fails closed)", () => {
+    expect(parseRepoVisibility("gh: rate limited")).toBeNull();
+    expect(parseRepoVisibility("{}")).toBeNull();
+    expect(parseRepoVisibility('{"visibility":null}')).toBeNull();
+    expect(parseRepoVisibility("")).toBeNull();
   });
 });

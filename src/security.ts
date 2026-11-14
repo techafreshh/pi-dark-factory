@@ -52,11 +52,13 @@ function floorRank(floor: string): number {
 }
 
 /** The publish gate for [security] findings, pure for the tests: a PUBLIC
- *  tracker files nothing unless acceptance.security_public is set (a
- *  published finding is a live disclosure); private/internal repos — and an
- *  unreadable visibility (the receipt names it) — file as before. */
+ *  tracker files nothing unless acceptance.security_public is set, and an
+ *  UNREADABLE visibility fails closed too (null → do not file) — the gate
+ *  exists to prevent a one-way disclosure, so the failure mode that
+ *  publishes must not be its default. The cost is a missed filing the next
+ *  merge's scan retries. Private/internal repos file as before. */
 export function mayFileSecurityFindings(visibility: string | null, cfg: RepoConfig): boolean {
-  return visibility !== "PUBLIC" || cfg.acceptance?.security_public === true;
+  return (visibility !== null && visibility !== "PUBLIC") || cfg.acceptance?.security_public === true;
 }
 
 /** The findings the scan would file: severity at or above the floor, ordered
@@ -184,7 +186,11 @@ export async function runSecurityScan(
     if (!mayFile) {
       // public repo + no explicit opt-in: the scan's facts stay in the
       // receipt and the acceptance-state verdict, never on the tracker
-      const note = `${summary} — findings NOT filed: ${visibility} repo, and filing needs acceptance.security_public (a public issue would disclose the finding live)`;
+      const why =
+        visibility === null
+          ? `repo visibility unreadable (gh failed) — failing closed; the next merge's scan retries`
+          : `filing on a ${visibility} repo needs acceptance.security_public (a public issue would disclose the finding live)`;
+      const note = `${summary} — findings NOT filed: ${why}`;
       receipt(opts.stateDir, `security scan on main: ${note}`, cfg.slug);
       return { pass: false, summary: note, note, filed: [] };
     }
@@ -227,7 +233,7 @@ export async function runSecurityScan(
         },
       };
     });
-    const filed = await fileFactoryIssues(opts.stateDir, cfg.slug, gh, items, { via: "security scan" });
+    const filed = await fileFactoryIssues(opts.stateDir, cfg.slug, gh, items, { via: "security scan", dedupeClosed: true });
     receipt(opts.stateDir, `security scan on main: ${summary}, filed ${filed.length}`, cfg.slug);
     return { pass: false, summary, filed };
   } finally {

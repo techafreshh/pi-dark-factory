@@ -37,7 +37,7 @@ export class FakeGh implements GhApi {
       this.issues
         .filter((i) => state === "all" || (this.states[i.number] ?? "open") === "open")
         .slice(0, limit)
-        .map((i) => ({ ...i, author: i.author ?? "acme" }))
+        .map((i) => ({ ...i, author: i.author ?? "acme", state: this.states[i.number] ?? "open" }))
     );
   }
   viewerLogin(): Promise<string | null> {

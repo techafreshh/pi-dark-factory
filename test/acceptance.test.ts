@@ -1,6 +1,6 @@
 import { describe, expect, test, afterAll } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupWorlds, FakeGh, FakeMachine, makeMachineWorld, type World } from "./world";
@@ -12,6 +12,7 @@ import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from 
 import { reapOrphanMachines } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
+import type { CallStageFn } from "../src/tick";
 
 /* Real captured shapes (docs/development.md boundary rule): penthera 2.4.0's
  * -o report and e2e 0.23.1's report.json, captured live on 2026-11-13 — the
@@ -217,7 +218,7 @@ describe("penthera report parsing (captured 2.4.0 shape)", () => {
     expect(mayFileSecurityFindings("PUBLIC", cfg({}))).toBe(false);
     expect(mayFileSecurityFindings("PUBLIC", cfg({ acceptance: { security_public: true } }))).toBe(true);
     expect(mayFileSecurityFindings("PRIVATE", cfg({}))).toBe(true);
-    expect(mayFileSecurityFindings(null, cfg({}))).toBe(true); // gh broke — the receipt names it
+    expect(mayFileSecurityFindings(null, cfg({}))).toBe(false); // gh broke → fail CLOSED: a miss is retried next merge, a disclosure is one-way
   });
   test("the scanner spec is PINNED to the version the fixture was captured against", () => {
     delete process.env.PDF_PENTHERA_SPEC;
@@ -244,6 +245,25 @@ describe("fileFactoryIssues (the generic filer)", () => {
     expect(filed[0].title).toBe("[security] fresh (fid def)");
     expect(gh.created.length).toBe(1);
     expect(gh.issues.find((i) => i.number === filed[0].issue)?.labels).toContain("security");
+  });
+
+  test("dedupeClosed: a human-closed finding does not come back on the next scan", async () => {
+    const gh = new FakeGh();
+    const first = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile3-")), "toy", gh, [
+      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
+    ]);
+    expect(first.length).toBe(1);
+    gh.issueClose(first[0].issue); // the human's standing decision
+    // sticky classes dedupe against closed issues...
+    const again = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile4-")), "toy", gh, [
+      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
+    ], { dedupeClosed: true });
+    expect(again.length).toBe(0);
+    // ...recurrence-evidence classes stay re-fileable
+    const third = await fileFactoryIssues(mkdtempSync(join(tmpdir(), "pdffile5-")), "toy", gh, [
+      { title: "[security] wontfixed one (fid aaa)", body: "x", labels: ["security"] },
+    ]);
+    expect(third.length).toBe(1);
   });
 
   test("a create failure skips the item without losing the batch", async () => {
@@ -543,6 +563,65 @@ describe("runPostMergeExtras — the per-merge e2e regression (fake machine lane
     // the failing suite filed its deduped regression issue (report-only)
     expect(w.gh.created.filter((c) => c.title.startsWith("[e2e-regression]")).length).toBe(1);
     expect(extra).toContain("e2e regression");
+  });
+});
+
+describe("the walk's host lane never leaks the service env into the suite", () => {
+  slowTest("a suite command observes the allowlist, not process.env (behavioral, not just the pure helper)", async () => {
+    const w = makeMachineWorld();
+    w.cfg.env.mode = "host";
+    const port = 19500 + (process.pid % 400);
+    w.cfg.scenario = { ports: [port, port + 1], runtime: "runtime.json", holdout: undefined as any };
+    w.cfg.acceptance = { e2e: true, prd_check: true, security: false };
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "runtime.json"),
+      JSON.stringify({
+        name: "runtime",
+        port,
+        start: "python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1",
+        readiness_path: "/",
+        probes: [{ id: "root", description: "serves", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/", expect: "status:200" }],
+      })
+    );
+    mkdirSync(join(w.stateDir, "repos", "toy"), { recursive: true });
+    writeFileSync(prdPath(w.stateDir, "toy"), "# PRD\n\n- it serves\n");
+    // an authored suite (so the window's deterministic run executes)
+    const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    // a FAKE toolchain whose e2e bin records what env it actually saw and
+    // emits a valid passing report — the runner resolves it through the
+    // symlinked node_modules, exactly like the real toolchain
+    const tc = mkdtempSync(join(tmpdir(), "pdftc-"));
+    mkdirSync(join(tc, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(
+      join(tc, "node_modules", ".bin", "e2e"),
+      [
+        "#!/bin/bash",
+        'if [ -n "${PDF_SENTINEL_FACTORY_SECRET:-}" ]; then echo "secret_present=yes" >> "$(pwd)/leak.txt"; else echo "secret_present=no" >> "$(pwd)/leak.txt"; fi',
+        'echo "home=${HOME:+set}" >> "$(pwd)/leak.txt"',
+        "mkdir -p .e2e",
+        `printf '{"run":{"status":"passed","summary":{"passed":1,"failed":0,"flaky":0,"skipped":0},"results":[]}}' > .e2e/report.json`,
+        "exit 0",
+      ].join("\n")
+    );
+    chmodSync(join(tc, "node_modules", ".bin", "e2e"), 0o755);
+    process.env.PDF_E2E_TOOLCHAIN_DIR = tc;
+    process.env.PDF_SENTINEL_FACTORY_SECRET = "topsecret";
+    try {
+      const callStage: CallStageFn = async () =>
+        ({ outcome: { kind: "ok", text: "All deliverables verified.\n\nVERDICT: DELIVERED", usage: { input_tokens: 1, output_tokens: 1 } }, modelsTried: [] } as any);
+      const r = await runPrdAcceptance(w.cfg, { stateDir: w.stateDir, gh: w.gh, ledger: w.ledger, callStage, log: () => {} });
+      expect(r.pass).toBe(true); // the fake suite passed and the walk delivered
+      // the suite RAN (the test cannot pass vacuously) and observed NO secret
+      const leak = readFileSync(join(suiteDir, "leak.txt"), "utf8");
+      expect(leak).toContain("secret_present=no");
+      expect(leak).not.toContain("topsecret");
+      expect(leak).toContain("home=set"); // HOME rides the allowlist base (npm needs it)
+    } finally {
+      delete process.env.PDF_E2E_TOOLCHAIN_DIR;
+      delete process.env.PDF_SENTINEL_FACTORY_SECRET;
+    }
   });
 });
 

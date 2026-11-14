@@ -55,6 +55,21 @@ step individually caught — a hook failure is a receipt, never a lap error:
    titles; ≤10 per scan, overflow summarized in the last issue's body).
    Penthera's own fix diffs are deliberately NOT applied — a fix goes through
    plan/implement/verify/review like every other change.
+
+   **The publish gate:** on a PUBLIC repo, a filed finding is a live
+   disclosure (file, line, sink) minutes after the merge that introduced it,
+   so findings are filed only when the repo is private/internal or
+   `acceptance.security_public: true` is set explicitly (default false). An
+   unreadable visibility (gh failed) fails closed too — the scan still runs
+   and receipts, and the next merge's scan retries the filing. A human
+   closed-find decision is sticky: `[security]` and `[prd-gap]` issues are
+   deduped against CLOSED issues as well, so a "won't fix" close does not
+   come back on the next merge (an `[e2e-regression]` issue stays re-fileable
+   on purpose — a recurring failure is new evidence). Operator note: on a
+   public repo with `security: true` and no `security_public`, every merge
+   runs the full scan and files nothing, and `status` shows
+   `last_security: fail` for as long as findings above the floor exist —
+   that is the gate working, not a stuck scan.
 2. **the e2e suite** (`acceptance.e2e` + a suite exists) — against merged
    main: host/compose repos run it host-side on the published port; machine
    modes boot a short-lived `pdf-<slug>-i0` acceptance machine, bootstrap

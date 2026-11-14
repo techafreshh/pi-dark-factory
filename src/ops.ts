@@ -35,6 +35,7 @@ import { bumpInputsEpoch, makeCallStage, openLapMachineFor } from "./tick"; // f
 import { browserBakeScript, hostToolsScript } from "./browserbake";
 import { runSecurityScan } from "./security";
 import { runPrdAcceptance } from "./stages/acceptance";
+import { agentEnv } from "./agentenv";
 import { isMachineMode, type RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
@@ -1143,7 +1144,11 @@ export async function opsScenarioTest(
  *  Idempotent; receipts the outcome. */
 export async function opsHostTools(stateDir: string): Promise<{ ok: boolean; lines: string[] }> {
   receipt(stateDir, "host-tools: installing/verifying the browser + scanner toolchain");
-  const res = await sh(["bash", "-c", hostToolsScript()], { timeoutMs: 90 * 60_000, killGroup: true });
+  // the installer downloads and RUNS setup scripts (npm postinstall, apt):
+  // it gets the agentEnv allowlist, never the service environment with the
+  // factory's keys — sudo -n sanitizes its own env, and PATH/HOME (npm,
+  // agent-browser) ride the allowlist base
+  const res = await sh(["bash", "-c", hostToolsScript()], { env: agentEnv([]), inheritEnv: false, timeoutMs: 90 * 60_000, killGroup: true });
   const lines = res.stdout.trim().split("\n").filter(Boolean);
   const ok = res.code === 0;
   receipt(stateDir, `host-tools: ${ok ? "OK" : `FAILED (exit ${res.code})`} — ${lines.filter((l) => /_OK|BROWSER|CHROME/.test(l)).join(", ") || "no capability lines"}`);

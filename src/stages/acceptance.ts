@@ -633,7 +633,7 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
             },
           },
         ];
-        filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance" })));
+        filed.push(...(await fileFactoryIssues(stateDir, slug, deps.gh, items, { via: "prd acceptance", dedupeClosed: true })));
       }
       const pass = verdict.delivered && verdict.gaps.length === 0;
       const last: AcceptanceLast = {
