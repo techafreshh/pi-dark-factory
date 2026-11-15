@@ -151,7 +151,7 @@ async function main() {
       if (r.rootSizeBytes !== undefined) {
         console.log(`size: root ${Math.round(r.rootSizeBytes / 2 ** 30)} GiB${r.dataSizeBytes !== undefined ? `, data ${Math.round(r.dataSizeBytes / 2 ** 30)} GiB` : ""}`);
       }
-      if (r.config_updated) console.log(`config updated: env.instabox.snapshot = "${r.snapshot}"`);
+      if (r.config_updated) console.log(`config updated: env.${r.platform}.snapshot = "${r.snapshot}"`);
       break;
     }
     case "unblock": {
