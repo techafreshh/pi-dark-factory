@@ -234,29 +234,46 @@ export async function shipSuiteInBox(machine: SuiteMachine, suiteDir: string, bo
   }
 }
 
+/** Where the walk agent may have written the authored suite. The prompt
+ *  names /tmp/pdf-e2e-out, but agents write relative to their cwd too —
+ *  walk 2026-11-15: DELIVERED, authoring expected, the single-dir collect
+ *  found nothing, and nothing receipted. Search every candidate root. */
+export const BOX_AUTHORING_ROOTS = ["/tmp/pdf-e2e-out", "e2e-out", "."];
+
 /** Collect the suite files the walk agent authored in the box back into
- *  factory state (discoveries-<attempt>.json rides back the same way). */
-async function collectSuiteFromBox(machine: LapMachineLike, boxDir: string, stateDir: string, slug: string): Promise<boolean> {
+ *  factory state (discoveries-<attempt>.json rides back the same way):
+ *  find the suite-shaped files across every candidate root, tar exactly
+ *  those, copy them (any depth — tar paths may nest) into factory state. */
+export async function collectSuiteFromBox(machine: LapMachineLike, stateDir: string, slug: string): Promise<{ got: boolean; where: string }> {
+  const roots = BOX_AUTHORING_ROOTS.join(" ");
   const res = await machine.bash(
-    `cd ${boxDir} 2>/dev/null && ls *.e2e.ts e2e.config.ts >/dev/null 2>&1 && tar czf - --exclude=node_modules --exclude=.e2e --exclude=run.log . | base64 -w0 || true`,
+    [
+      `FILES=$(find ${roots} -maxdepth 2 \\( -name '*.e2e.ts' -o -name '*.e2e.js' -o -name 'e2e.config.ts' \\) -not -path '*/node_modules/*' 2>/dev/null | sort -u)`,
+      `[ -n "$FILES" ] && tar czf - $FILES 2>/dev/null | base64 -w0`,
+    ].join("\n"),
     { timeoutMs: 60_000 }
   );
   const out = res.stdout.trim().split("\n").filter((l) => /^[A-Za-z0-9+/=]{100,}$/.test(l.trim())).pop()?.trim();
-  if (!out) return false;
+  if (!out) return { got: false, where: "" };
   const dest = e2eSuiteDir(stateDir, slug);
   const tmp = mkdtempSync(join(tmpdir(), `pdf-e2e-collect-${slug}-`));
   try {
     const x = await sh(["bash", "-c", `printf %s ${out} | base64 -d | tar xzf - -C ${tmp}`], { timeoutMs: 30_000 });
-    if (x.code !== 0) return false;
+    if (x.code !== 0) return { got: false, where: "" };
     let copied = false;
-    for (const e of readdirSync(tmp)) {
-      if (e.endsWith(".e2e.ts") || e.endsWith(".e2e.js") || e === "e2e.config.ts") {
-        mkdirSync(dest, { recursive: true });
-        cpSync(join(tmp, e), join(dest, e));
-        copied = true;
+    const walkDir = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) { walkDir(p); continue; }
+        if (e.name.endsWith(".e2e.ts") || e.name.endsWith(".e2e.js") || e.name === "e2e.config.ts") {
+          mkdirSync(dest, { recursive: true });
+          cpSync(p, join(dest, e.name));
+          copied = true;
+        }
       }
-    }
-    return copied;
+    };
+    walkDir(tmp);
+    return { got: copied, where: copied ? BOX_AUTHORING_ROOTS.join(", ") : "" };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -475,8 +492,8 @@ async function acceptanceWindow(
 
   // 3. collect the authored suite files
   if (args.machine) {
-    const got = await collectSuiteFromBox(args.machine, "/tmp/pdf-e2e-out", stateDir, slug);
-    if (got) deps.log("acceptance: authored suite files collected from the box into factory state");
+    const got = await collectSuiteFromBox(args.machine, stateDir, slug);
+    if (got.got) deps.log("acceptance: authored suite files collected from the box into factory state");
   } else {
     const dest = e2eSuiteDir(stateDir, slug);
     let copied = false;
@@ -490,6 +507,16 @@ async function acceptanceWindow(
       }
     } catch {}
     if (copied) deps.log("acceptance: authored suite files stored in factory state");
+  }
+  // an authoring walk that produced no suite is SILENT only once — the gate
+  // would stay skipped forever on a repo whose walks keep passing without
+  // authoring, so receipt it loudly every time it happens
+  if (!suiteExisted && !e2eSuiteExists(stateDir, slug)) {
+    receipt(
+      stateDir,
+      `acceptance: authoring was expected but no suite files landed in factory state (searched the box's ${BOX_AUTHORING_ROOTS.join(", ")}) — the verify gate stays skipped until a walk authors one`,
+      slug
+    );
   }
   return res.outcome.text;
 }
@@ -590,6 +617,17 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
       }
 
       // ── verdict + filing (fail closed on an unparsable walk) ──
+      // the walk's full narration is the only evidence trail for what the
+      // agent did (machine-lane sessions die with the box, and the verdict
+      // summary is one line) — persist it BEFORE parsing so even an
+      // unparsable or empty-verdict walk leaves its text behind
+      if (holder.text) {
+        const walkLog = join(stateDir, "repos", slug, `acceptance-walk-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+        try {
+          writeFileSync(walkLog, holder.text);
+          receipt(stateDir, `acceptance walk narration: ${walkLog}`, slug);
+        } catch {}
+      }
       const verdict = parseAcceptanceVerdict(holder.text);
       if (verdict.delivered === null) {
         const last: AcceptanceLast = {
