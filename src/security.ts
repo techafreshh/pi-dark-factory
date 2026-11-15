@@ -26,8 +26,8 @@ import { SECURITY_SEVERITIES, type RepoConfig, type SecuritySeverity } from "./t
  * else.
  */
 
-import { SECURITY_LABEL, PRD_GAP_LABEL, E2E_REGRESSION_LABEL } from "./stages/intake";
-export { SECURITY_LABEL, PRD_GAP_LABEL, E2E_REGRESSION_LABEL };
+import { SECURITY_LABEL, PRD_GAP_LABEL } from "./stages/intake";
+export { SECURITY_LABEL, PRD_GAP_LABEL };
 
 /** npx spec for the scanner — PINNED to the version the parsers' captured
  *  fixture (test/fixtures/penthera-report.json) was recorded against, and

@@ -27,13 +27,13 @@ export const DISCOVERY_LABEL = "discovery";
 export const MINOR_LABEL = "minor";
 
 /** The factory-authored issue classes of the acceptance loops
- *  (docs/acceptance.md): security findings on merged main, PRD-deliverable
- *  gaps from the drain-time walk, and per-merge e2e regressions. All file
- *  via fileFactoryIssues with these labels; prioritizeDiscoveries below
- *  orders them. */
+ *  (docs/acceptance.md): security findings on merged main and PRD-deliverable
+ *  gaps from the drain-time walk. (E2e suite failures are verify-gate
+ *  failures now — they block the merge through the repair loop and file
+ *  nothing.) All file via fileFactoryIssues with these labels;
+ *  prioritizeDiscoveries below orders them. */
 export const SECURITY_LABEL = "security";
 export const PRD_GAP_LABEL = "prd-gap";
-export const E2E_REGRESSION_LABEL = "e2e-regression";
 
 /** every `Depends on: #1, #2` mention in an issue body */
 export function parseDepends(body: string): number[] {

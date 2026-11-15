@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ShRes } from "../sh";
 import type { Ledger } from "../ledger";
 import {
   acceptanceRunningPath,
@@ -154,21 +155,35 @@ export function parseE2eReport(text: string): E2eSummary | null {
 /** One shared toolchain per lane: host-side the host-tools verb installs it
  *  under ~/.pdf/e2e-toolchain; in-box the bake script puts it at /opt/pdf-e2e
  *  (browsers beside it, at <toolchain>-browsers). Overridable without a deploy. */
+/** where the suite lives inside a box (the walk ships it there; the verify
+ *  gate's machine lane ships to the same path) */
+export const BOX_SUITE_DIR = "/tmp/pdf-e2e-suite";
+
 export const hostToolchainDir = () => process.env.PDF_E2E_TOOLCHAIN_DIR ?? join(process.env.HOME ?? "", ".pdf", "e2e-toolchain");
 export const boxToolchainDir = () => process.env.PDF_E2E_BOX_TOOLCHAIN_DIR ?? "/opt/pdf-e2e";
 
 /** The command that runs the suite against the product the scenario runner
  *  already started ($PORT is exported by both lanes). The suite resolves the
  *  toolchain through a symlinked node_modules — ESM import specifiers ignore
- *  NODE_PATH, a symlink walks the real tree. Prints "PDFE2ERC=<n>" then the
- *  report.json base64 (or PDFE2ENOREPORT), and EXITS with the suite's rc. */
+ *  NODE_PATH, a symlink walks the real tree — and browsers come from the
+ *  toolchain-browsers dir beside it in BOTH lanes (the host-tools install and
+ *  the Docker bake put them there; the default ~/.cache path is never
+ *  relied on). Prints "PDFE2ERC=<n>" then the report.json base64 (or
+ *  PDFE2ENOREPORT), and EXITS with the suite's rc. */
 export function e2eRunCommand(opts: { suiteDir: string; toolchainDir: string; inBox: boolean }): string {
   return [
     `cd ${opts.suiteDir}`,
-    `[ -e node_modules ] || ln -sfn ${opts.toolchainDir}/node_modules node_modules`,
+    // ALWAYS relink: an existing symlink could point at a previous
+    // toolchain (a changed override, a stale dir) and silently run the
+    // wrong runner — ln -sfn is idempotent and costs nothing
+    `ln -sfn ${opts.toolchainDir}/node_modules node_modules`,
     `export APP_URL="http://127.0.0.1:$PORT"`,
     `export CI=1`,
-    ...(opts.inBox ? [`export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`] : []),
+    `export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`,
+    // a stale report.json (the host suite dir persists across laps, the box
+    // copy across repair attempts) must never fake a green gate or blame the
+    // agent for old failures — the run starts from nothing
+    `rm -rf .e2e`,
     `npx --no-install e2e run > run.log 2>&1`,
     `RC=$?`,
     `echo "PDFE2ERC=$RC"`,
@@ -198,9 +213,16 @@ const b64TarOf = async (dir: string, timeoutMs = 60_000): Promise<string> => {
   return res.stdout.trim();
 };
 
+/** The machine seam the suite needs — a LapMachineLike satisfies it
+ *  structurally, and so does runVerify's narrow machine shape, so the SAME
+ *  runner serves the verify gate (the lap's box) and the drain walk. */
+export type SuiteMachine = {
+  bash(script: string, opts?: { timeoutMs?: number }): Promise<ShRes>;
+};
+
 /** Ship the suite files into the box (b64 tar over the exec channel — the
  *  same channel skills ride). */
-async function shipSuiteInBox(machine: LapMachineLike, suiteDir: string, boxDir: string): Promise<void> {
+export async function shipSuiteInBox(machine: SuiteMachine, suiteDir: string, boxDir: string): Promise<void> {
   const b64 = await b64TarOf(suiteDir);
   if (!b64) throw new Error(`could not tar the e2e suite at ${suiteDir}`);
   const res = await machine.bash(
@@ -277,71 +299,50 @@ function readReportSafe(suiteDir: string): string {
   }
 }
 
-/** Run the authored suite against the product a scenario window serves.
- *  `machine` present = machine-mode lane (suite ships to the box, runs
- *  in-box); absent = host/compose lane (suite runs host-side against the
- *  published 127.0.0.1 port). Throws on transport failure; a failing SUITE
- *  is a result, not a throw. */
-export async function runE2eSuite(
-  cfg: RepoConfig,
-  runtimeSpec: ScenarioSpec,
-  opts: { stateDir: string; machine?: LapMachineLike; repoDir?: string; scratchDir?: string }
-): Promise<SuiteRunResult> {
-  const suiteDir = e2eSuiteDir(opts.stateDir, cfg.slug);
-  const timeoutMs = (cfg.acceptance?.e2e_minutes ?? 10) * 60_000;
-  const spec: ScenarioSpec = { ...runtimeSpec, probes: [] };
-
-  if (opts.machine) {
-    const boxDir = "/tmp/pdf-e2e-suite";
-    await shipSuiteInBox(opts.machine, suiteDir, boxDir);
-    const target = {
-      bash: (script: string, t?: number) => opts.machine!.bash(script, { timeoutMs: t }),
-      repoDir: opts.repoDir ?? "",
-    };
-    let report: E2eSummary | null = null;
-    const result = await runScenarioInMachine(spec, target, {
-      readinessSeconds: cfg.timeouts.readiness_seconds,
-      defaultProbeMs: cfg.timeouts.probe_ms,
-      key: `${cfg.slug}-accept`,
-      reservedPorts: cfg.scenario.ports,
-      onReady: async ({ port }) => {
-        const res = await target.bash(`export PORT=${port}\n` + e2eRunCommand({ suiteDir: boxDir, toolchainDir: boxToolchainDir(), inBox: true }), timeoutMs + 60_000);
-        const parsed = parseE2eRunOutput(res.stdout);
-        report = parsed.report;
-        return report && report.status === "passed" ? null : summarizeE2e(report, parsed.rc);
-      },
+/** Run the authored suite against a product that is ALREADY serving, in
+ *  whichever lane the caller is in — the verify gate's afterProbes (the lap's
+ *  runtime scenario window, both lanes) and the drain walk's window body.
+ *  No scenario lifecycle here: the caller owns setup/start/teardown, so the
+ *  product starts once per lap, not once per gate. A missing/failed runner
+ *  (rc without a report) is an INFRA signal the caller decides on. */
+export async function runSuiteInLane(opts: {
+  lane: "host" | "box";
+  port: number;
+  suiteDir: string;
+  timeoutMs: number;
+  /** host lane: the allowlist env the suite runs under */
+  env?: Record<string, string>;
+  /** box lane: the machine's exec channel */
+  machineBash?: (script: string, opts?: { timeoutMs?: number }) => Promise<ShRes>;
+}): Promise<SuiteRunResult> {
+  const cmd =
+    `export PORT=${opts.port}\n` +
+    e2eRunCommand({
+      suiteDir: opts.suiteDir,
+      toolchainDir: opts.lane === "box" ? boxToolchainDir() : hostToolchainDir(),
+      inBox: opts.lane === "box",
     });
-    return { pass: result.pass, summary: result.pass ? "suite passed" : result.error ?? "suite failed", report };
+  let rc: number | null;
+  let report: E2eSummary | null;
+  if (opts.lane === "box") {
+    const res = await opts.machineBash!(cmd, { timeoutMs: opts.timeoutMs + 60_000 });
+    const parsed = parseE2eRunOutput(res.stdout);
+    rc = parsed.rc;
+    report = parsed.report;
+  } else {
+    const res = await sh(["bash", "-c", cmd], {
+      cwd: opts.suiteDir,
+      env: opts.env,
+      inheritEnv: false,
+      timeoutMs: opts.timeoutMs,
+      killGroup: true,
+    });
+    rc = res.code;
+    report = parseE2eReport(readReportSafe(opts.suiteDir));
   }
-
-  const worktree = opts.scratchDir!;
-  const envBuild =
-    cfg.env.mode === "compose"
-      ? buildStageCmd(cfg, worktree, opts.stateDir, `pdf-${cfg.slug}-accept`, {
-          extraEnv: { PORT: String(resolveScenarioPort(runtimeSpec, cfg.scenario.ports)), WORKTREE: worktree },
-          publishPorts: true,
-        })
-      : undefined;
-  const result = await runScenario(spec, join(worktree, ".pdf-e2e-scratch"), {
-    readinessSeconds: cfg.timeouts.readiness_seconds,
-    defaultProbeMs: cfg.timeouts.probe_ms,
-    worktree,
-    preClean: `pdf-${cfg.slug}-`,
-    passEnv: cfg.env.pass_env,
-    wrap: envBuild ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) } : undefined,
-    onReady: async ({ env }) => {
-      const res = await sh(["bash", "-c", e2eRunCommand({ suiteDir, toolchainDir: hostToolchainDir(), inBox: false })], {
-        cwd: suiteDir,
-        env,
-        inheritEnv: false,
-        timeoutMs,
-        killGroup: true,
-      });
-      const report = parseE2eReport(readReportSafe(suiteDir));
-      return report && report.status === "passed" ? null : summarizeE2e(report, res.code);
-    },
-  });
-  return { pass: result.pass, summary: result.pass ? "suite passed" : result.error ?? "suite failed", report: parseE2eReport(readReportSafe(suiteDir)) };
+  // green requires the suite's OWN exit code too: a nonzero rc with a
+  // "passed" report (the runner died after the tests) is infra, not green
+  return { pass: !!report && report.status === "passed" && rc === 0, summary: summarizeE2e(report, rc), report };
 }
 
 export interface AcceptanceDeps {
@@ -420,23 +421,15 @@ async function acceptanceWindow(
   const suiteExisted = e2eSuiteExists(stateDir, slug);
   let suiteSummary = "no authored suite yet — the walk authors one";
   if (suiteExisted) {
-    const timeoutMs = (cfg.acceptance?.e2e_minutes ?? 10) * 60_000;
-    if (args.machine) {
-      const res = await args.machine.bash(
-        `export PORT=${args.port}\n` + e2eRunCommand({ suiteDir: "/tmp/pdf-e2e-suite", toolchainDir: boxToolchainDir(), inBox: true }),
-        { timeoutMs: timeoutMs + 60_000 }
-      );
-      const { rc, report } = parseE2eRunOutput(res.stdout);
-      suiteSummary = summarizeE2e(report, rc);
-    } else {
-      const suiteDir = e2eSuiteDir(stateDir, slug);
-      const res = await sh(
-        ["bash", "-c", `export PORT=${args.port}\n` + e2eRunCommand({ suiteDir, toolchainDir: hostToolchainDir(), inBox: false })],
-        { cwd: suiteDir, env: acceptanceSuiteEnv(cfg), inheritEnv: false, timeoutMs, killGroup: true }
-      );
-      const report = parseE2eReport(readReportSafe(suiteDir));
-      suiteSummary = summarizeE2e(report, res.code);
-    }
+    const suite = await runSuiteInLane({
+      lane: args.machine ? "box" : "host",
+      port: args.port,
+      suiteDir: args.machine ? BOX_SUITE_DIR : e2eSuiteDir(stateDir, slug),
+      timeoutMs: (cfg.acceptance?.e2e_minutes ?? 10) * 60_000,
+      env: args.machine ? undefined : acceptanceSuiteEnv(cfg),
+      machineBash: args.machine ? (script, o) => args.machine!.bash(script, o) : undefined,
+    });
+    suiteSummary = suite.summary;
     deps.log(`acceptance suite: ${suiteSummary}`);
   }
 
@@ -548,7 +541,7 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
         // the clone lands on origin/main (the scenario-test bench's shape),
         // NOT an issue branch — then the suite ships before the window opens
         await bootAcceptanceMachine(cfg, machine);
-        if (e2eSuiteExists(stateDir, slug)) await shipSuiteInBox(machine, e2eSuiteDir(stateDir, slug), "/tmp/pdf-e2e-suite");
+        if (e2eSuiteExists(stateDir, slug)) await shipSuiteInBox(machine, e2eSuiteDir(stateDir, slug), BOX_SUITE_DIR);
         const target = {
           bash: (script: string, t?: number) => machine!.bash(script, { timeoutMs: t }),
           repoDir: repoDirOf(cfg),

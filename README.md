@@ -159,7 +159,7 @@ docs/                deep dives (below)
 | [Discoveries](docs/discoveries.md) | severity, deferral, and the recursion gate |
 | [Key router](docs/keyrouter.md) | multi-key provider failover |
 | [Parallel mode](docs/parallel-mode.md) | machine-slot allocator, parallel lanes, merge queue |
-| [Acceptance](docs/acceptance.md) | PRD-delivery e2e regression, the drain-time PRD walk, the penthera security audit |
+| [Acceptance](docs/acceptance.md) | the verify-stage browser e2e gate, the drain-time PRD walk, the penthera security audit |
 | [Development](docs/development.md) | tests, and why boundary stubs must use recorded real shapes |
 
 ## Limitations

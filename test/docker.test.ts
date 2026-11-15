@@ -41,6 +41,42 @@ describe("Dockerfile", () => {
   test("ps is installed (foreman cleanup shells out to it)", () => {
     expect(dockerfile).toMatch(/\bprocps\b/);
   });
+
+  test("browser acceptance is baked: chromium, the e2e toolchain, browsers path, penthera pre-seed", () => {
+    // docs/acceptance.md — host/compose repos under the Compose install get
+    // browser e2e and the scanner from the IMAGE, not from a per-container
+    // apt install that dies on every rebuild (an old image must rebuild).
+    // NO apt chromium package: playwright downloads its own build and pulls
+    // its exact system libs via install --with-deps (a hand-picked list left
+    // the browser unable to launch); agent-browser downloads its own Chrome
+    expect(dockerfile).not.toMatch(/apt-get install[^\n]*chromium/);
+    expect(dockerfile).toContain("install --with-deps chromium");
+    // global npm installs stay in the ROOT layer (npm install -g as the
+    // factory user is EACCES — it broke the default build once)
+    const useraddIdx = dockerfile.indexOf("useradd -m -u 1000");
+    // every `npm install -g` sits in a ROOT layer (between USER root and the
+    // next USER factory) — a factory-user global install is EACCES
+    const abIdx = dockerfile.indexOf("npm install -g --silent agent-browser");
+    expect(abIdx).toBeGreaterThan(0);
+    const lastUser = dockerfile.slice(0, abIdx).lastIndexOf("USER ");
+    expect(dockerfile.slice(lastUser, lastUser + 12)).toMatch(/^USER root/m);
+    expect(dockerfile).toContain("/home/factory/.pdf/e2e-toolchain");
+    expect(dockerfile).toContain("e2e @e2e-dev/web playwright-core");
+    expect(dockerfile).toContain("PLAYWRIGHT_BROWSERS_PATH=/home/factory/.pdf/e2e-toolchain-browsers");
+    expect(dockerfile).toContain("npx -y penthera@${PENTHERA_VERSION}");
+    // the bake happens AFTER useradd (the home must exist): the apt layer as
+    // root, the toolchain layer as the factory user
+    expect(dockerfile).toContain("ARG FACTORY_BROWSER_TOOLS=1");
+    const toolchainIdx = dockerfile.indexOf('printf \'{"name":"pdf-e2e-toolchain"');
+    expect(toolchainIdx).toBeGreaterThan(useraddIdx);
+    // nothing about the bake leaks secrets: no token names anywhere in it
+    const bake = dockerfile.slice(dockerfile.indexOf("ARG FACTORY_BROWSER_TOOLS=1"));
+    expect(bake.slice(0, bake.indexOf("EXPOSE"))).not.toMatch(/GH_TOKEN|GITHUB_TOKEN|API_KEY=/);
+  });
+
+  test("the bake is opt-out with one build arg", () => {
+    expect(dockerfile).toContain("FACTORY_BROWSER_TOOLS=0");
+  });
 });
 
 describe("compose.yml", () => {

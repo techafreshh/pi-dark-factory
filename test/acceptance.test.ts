@@ -9,9 +9,13 @@ import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunComman
 import { parsePentheraReport, findingsAboveFloor, runSecurityScan, mayFileSecurityFindings, pentheraSpec } from "../src/security";
 import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
+import { runVerify } from "../src/stages/verify";
+import { BOX_SUITE_DIR } from "../src/stages/acceptance";
 import { reapOrphanMachines } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
+import { ensureSource, uncommitted } from "../src/gitws";
+import { GIT_ID } from "./world";
 import type { CallStageFn } from "../src/tick";
 
 /* Real captured shapes (docs/development.md boundary rule): penthera 2.4.0's
@@ -114,15 +118,17 @@ describe("parseE2eRunOutput (the framed in-box report)", () => {
 });
 
 describe("e2eRunCommand (the suite runner both lanes share)", () => {
-  test("host lane: APP_URL from $PORT, toolchain symlink, no browsers-path export", () => {
+  test("host lane: APP_URL from $PORT, toolchain symlink, browsers beside the toolchain", () => {
     const cmd = e2eRunCommand({ suiteDir: "/state/repos/t/e2e", toolchainDir: hostToolchainDir(), inBox: false });
     expect(cmd).toContain('export APP_URL="http://127.0.0.1:$PORT"');
     expect(cmd).toContain("ln -sfn");
     expect(cmd).toContain("npx --no-install e2e run");
-    expect(cmd).not.toContain("PLAYWRIGHT_BROWSERS_PATH");
+    // BOTH lanes point at the toolchain-browsers dir — the host-tools install
+    // and the Docker bake put browsers there; the default cache is never relied on
+    expect(cmd).toContain(`PLAYWRIGHT_BROWSERS_PATH=${hostToolchainDir()}-browsers`);
     expect(cmd).toContain("PDFE2ERC=");
   });
-  test("in-box lane: browsers path rides explicitly", () => {
+  test("in-box lane: the box toolchain path rides explicitly", () => {
     const cmd = e2eRunCommand({ suiteDir: "/tmp/pdf-e2e-suite", toolchainDir: boxToolchainDir(), inBox: true });
     expect(cmd).toContain(`PLAYWRIGHT_BROWSERS_PATH=${boxToolchainDir()}-browsers`);
   });
@@ -345,6 +351,13 @@ describe("browser toolchain scripts (text invariants)", () => {
     expect(s).toContain("agent-browser");
     expect(s).toContain("HOSTTOOLS_OK");
   });
+  test("browser installs land where the runners look (H3): host $TC-browsers, box $BOX-browsers", () => {
+    const host = hostToolsScript();
+    expect(host).toContain('PLAYWRIGHT_BROWSERS_PATH="$TC-browsers" node "$TC/node_modules/playwright-core/cli.js" install chromium');
+    expect(host).toContain('grep -q "^chromium-"'); // skip the download when the bake already filled it
+    const box = browserBakeScript();
+    expect(box).toContain(`PLAYWRIGHT_BROWSERS_PATH=${"/opt/pdf-e2e"}-browsers node ${"/opt/pdf-e2e"}/node_modules/playwright-core/cli.js install chromium`);
+  });
 });
 
 // ── the janitor carve-out ───────────────────────────────────────────────────
@@ -515,6 +528,279 @@ describe("runPrdAcceptance (the drain-time walk, fake machine lane)", () => {
   });
 });
 
+describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
+  function fakeBoxToolchain(outcome: "pass" | "fail" | "die" | "passedrc1" | "interrupted"): string {
+    const dir = mkdtempSync(join(tmpdir(), "pdfboxtc-"));
+    mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
+    const report =
+      outcome === "pass" || outcome === "passedrc1"
+        ? { run: { status: "passed", summary: { passed: 1, failed: 0, flaky: 0, skipped: 0 }, results: [] } }
+        : {
+            run: {
+              status: "failed",
+              summary: { passed: 0, failed: 1, flaky: 0, skipped: 0 },
+              results: [
+                { file: "tests/home.e2e.ts", testId: "tests/home.e2e.ts::home", status: "failed", attempts: [{ error: { message: "expected an /about link, saw none" } }] },
+              ],
+            },
+          };
+    const bin = join(dir, "node_modules", ".bin", "e2e");
+    writeFileSync(
+      bin,
+      [
+        "#!/bin/bash",
+        ...(outcome === "die"
+          ? ["exit 1"] // dies before writing any report — the stale-report hazard
+          : outcome === "interrupted"
+            ? ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify({ run: { status: "interrupted", summary: { passed: 0, failed: 0, flaky: 0, skipped: 0 }, results: [] } }), "JSON", "exit 1"] // non-passed status, EMPTY failures — no actionable evidence
+            : outcome === "passedrc1"
+            ? ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", "exit 1"] // tests passed, runner died after — infra, not a gate failure
+            : ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", `exit ${outcome === "pass" ? 0 : 1}`]),
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    return dir;
+  }
+
+  async function gateWorld(opts: { suite: boolean; e2eFlag: boolean }) {
+    const w = makeMachineWorld();
+    const port = 19900 + (process.pid % 300);
+    w.cfg.scenario = { ports: [port, port + 1], runtime: "runtime.json", holdout: undefined as any };
+    w.cfg.acceptance = { e2e: opts.e2eFlag, prd_check: false, security: false };
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "runtime.json"),
+      JSON.stringify({
+        name: "runtime",
+        port,
+        start: "python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1",
+        readiness_path: "/",
+        probes: [{ id: "root", description: "serves", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/", expect: "status:200" }],
+      })
+    );
+    if (opts.suite) {
+      const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+      mkdirSync(suiteDir, { recursive: true });
+      writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    }
+    // the changed gate runs against the source checkout and the pushed
+    // branch — prepareRepo does this for real laps
+    const source = await ensureSource(w.stateDir, w.cfg);
+    execSync(`git -C ${source} ${GIT_ID} checkout -q -b factory/issue-1`);
+    writeFileSync(join(source, "feature.txt"), "change\n");
+    execSync(`git -C ${source} ${GIT_ID} add -A`);
+    execSync(`git -C ${source} ${GIT_ID} commit -q -m "the change"`);
+    execSync(`git -C ${source} push -q origin factory/issue-1`);
+    const machine = new FakeMachine(w, w.cfg, 1, 1, {});
+    await machine.bootstrap(); // real laps bootstrap at plan/implement — verify rides an existing box
+    rmSync(BOX_SUITE_DIR, { recursive: true, force: true }); // FakeMachine runs in-box scripts locally: the "box" path is a real host dir, so stale reports from a sibling test would leak
+    return { w, machine, issue: 1 };
+  }
+
+  slowTest("a green suite passes the gate and rides the outcome", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("pass");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e?.pass).toBe(true);
+      expect(v.e2e?.summary).toContain("suite passed");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("a red suite is a GATE failure with the failing tests as repair evidence", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("fail");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(false);
+      const gate = v.failures.find((f) => f.gate === "e2e")!;
+      expect(gate).toBeTruthy();
+      expect(gate.repair).toContain("tests/home.e2e.ts");
+      expect(gate.repair).toContain("expected an /about link, saw none");
+      // the scenario gates stay green — the failure is the suite's alone
+      expect(v.failures.length).toBe(1);
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  test("no suite → the gate skips (the drain walk authors it first)", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: false, e2eFlag: true });
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true);
+    expect(v.e2e).toBeUndefined();
+  });
+
+  test("acceptance.e2e off → the gate skips even with a suite present", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: false });
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true);
+    expect(v.e2e).toBeUndefined();
+  });
+
+  slowTest("host lane: the suite's scratch NEVER lands in the lap worktree (uncommitted stays empty)", async () => {
+    const w = makeMachineWorld();
+    w.cfg.env.mode = "host";
+    const port = 21500 + (process.pid % 300);
+    w.cfg.scenario = { ports: [port, port + 1], runtime: "runtime.json", holdout: undefined as any };
+    w.cfg.acceptance = { e2e: true, prd_check: false, security: false };
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "runtime.json"),
+      JSON.stringify({
+        name: "runtime",
+        port,
+        start: "python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1",
+        readiness_path: "/",
+        probes: [{ id: "root", description: "serves", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/", expect: "status:200" }],
+      })
+    );
+    const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    const source = await ensureSource(w.stateDir, w.cfg);
+    execSync(`git -C ${source} ${GIT_ID} checkout -q -b factory/issue-1`);
+    writeFileSync(join(source, "feature.txt"), "change\n");
+    execSync(`git -C ${source} ${GIT_ID} add -A`);
+    execSync(`git -C ${source} ${GIT_ID} commit -q -m "the change"`);
+    execSync(`git -C ${source} push -q origin factory/issue-1`);
+    const wt = join(w.stateDir, "worktrees", "toy", "issue-1");
+    mkdirSync(join(wt, ".."), { recursive: true });
+    execSync(`git -C ${source} worktree add --detach ${wt} factory/issue-1`);
+    process.env.PDF_E2E_TOOLCHAIN_DIR = fakeBoxToolchain("pass");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue: 1, worktree: wt, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e?.pass).toBe(true);
+      // the H2 invariant: the gate's scratch (server.log, run.log) must never
+      // dirty the lap worktree — the next repair attempt would otherwise hit
+      // the uncommitted gate and the agent could commit the logs into the PR
+      const dirty = await uncommitted(wt);
+      expect(dirty).toEqual([]);
+      expect(existsSync(join(wt, ".pdf-e2e-scratch"))).toBe(false);
+    } finally {
+      delete process.env.PDF_E2E_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("a stale PASSED report cannot fake a green gate — cleared before the run, and a died-before-report run is infra", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    // plant a STALE green report where the suite runs — the old runner would
+    // have read it and passed the gate without the suite ever executing
+    mkdirSync(join(w.stateDir, "repos", "toy", "e2e", ".e2e"), { recursive: true });
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "e2e", ".e2e", "report.json"),
+      JSON.stringify({ run: { status: "passed", summary: { passed: 9, failed: 0, flaky: 0, skipped: 0 }, results: [] } })
+    );
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("die"); // dies before writing anything
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true); // infra, not green and not a gate failure
+      expect(v.e2e).toBeUndefined();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("e2e gate skipped (infra");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("host lane: a failing suite is a GATE failure carrying the test evidence", async () => {
+    const w = makeMachineWorld();
+    w.cfg.env.mode = "host";
+    const port = 22100 + (process.pid % 300);
+    w.cfg.scenario = { ports: [port, port + 1], runtime: "runtime.json", holdout: undefined as any };
+    w.cfg.acceptance = { e2e: true, prd_check: false, security: false };
+    writeFileSync(
+      join(w.stateDir, "repos", "toy", "runtime.json"),
+      JSON.stringify({
+        name: "runtime",
+        port,
+        start: "python3 -m http.server $PORT --bind 127.0.0.1 >/dev/null 2>&1",
+        readiness_path: "/",
+        probes: [{ id: "root", description: "serves", command: "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/", expect: "status:200" }],
+      })
+    );
+    const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
+    mkdirSync(suiteDir, { recursive: true });
+    writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
+    const source = await ensureSource(w.stateDir, w.cfg);
+    execSync(`git -C ${source} ${GIT_ID} checkout -q -b factory/issue-1`);
+    writeFileSync(join(source, "feature.txt"), "change\n");
+    execSync(`git -C ${source} ${GIT_ID} add -A`);
+    execSync(`git -C ${source} ${GIT_ID} commit -q -m "the change"`);
+    execSync(`git -C ${source} push -q origin factory/issue-1`);
+    const wt = join(w.stateDir, "worktrees", "toy", "issue-1");
+    mkdirSync(join(wt, ".."), { recursive: true });
+    execSync(`git -C ${source} worktree add --detach ${wt} factory/issue-1`);
+    process.env.PDF_E2E_TOOLCHAIN_DIR = fakeBoxToolchain("fail");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue: 1, worktree: wt, pr: null, attempt: 1 });
+      expect(v.pass).toBe(false);
+      const gate = v.failures.find((f) => f.gate === "e2e")!;
+      expect(gate.repair).toContain("tests/home.e2e.ts");
+      expect(gate.repair).toContain("expected an /about link, saw none");
+    } finally {
+      delete process.env.PDF_E2E_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("a PASSED report with a nonzero runner rc is INFRA — never a gate failure that says \"suite passed\"", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("passedrc1");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e).toBeUndefined();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("the suite passed but the runner exited nonzero");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("an interrupted run (non-passed status, empty failures) is infra — no evidence-free gate failure", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("interrupted");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e).toBeUndefined();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("the run ended without test failures (status interrupted)");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("a ship failure is receipted as the CAUSE — the probes-skip message never overwrites it", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    // a box whose exec channel throws exactly on the ship script
+    const wrapped = new FakeMachine(w, w.cfg, issue, 1, {});
+    const orig = wrapped.bash.bind(wrapped);
+    wrapped.bash = async (script: string, o?: { timeoutMs?: number }) => {
+      if (script.includes(BOX_SUITE_DIR)) throw new Error("tar exploded");
+      return orig(script, o);
+    };
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine: wrapped, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true); // infra
+    expect(v.e2e).toBeUndefined();
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("could not ship the suite into the box");
+    expect(log).not.toContain("the scenario probes already failed");
+  });
+
+  slowTest("no toolchain → INFRA skip, not a gate failure: pass stays true and the receipt names it", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR; // /opt/pdf-e2e does not exist here
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true); // no attempt burn, no repair loop
+    expect(v.e2e).toBeUndefined();
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("e2e gate skipped (infra");
+  });
+});
+
 describe("maybeDrainAcceptance (the end-of-project gate)", () => {
   test("starved ≠ drained: open product issues stop the walk", async () => {
     const { w, openMachineFor } = makeWalkWorld({ acceptance: () => "VERDICT: DELIVERED" });
@@ -546,35 +832,16 @@ describe("maybeDrainAcceptance (the end-of-project gate)", () => {
   });
 });
 
-describe("runPostMergeExtras — the per-merge e2e regression (fake machine lane)", () => {
-  slowTest("the acceptance machine carries the janitor marker for its whole lifetime", async () => {
+describe("runPostMergeExtras — e2e moved into the verify gate", () => {
+  test("the per-merge hook no longer runs the browser suite: no machine, no issues, empty extras", async () => {
     const { w, openMachineFor } = makeWalkWorld({ acceptance: () => "VERDICT: DELIVERED" });
-    // an authored suite (the walk normally authors it) — its in-box run will
-    // fail here (no toolchain), which is exactly the filing path we exercise
     const suiteDir = join(w.stateDir, "repos", "toy", "e2e");
     mkdirSync(suiteDir, { recursive: true });
     writeFileSync(join(suiteDir, "home.e2e.ts"), "test('home', async () => {});");
-    const markerPath = join(w.stateDir, "repos", "toy", "acceptance.running");
-    const markerDuringBoot: boolean[] = [];
-    const wrapped = (c: any, log?: any) => {
-      const m = openMachineFor(c, log) as FakeMachine;
-      const orig = m.ensure.bind(m);
-      m.ensure = async () => {
-        markerDuringBoot.push(existsSync(markerPath));
-        return orig();
-      };
-      return m;
-    };
-    const lines: string[] = [];
-    const extra = await runPostMergeExtras(w.cfg, w.gh, { stateDir: w.stateDir, pr: 42, openMachineFor: wrapped });
-    lines.push(extra);
-    expect(markerDuringBoot.length).toBeGreaterThan(0);
-    expect(markerDuringBoot.every(Boolean)).toBe(true); // protected while booting
-    expect(existsSync(markerPath)).toBe(false); // and the marker is gone after
-    expect(w.machines.every((m) => m.destroyed)).toBe(true);
-    // the failing suite filed its deduped regression issue (report-only)
-    expect(w.gh.created.filter((c) => c.title.startsWith("[e2e-regression]")).length).toBe(1);
-    expect(extra).toContain("e2e regression");
+    const extra = await runPostMergeExtras(w.cfg, w.gh, { stateDir: w.stateDir, pr: 42, openMachineFor });
+    expect(extra).toBe(""); // security off + e2e gone = the hook does nothing here
+    expect(w.machines.length).toBe(0); // no acceptance machine boots post-merge
+    expect(w.gh.created.length).toBe(0); // nothing filed — the verify gate owns it now
   });
 });
 

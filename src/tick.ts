@@ -713,7 +713,11 @@ export async function runLap(cfg: RepoConfig, stateDir: string, deps: TickDeps, 
     // ---- REVIEW (independent, read-only; unparseable → re-ask up to 5× → fail closed as REJECT)
     phase = "review";
     const revModels = resolveModels(cfg, "review");
-    const revPrompt = buildReviewPrompt(cfg, issue, { plan, scenarioSummary: scenarioSummary(v.scenarios), attempt });
+    const revPrompt = buildReviewPrompt(cfg, issue, {
+      plan,
+      scenarioSummary: scenarioSummary(v.scenarios) + (v.e2e ? `\n${v.e2e.summary}` : ""),
+      attempt,
+    });
     const reviewContext = contextFor("review", attempt, machine ? repoDirFor(cfg) : worktree!);
   const callReview = () =>
     machine

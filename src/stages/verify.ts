@@ -8,6 +8,10 @@ import { branchName } from "./intake";
 import { changedPaths, changedPathsFromRef, issueDir, lockfileOnly, sourceDir, withSourceLock } from "../gitws";
 import { loadScenario, resolveScenarioPort, runScenario, runScenarioInMachine, type ScenarioResult } from "../scenario";
 import { repoDirFor } from "../machine";
+import { e2eSuiteExists } from "../acceptance-state";
+import { runSuiteInLane, shipSuiteInBox, BOX_SUITE_DIR, type E2eSummary, type SuiteRunResult } from "./acceptance";
+import { e2eSuiteDir } from "../acceptance-state";
+import { receipt } from "../receipts";
 import { isMachineMode, type RepoConfig } from "../types";
 
 export interface GateFailure {
@@ -32,6 +36,9 @@ export interface VerifyOutcome {
   pass: boolean;
   failures: GateFailure[];
   scenarios: ScenarioResult[];
+  /** the authored browser suite's gate result, when the repo turned it on
+   *  and a suite exists (docs/acceptance.md) — a fail is a GateFailure too */
+  e2e?: SuiteRunResult;
   provenance?: VerifyProvenance;
 }
 
@@ -53,6 +60,7 @@ export function writeVerifyEvidence(
     prHead: string | null;
     failures: GateFailure[];
     scenarios: ScenarioResult[];
+    e2e?: { pass: boolean; summary: string };
   }
 ): string {
   const dir = join(stateDir, "repos", slug, "issues", String(issue), "verify-evidence");
@@ -147,6 +155,39 @@ export async function runVerify(
     if (!ci.pass) failures.push({ gate: "ci", detail: ci.detail });
   }
 
+  // the e2e gate rides the runtime scenario's window via afterProbes; the
+  // holder harvests the lane result across the loop below
+  const e2eHolder: { result?: SuiteRunResult; infra?: string } = {};
+  const gateApplies = !!cfg.acceptance?.e2e && e2eSuiteExists(opts.stateDir, cfg.slug) && !!cfg.scenario.runtime;
+  if (gateApplies && opts.machine) {
+    // the box needs the suite before the runtime window opens; a shipping
+    // failure is INFRA (the infra rule, not the lap error path)
+    try {
+      await shipSuiteInBox(opts.machine, e2eSuiteDir(opts.stateDir, cfg.slug), BOX_SUITE_DIR);
+    } catch (e) {
+      e2eHolder.infra = `could not ship the suite into the box: ${e instanceof Error ? e.message.slice(0, 200) : e}`;
+    }
+  }
+  const runE2eAfterProbes = async (ctx: { port: number; scratchDir?: string; env?: Record<string, string>; repoDir?: string; probesPassed: boolean }): Promise<void> => {
+    if (e2eHolder.infra) return; // the real cause (a ship failure) must not be blamed on the probes
+    if (!ctx.probesPassed) {
+      e2eHolder.infra = "skipped: the scenario probes already failed (fail-fast — a broken product wastes the browser)";
+      return;
+    }
+    try {
+      e2eHolder.result = await runSuiteInLane({
+        lane: opts.machine ? "box" : "host",
+        port: ctx.port,
+        suiteDir: opts.machine ? BOX_SUITE_DIR : e2eSuiteDir(opts.stateDir, cfg.slug),
+        timeoutMs: (cfg.acceptance?.e2e_minutes ?? 10) * 60_000,
+        env: ctx.env,
+        machineBash: opts.machine ? (script, o) => opts.machine!.bash(script, o) : undefined,
+      });
+    } catch (e) {
+      e2eHolder.infra = `transport error: ${e instanceof Error ? e.message.slice(0, 200) : e}`;
+    }
+  };
+
   // 3. runtime + holdout scenarios (outside the repo by contract). Container
   // mode: setup/start/teardown run in the product's worker container (PORT
   // forwarded explicitly — docker does not inherit the client's env), probes
@@ -183,6 +224,7 @@ export async function runVerify(
         defaultProbeMs: cfg.timeouts.probe_ms,
         key: `${cfg.slug}-${opts.issue}-${key}`,
         reservedPorts: cfg.scenario.ports,
+        afterProbes: key === "runtime" && gateApplies ? (ctx) => runE2eAfterProbes(ctx) : undefined,
       });
     } else {
       const envBuild =
@@ -201,11 +243,44 @@ export async function runVerify(
         wrap: envBuild
           ? { argvPrefix: envBuild.argvPrefix, cleanup: () => sh(envBuild.cleanup!, { timeoutMs: 20000 }) }
           : undefined,
+        afterProbes: key === "runtime" && gateApplies ? (ctx) => runE2eAfterProbes(ctx) : undefined,
       });
     }
     scenarios.push(result);
     if (!result.pass) {
       failures.push({ gate: key, detail: summarizeScenario(result), repair: repairForScenario(result) });
+    }
+  }
+
+  // 4. the e2e verdict, harvested from the runtime window's afterProbes seam
+  // (docs/acceptance.md): the suite ran in the SAME product-up window as the
+  // probes — the product starts once per lap, no separate box per merge. A
+  // suite that RAN and failed is a GATE failure (repair loop, the failing
+  // tests are the findings); a suite that could NOT run (transport throw, no
+  // report, failed-probe skip) is INFRA — receipted loudly, never a gate
+  // failure, never an attempt burn. The gate skips while no suite exists
+  // (the drain-time walk authors one) or the flag is off.
+  let e2e: SuiteRunResult | undefined;
+  if (e2eHolder.infra) {
+    receipt(opts.stateDir, `e2e gate skipped (infra, not a product failure — the next lap retries): ${e2eHolder.infra}`, cfg.slug);
+  } else if (e2eHolder.result) {
+    e2e = e2eHolder.result;
+    // a product failure is one the implementer can ACT on: the report lists
+    // actual test failures. Everything else — no report, a passed report
+    // with a nonzero runner rc (it died after the tests), a non-passed
+    // status with an empty failure list (interrupted mid-run) — carries no
+    // actionable evidence, so it is infra: receipted, retried next lap.
+    const productFailure = !!e2e.report && e2e.report.failures.length > 0;
+    if (!e2e.pass && productFailure) {
+      failures.push({ gate: "e2e", detail: e2e.summary, repair: repairForE2e(e2e.report) });
+    } else if (!e2e.pass) {
+      e2e = undefined;
+      const why = !e2eHolder.result.report
+        ? "the suite produced no parsable report"
+        : e2eHolder.result.report.status === "passed"
+          ? "the suite passed but the runner exited nonzero"
+          : `the run ended without test failures (status ${e2eHolder.result.report.status})`;
+      receipt(opts.stateDir, `e2e gate skipped (infra): ${why} — the next lap retries`, cfg.slug);
     }
   }
 
@@ -216,8 +291,20 @@ export async function runVerify(
     prHead,
     failures,
     scenarios,
+    e2e: e2e ? { pass: e2e.pass, summary: e2e.summary } : undefined,
   });
-  return { pass: failures.length === 0, failures, scenarios, provenance: { worktreeHead, prHead, sidecar } };
+  return { pass: failures.length === 0, failures, scenarios, e2e, provenance: { worktreeHead, prHead, sidecar } };
+}
+
+/** The e2e gate's repair evidence: the failing tests with their recorded
+ *  errors — the implementing agent reproduces from these, not from a
+ *  one-line verdict. (The full report.json stays in factory state.) */
+function repairForE2e(report: E2eSummary | null): string | undefined {
+  if (!report || report.failures.length === 0) return undefined;
+  return report.failures
+    .slice(0, 10)
+    .map((f) => `✗ ${f.file} :: ${f.testId} (${f.status})${f.error ? `: ${f.error}` : ""}`)
+    .join("\n");
 }
 
 export function scenarioSummary(scenarios: ScenarioResult[]): string {

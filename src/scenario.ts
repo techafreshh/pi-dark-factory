@@ -243,6 +243,12 @@ export async function runScenario(
      *  agent stage here instead. Return null for green, or the failure line.
      *  The default probe path is byte-identical when this is unset. */
     onReady?: (ctx: { port: number; scratchDir: string; env: Record<string, string> }) => Promise<string | null>;
+    /** Runs AFTER the probe loop, in the SAME product-up window (teardown
+     *  still covers it) — the verify gate chains the e2e suite onto the
+     *  runtime scenario's window so the product starts once per lap, not
+     *  once per gate. `probesPassed` lets the caller fail fast. The probe
+     *  path is byte-identical when this is unset. */
+    afterProbes?: (ctx: { port: number; scratchDir: string; env: Record<string, string>; probesPassed: boolean }) => Promise<void>;
   }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
@@ -349,6 +355,9 @@ export async function runScenario(
         results.push({ id: probe.id, description: probe.description, pass: true, detail: "ok" });
       }
     }
+    if (opts.afterProbes) {
+      await opts.afterProbes({ port, scratchDir, env, probesPassed: pass });
+    }
     return { name: spec.name, pass, results };
   } finally {
     // authoritative teardown: kill the server first (process group in host
@@ -406,6 +415,10 @@ export async function runScenarioInMachine(
      *  should happen while the in-box server is up (the acceptance runs put
      *  the e2e suite or the PRD-walk agent stage here). Null = green. */
     onReady?: (ctx: { port: number; repoDir: string }) => Promise<string | null>;
+    /** same chain as runScenario's afterProbes: runs after the probe loop in
+     *  the same in-box window (the verify gate chains the e2e suite onto the
+     *  runtime scenario so the box starts the product once per lap). */
+    afterProbes?: (ctx: { port: number; repoDir: string; probesPassed: boolean }) => Promise<void>;
   }
 ): Promise<ScenarioResult> {
   const mkResults = (pass: boolean, error: string): ScenarioResult => ({
@@ -517,6 +530,9 @@ export async function runScenarioInMachine(
         : evalExpects(res.stdout, res.code, probe.expect);
       if (!verdict.pass) pass = false;
       results.push({ id: probe.id, description: probe.description, pass: verdict.pass, detail: verdict.failed ?? "ok" });
+    }
+    if (opts.afterProbes) {
+      await opts.afterProbes({ port, repoDir: target.repoDir, probesPassed: pass });
     }
     return { name: spec.name, pass, results };
   } finally {

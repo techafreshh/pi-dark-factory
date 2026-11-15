@@ -42,6 +42,46 @@ RUN userdel -r node \
  && mkdir -p /home/factory/state /home/factory/.pi /opt/pi-dark-factory \
  && chown -R factory:factory /home/factory /opt/pi-dark-factory
 
+# Browser acceptance (docs/acceptance.md): Chromium + the e2e toolchain + the
+# security scanner, baked into the image so host/compose-mode repos get
+# browser e2e and penthera with NO per-container install — an apt-installed
+# browser would die with the container on every rebuild. Set
+# --build-arg FACTORY_BROWSER_TOOLS=0 for a lean image without them;
+# `foreman host-tools` verifies what this baked and skips what it finds.
+ARG FACTORY_BROWSER_TOOLS=1
+ARG PENTHERA_VERSION=2.4.0
+USER root
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      mkdir -p -m 755 /home/factory/.pdf/e2e-toolchain /home/factory/.pdf/e2e-toolchain-browsers \
+   && chown -R factory:factory /home/factory/.pdf; \
+    fi
+USER factory
+# the toolchain lives at the path hostToolchainDir resolves to ($HOME/.pdf/e2e-toolchain,
+# browsers beside it) so the suite runner and `foreman host-tools` both find it.
+# Playwright downloads its own Chromium and agent-browser its own Chrome — no
+# apt chromium package; playwright's own --with-deps pulls the exact system
+# libs its build needs (a hand-picked list missed some and the browser could
+# not launch — review round 1).
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      cd /home/factory/.pdf/e2e-toolchain \
+   && printf '{"name":"pdf-e2e-toolchain","private":true,"type":"module"}' > package.json \
+   && npm install --no-audit --no-fund --silent e2e @e2e-dev/web playwright-core; \
+    fi
+USER root
+# global npm installs stay in the ROOT layer: /usr/local/lib/node_modules is
+# root-owned, and `npm install -g` as the factory user is an EACCES (that
+# broke the default build once — review round 1 on the acceptance PRs)
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      PLAYWRIGHT_BROWSERS_PATH=/home/factory/.pdf/e2e-toolchain-browsers node /home/factory/.pdf/e2e-toolchain/node_modules/playwright-core/cli.js install --with-deps chromium \
+   && npm install -g --silent agent-browser \
+   && npm cache clean --force; \
+    fi
+USER factory
+RUN if [ "$FACTORY_BROWSER_TOOLS" = "1" ]; then \
+      agent-browser install \
+   && npx -y penthera@${PENTHERA_VERSION} --version; \
+    fi
+
 # The code dir MUST contain "pi-dark-factory": src/lock.ts recognizes live factory processes
 # by a cwd matching /pi-dark-factory/, and a path without it makes live tick locks look dead.
 WORKDIR /opt/pi-dark-factory
