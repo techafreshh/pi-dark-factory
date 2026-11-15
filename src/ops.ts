@@ -17,7 +17,7 @@ import { Gh, repoDefaultBranch, type GhApi } from "./gh";
 import { deleteRemoteBranch, ensureSource, removeWorktree, supersedeIssueFiles } from "./gitws";
 import { InstaBox, InstaBoxError, MACHINE_NAME_RE, sanitizeMachinePart } from "./instabox";
 import { bootstrapScriptFor, buildMachineEnvFile, escapeSh, machineBash } from "./machine";
-import { boxdClientFromEnv } from "./machine-boxd";
+import { boxdClientFromEnv, boxdBash, raceDeadline, BOXD_DEFAULT_SNAPSHOT } from "./machine-boxd";
 import { daytonaClientFromEnv, daytonaBash } from "./machine-daytona";
 import { e2bFromEnv } from "./machine-e2b";
 import { instavmClientFromEnv } from "./machine-instavm";
@@ -290,22 +290,24 @@ export async function opsOnboard(
  * as `<slug>-base`, and record the name in the repo config. Idempotent — the
  * old bake machine is rebuilt and the snapshot overwritten.
  */
-export async function opsBake(stateDir: string, slug: string): Promise<{
+export async function opsBake(stateDir: string, slug: string, opts: { boxdClient?: any } = {}): Promise<{
   machine: string;
   snapshot: string;
   snapshotId: string;
-  platform: "instabox" | "daytona" | "e2b" | "instavm";
+  platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd";
   rootSizeBytes?: number;
   dataSizeBytes?: number;
   config_updated: boolean;
 }> {
   const cfg = loadRepoConfig(join(repoCfgDir(stateDir, slug), "config.json"));
   // the newer machine platforms bake differently (daytona: sandbox →
-  // mutate → snapshot; e2b/instavm: definition-based remote builds) — each
-  // has its own path below; instabox keeps the original machine flow
+  // mutate → snapshot; e2b/instavm: definition-based remote builds; boxd:
+  // machine → mutate → snapshots.create) — each has its own path below;
+  // instabox keeps the original machine flow
   if (cfg.env.mode === "daytona") return bakeDaytona(stateDir, cfg, slug);
   if (cfg.env.mode === "e2b") return bakeE2b(stateDir, cfg, slug);
   if (cfg.env.mode === "instavm") return bakeInstavm(stateDir, cfg, slug);
+  if (cfg.env.mode === "boxd") return bakeBoxd(stateDir, cfg, slug, opts);
   if (cfg.env.mode !== "instabox")
     throw new Error(`bake applies to machine-mode repos (got env.mode "${cfg.env.mode}")`);
   const ibx = cfg.env.instabox;
@@ -493,16 +495,105 @@ function browserAcceptanceOn(cfg: RepoConfig): boolean {
 }
 
 /** Write env.<platform>.snapshot = <name> into the repo config the way the
- *  instabox bake does when it first names the golden snapshot. */
-function writeSnapshotToConfig(stateDir: string, slug: string, platform: "daytona" | "e2b" | "instavm", snapName: string): boolean {
+ *  instabox bake does when it first names the golden snapshot. force=true
+ *  overwrites an existing value (the boxd first bake: the config may carry
+ *  the default base name and must still be repointed at the per-repo one). */
+function writeSnapshotToConfig(stateDir: string, slug: string, platform: "daytona" | "e2b" | "instavm" | "boxd", snapName: string, force = false): boolean {
   const cfgPath = join(repoCfgDir(stateDir, slug), "config.json");
   const raw = JSON.parse(readFileSync(cfgPath, "utf8"));
   raw.env = raw.env ?? {};
   const existing = raw.env[platform]?.snapshot;
-  if (existing) return false;
+  if (existing && !force) return false;
   raw.env[platform] = { ...(raw.env[platform] ?? {}), snapshot: snapName };
   writeFileSync(cfgPath, JSON.stringify(raw, null, 2) + "\n");
   return true;
+}
+
+/**
+ * boxd bake: boot a microVM from the repo's golden snapshot (the shared boxd
+ * base for a repo's first bake), clone, run the browser toolchain bake when
+ * acceptance is on, capture with snapshots.create, delete the machine. Boxd
+ * snapshots version latest-only — re-saving under an existing name bumps the
+ * version, so an enrichment re-bake needs no delete dance. The capture
+ * returns before the artifact lands: poll `get` until status flips ready.
+ */
+async function bakeBoxd(stateDir: string, cfg: RepoConfig, slug: string, opts: { boxdClient?: any } = {}): Promise<{
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+}> {
+  const client = opts.boxdClient ?? boxdClientFromEnv();
+  const bdx = cfg.env.boxd!;
+  const name = `pdf-bake-${sanitizeMachinePart(slug)}`;
+  // same standing rule as every platform: a repo's bake must never re-save
+  // a SHARED base (boxd re-saves bump the version — the other repos on that
+  // base would boot the repo's deps on their next lap)
+  if (readBases(stateDir)[bdx.snapshot ?? ""]) {
+    const cur = readBases(stateDir)[bdx.snapshot!];
+    throw new Error(
+      `"${bdx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
+      `To upgrade a base: bake the new versioned name platform-side, then flip state/base-snapshot.json.`
+    );
+  }
+  // a repo still on the DEFAULT boxd base has no golden snapshot of its own:
+  // boot from the shared base (read-only), save under <slug>-base and name it
+  // in the config — the same first-bake semantics an empty instabox snapshot
+  // gets. Re-saving under the shared base's own name would bump its version
+  // (boxd re-saves version latest-only) and pollute every repo on that base.
+  const firstBake = !bdx.snapshot || bdx.snapshot === BOXD_DEFAULT_SNAPSHOT;
+  const snapName = firstBake ? `${sanitizeMachinePart(slug)}-base` : bdx.snapshot!;
+  const bootFrom = resolveSnapshotName(stateDir, firstBake ? BOXD_DEFAULT_SNAPSHOT : bdx.snapshot!);
+  receipt(stateDir, `bake ${slug}: booting boxd machine ${name} from snapshot ${bootFrom}${firstBake ? " (shared boxd base — first bake saves " + snapName + ")" : ""}`, slug);
+  const stale = await (client.machines as any).list({ region: "all" })
+    .then((l: any) => ((l.machines ?? l) as any[]).find((m) => m.name === name) ?? null)
+    .catch(() => null);
+  if (stale) await (client.machines as any).delete(stale.id).catch(() => {});
+  const machine = await (client.machines as any).create({
+    name,
+    fromSnapshot: bootFrom,
+    labels: { factory: "1", bake: cfg.slug },
+  });
+  try {
+    await raceDeadline((client.machines as any).waitUntilReady(machine.id, { timeoutMs: 120_000 }), 150_000);
+    const ghBake = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
+    const clone = [`export GITHUB_TOKEN=${escapeSh(ghBake)}`, bootstrapScriptFor(cfg, cfg.default_branch)].join("\n");
+    const cloned = await boxdBash(client, machine.id, clone, { timeoutMs: 15 * 60_000 });
+    if (cloned.code !== 0 || !cloned.stdout.includes("BOOTSTRAP_OK")) {
+      throw new Error(`bake clone failed (exit ${cloned.code}): ${(cloned.stderr || cloned.stdout).trim().slice(0, 300)}`);
+    }
+    if (browserAcceptanceOn(cfg)) {
+      receipt(stateDir, `bake ${slug}: installing the browser toolchain (acceptance on)`, slug);
+      const script = `set -eu\nprintf %s ${Buffer.from(browserBakeScript(), "utf8").toString("base64")} | base64 -d | bash\n`;
+      const res = await boxdBash(client, machine.id, script, { timeoutMs: 90 * 60_000 });
+      if (res.code !== 0) {
+        throw new Error(`browser toolchain bake failed (exit ${res.code}): ${(res.stderr || res.stdout).trim().slice(0, 500)}`);
+      }
+    }
+    receipt(stateDir, `bake ${slug}: capturing snapshot ${snapName} (boxd re-saves version latest-only)`, slug);
+    await raceDeadline((client.snapshots as any).create(machine.id, snapName), 60_000);
+    // create returns BEFORE the artifact lands — poll until the version is ready
+    let snap: any = null;
+    const snapTimeoutMs = Number(process.env.PDF_BOXD_SNAPSHOT_TIMEOUT_MS ?? 30 * 60_000);
+    const deadline = Date.now() + snapTimeoutMs;
+    for (;;) {
+      snap = await raceDeadline((client.snapshots as any).get(snapName), 30_000);
+      if (snap?.status === "failed") throw new Error(`boxd snapshot ${snapName} failed platform-side`);
+      if (snap?.status === "ready" && snap?.version != null) break;
+      if (Date.now() > deadline) throw new Error(`boxd snapshot ${snapName} still pending after ${Math.round(snapTimeoutMs / 60_000)} min`);
+      await new Promise((r) => setTimeout(r, Number(process.env.PDF_BOXD_SNAPSHOT_POLL_MS ?? 10_000)));
+    }
+    receipt(stateDir, `bake ${slug}: snapshot ${snapName} ready (${Math.round((snap.sizeBytes ?? 0) / 2 ** 30)} GiB)`, slug);
+    return {
+      machine: name,
+      snapshot: snapName,
+      snapshotId: snap.id,
+      platform: "boxd",
+      rootSizeBytes: snap.sizeBytes,
+      config_updated: writeSnapshotToConfig(stateDir, slug, "boxd", snapName, firstBake),
+    };
+  } finally {
+    // the bake machine is always safe to lose — even on a failed capture
+    await (client.machines as any).delete(machine.id).catch(() => {});
+  }
 }
 
 /**
@@ -512,7 +603,7 @@ function writeSnapshotToConfig(stateDir: string, slug: string, platform: "dayton
  * Container snapshots require a stopped sandbox.
  */
 async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
-  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
 }> {
   const client = daytonaClientFromEnv();
   const dx = cfg.env.daytona!;
@@ -588,7 +679,7 @@ async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Pro
  * the same way the instabox flow preserves them.
  */
 async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
-  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
 }> {
   const Template = E2bTemplate;
   const ex = cfg.env.e2b!;
@@ -650,7 +741,7 @@ async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise
  * snapshot is deleted first; new boots of that name fail once in the window).
  */
 async function bakeInstavm(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
-  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
+  machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
 }> {
   const client = instavmClientFromEnv(cfg);
   const ix = cfg.env.instavm!;
