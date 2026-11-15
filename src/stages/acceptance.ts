@@ -173,7 +173,10 @@ export const boxToolchainDir = () => process.env.PDF_E2E_BOX_TOOLCHAIN_DIR ?? "/
 export function e2eRunCommand(opts: { suiteDir: string; toolchainDir: string; inBox: boolean }): string {
   return [
     `cd ${opts.suiteDir}`,
-    `[ -e node_modules ] || ln -sfn ${opts.toolchainDir}/node_modules node_modules`,
+    // ALWAYS relink: an existing symlink could point at a previous
+    // toolchain (a changed override, a stale dir) and silently run the
+    // wrong runner — ln -sfn is idempotent and costs nothing
+    `ln -sfn ${opts.toolchainDir}/node_modules node_modules`,
     `export APP_URL="http://127.0.0.1:$PORT"`,
     `export CI=1`,
     `export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`,

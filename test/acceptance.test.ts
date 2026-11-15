@@ -529,11 +529,11 @@ describe("runPrdAcceptance (the drain-time walk, fake machine lane)", () => {
 });
 
 describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
-  function fakeBoxToolchain(outcome: "pass" | "fail" | "die"): string {
+  function fakeBoxToolchain(outcome: "pass" | "fail" | "die" | "passedrc1"): string {
     const dir = mkdtempSync(join(tmpdir(), "pdfboxtc-"));
     mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
     const report =
-      outcome === "pass"
+      outcome === "pass" || outcome === "passedrc1"
         ? { run: { status: "passed", summary: { passed: 1, failed: 0, flaky: 0, skipped: 0 }, results: [] } }
         : {
             run: {
@@ -551,7 +551,9 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
         "#!/bin/bash",
         ...(outcome === "die"
           ? ["exit 1"] // dies before writing any report — the stale-report hazard
-          : ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", `exit ${outcome === "pass" ? 0 : 1}`]),
+          : outcome === "passedrc1"
+            ? ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", "exit 1"] // tests passed, runner died after — infra, not a gate failure
+            : ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", `exit ${outcome === "pass" ? 0 : 1}`]),
       ].join("\n"),
     );
     chmodSync(bin, 0o755);
@@ -739,6 +741,37 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
     } finally {
       delete process.env.PDF_E2E_TOOLCHAIN_DIR;
     }
+  });
+
+  slowTest("a PASSED report with a nonzero runner rc is INFRA — never a gate failure that says \"suite passed\"", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("passedrc1");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e).toBeUndefined();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("the suite passed but the runner exited nonzero");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("a ship failure is receipted as the CAUSE — the probes-skip message never overwrites it", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    // a box whose exec channel throws exactly on the ship script
+    const wrapped = new FakeMachine(w, w.cfg, issue, 1, {});
+    const orig = wrapped.bash.bind(wrapped);
+    wrapped.bash = async (script: string, o?: { timeoutMs?: number }) => {
+      if (script.includes(BOX_SUITE_DIR)) throw new Error("tar exploded");
+      return orig(script, o);
+    };
+    const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine: wrapped, pr: null, attempt: 1 });
+    expect(v.pass).toBe(true); // infra
+    expect(v.e2e).toBeUndefined();
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("could not ship the suite into the box");
+    expect(log).not.toContain("the scenario probes already failed");
   });
 
   slowTest("no toolchain → INFRA skip, not a gate failure: pass stays true and the receipt names it", async () => {

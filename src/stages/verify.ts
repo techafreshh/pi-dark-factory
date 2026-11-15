@@ -169,7 +169,8 @@ export async function runVerify(
     }
   }
   const runE2eAfterProbes = async (ctx: { port: number; scratchDir?: string; env?: Record<string, string>; repoDir?: string; probesPassed: boolean }): Promise<void> => {
-    if (e2eHolder.infra || !ctx.probesPassed) {
+    if (e2eHolder.infra) return; // the real cause (a ship failure) must not be blamed on the probes
+    if (!ctx.probesPassed) {
       e2eHolder.infra = "skipped: the scenario probes already failed (fail-fast — a broken product wastes the browser)";
       return;
     }
@@ -264,11 +265,15 @@ export async function runVerify(
     receipt(opts.stateDir, `e2e gate skipped (infra, not a product failure — the next lap retries): ${e2eHolder.infra}`, cfg.slug);
   } else if (e2eHolder.result) {
     e2e = e2eHolder.result;
-    if (!e2e.pass && e2e.report) {
+    const productFailure = !!e2e.report && (e2e.report.status !== "passed" || e2e.report.failures.length > 0);
+    if (!e2e.pass && productFailure) {
       failures.push({ gate: "e2e", detail: e2e.summary, repair: repairForE2e(e2e.report) });
     } else if (!e2e.pass) {
+      // no report, or a PASSED report with a nonzero runner rc (it died
+      // after the tests) — neither is a product signal the implementer
+      // could act on, so neither becomes a gate failure
       e2e = undefined;
-      receipt(opts.stateDir, `e2e gate skipped (infra): the suite produced no parsable report — the next lap retries`, cfg.slug);
+      receipt(opts.stateDir, `e2e gate skipped (infra): ${e2eHolder.result.report?.status === "passed" ? "the suite passed but the runner exited nonzero" : "the suite produced no parsable report"} — the next lap retries`, cfg.slug);
     }
   }
 
