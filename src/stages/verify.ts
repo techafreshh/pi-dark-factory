@@ -265,15 +265,22 @@ export async function runVerify(
     receipt(opts.stateDir, `e2e gate skipped (infra, not a product failure — the next lap retries): ${e2eHolder.infra}`, cfg.slug);
   } else if (e2eHolder.result) {
     e2e = e2eHolder.result;
-    const productFailure = !!e2e.report && (e2e.report.status !== "passed" || e2e.report.failures.length > 0);
+    // a product failure is one the implementer can ACT on: the report lists
+    // actual test failures. Everything else — no report, a passed report
+    // with a nonzero runner rc (it died after the tests), a non-passed
+    // status with an empty failure list (interrupted mid-run) — carries no
+    // actionable evidence, so it is infra: receipted, retried next lap.
+    const productFailure = !!e2e.report && e2e.report.failures.length > 0;
     if (!e2e.pass && productFailure) {
       failures.push({ gate: "e2e", detail: e2e.summary, repair: repairForE2e(e2e.report) });
     } else if (!e2e.pass) {
-      // no report, or a PASSED report with a nonzero runner rc (it died
-      // after the tests) — neither is a product signal the implementer
-      // could act on, so neither becomes a gate failure
       e2e = undefined;
-      receipt(opts.stateDir, `e2e gate skipped (infra): ${e2eHolder.result.report?.status === "passed" ? "the suite passed but the runner exited nonzero" : "the suite produced no parsable report"} — the next lap retries`, cfg.slug);
+      const why = !e2eHolder.result.report
+        ? "the suite produced no parsable report"
+        : e2eHolder.result.report.status === "passed"
+          ? "the suite passed but the runner exited nonzero"
+          : `the run ended without test failures (status ${e2eHolder.result.report.status})`;
+      receipt(opts.stateDir, `e2e gate skipped (infra): ${why} — the next lap retries`, cfg.slug);
     }
   }
 

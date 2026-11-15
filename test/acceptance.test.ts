@@ -529,7 +529,7 @@ describe("runPrdAcceptance (the drain-time walk, fake machine lane)", () => {
 });
 
 describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
-  function fakeBoxToolchain(outcome: "pass" | "fail" | "die" | "passedrc1"): string {
+  function fakeBoxToolchain(outcome: "pass" | "fail" | "die" | "passedrc1" | "interrupted"): string {
     const dir = mkdtempSync(join(tmpdir(), "pdfboxtc-"));
     mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
     const report =
@@ -551,7 +551,9 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
         "#!/bin/bash",
         ...(outcome === "die"
           ? ["exit 1"] // dies before writing any report — the stale-report hazard
-          : outcome === "passedrc1"
+          : outcome === "interrupted"
+            ? ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify({ run: { status: "interrupted", summary: { passed: 0, failed: 0, flaky: 0, skipped: 0 }, results: [] } }), "JSON", "exit 1"] // non-passed status, EMPTY failures — no actionable evidence
+            : outcome === "passedrc1"
             ? ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", "exit 1"] // tests passed, runner died after — infra, not a gate failure
             : ["mkdir -p .e2e", `cat > .e2e/report.json <<'JSON'`, JSON.stringify(report), "JSON", `exit ${outcome === "pass" ? 0 : 1}`]),
       ].join("\n"),
@@ -752,6 +754,20 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
       expect(v.e2e).toBeUndefined();
       const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
       expect(log).toContain("the suite passed but the runner exited nonzero");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+    }
+  });
+
+  slowTest("an interrupted run (non-passed status, empty failures) is infra — no evidence-free gate failure", async () => {
+    const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("interrupted");
+    try {
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: null, attempt: 1 });
+      expect(v.pass).toBe(true);
+      expect(v.e2e).toBeUndefined();
+      const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+      expect(log).toContain("the run ended without test failures (status interrupted)");
     } finally {
       delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
     }
