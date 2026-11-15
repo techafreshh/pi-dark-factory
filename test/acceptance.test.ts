@@ -335,6 +335,13 @@ describe("browser toolchain scripts (text invariants)", () => {
   test("the bake script installs node+chromium+e2e, smokes the browser, fails loudly", () => {
     const s = browserBakeScript();
     expect(s).toContain("/opt/pdf-e2e");
+    // /opt is root-owned and instabox/boxd bakes run as a non-root ssh user:
+    // the dirs come up via sudo and are chowned to the bake user (a plain
+    // mkdir EACCES'd the whole per-repo acceptance bake — caught by the
+    // rollout smoke, 2026-11-15)
+    expect(s).toContain(`sudo -n mkdir -p ${"/opt/pdf-e2e"}`);
+    expect(s).toContain(`sudo -n chown "$(id -u):$(id -g)"`);
+    expect(s).toContain("|| mkdir -p /opt/pdf-e2e");
     expect(s).toContain("apt-get install -y chromium");
     expect(s).toContain("npm install");
     expect(s).toContain("e2e @e2e-dev/web playwright-core");
