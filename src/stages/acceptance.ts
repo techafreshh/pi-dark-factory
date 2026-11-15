@@ -177,6 +177,10 @@ export function e2eRunCommand(opts: { suiteDir: string; toolchainDir: string; in
     `export APP_URL="http://127.0.0.1:$PORT"`,
     `export CI=1`,
     `export PLAYWRIGHT_BROWSERS_PATH=${opts.toolchainDir}-browsers`,
+    // a stale report.json (the host suite dir persists across laps, the box
+    // copy across repair attempts) must never fake a green gate or blame the
+    // agent for old failures — the run starts from nothing
+    `rm -rf .e2e`,
     `npx --no-install e2e run > run.log 2>&1`,
     `RC=$?`,
     `echo "PDFE2ERC=$RC"`,
@@ -333,7 +337,9 @@ export async function runSuiteInLane(opts: {
     rc = res.code;
     report = parseE2eReport(readReportSafe(opts.suiteDir));
   }
-  return { pass: !!report && report.status === "passed", summary: summarizeE2e(report, rc), report };
+  // green requires the suite's OWN exit code too: a nonzero rc with a
+  // "passed" report (the runner died after the tests) is infra, not green
+  return { pass: !!report && report.status === "passed" && rc === 0, summary: summarizeE2e(report, rc), report };
 }
 
 export interface AcceptanceDeps {

@@ -160,12 +160,16 @@ export async function runVerify(
   const e2eHolder: { result?: SuiteRunResult; infra?: string } = {};
   const gateApplies = !!cfg.acceptance?.e2e && e2eSuiteExists(opts.stateDir, cfg.slug) && !!cfg.scenario.runtime;
   if (gateApplies && opts.machine) {
-    // the box needs the suite before the runtime window opens (transport
-    // failures here propagate like the scenario lanes' own transport errors)
-    await shipSuiteInBox(opts.machine, e2eSuiteDir(opts.stateDir, cfg.slug), BOX_SUITE_DIR);
+    // the box needs the suite before the runtime window opens; a shipping
+    // failure is INFRA (the infra rule, not the lap error path)
+    try {
+      await shipSuiteInBox(opts.machine, e2eSuiteDir(opts.stateDir, cfg.slug), BOX_SUITE_DIR);
+    } catch (e) {
+      e2eHolder.infra = `could not ship the suite into the box: ${e instanceof Error ? e.message.slice(0, 200) : e}`;
+    }
   }
   const runE2eAfterProbes = async (ctx: { port: number; scratchDir?: string; env?: Record<string, string>; repoDir?: string; probesPassed: boolean }): Promise<void> => {
-    if (!ctx.probesPassed) {
+    if (e2eHolder.infra || !ctx.probesPassed) {
       e2eHolder.infra = "skipped: the scenario probes already failed (fail-fast — a broken product wastes the browser)";
       return;
     }

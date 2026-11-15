@@ -40,7 +40,9 @@ const TOOLCHAIN_INSTALL = [
   `npm install --no-audit --no-fund --silent e2e @e2e-dev/web playwright-core || npm install --no-audit --no-fund e2e @e2e-dev/web playwright-core`,
   `agent-browser --version >/dev/null 2>&1 || npm install --no-audit --no-fund --silent -g agent-browser || true`,
   `agent-browser install >/dev/null 2>&1 || true`,
-  `node ${BOX_TOOLCHAIN_DIR}/node_modules/playwright-core/cli.js install chromium 2>&1 | tail -1 || true`,
+  // the browsers MUST land where the runner looks: ${BOX_TOOLCHAIN_DIR}-browsers
+  // (a bare install defaults to ~/.cache and the gate finds nothing)
+  `PLAYWRIGHT_BROWSERS_PATH=${BOX_TOOLCHAIN_DIR}-browsers node ${BOX_TOOLCHAIN_DIR}/node_modules/playwright-core/cli.js install chromium 2>&1 | tail -1 || true`,
 ].join("\n");
 
 const TOOLCHAIN_SMOKE = [
@@ -86,7 +88,9 @@ export function hostToolsScript(): string {
     `cd "$TC"`,
     `[ -f package.json ] || echo '{"name":"pdf-e2e-toolchain","private":true,"type":"module"}' > package.json`,
     `npm install --no-audit --no-fund --silent e2e @e2e-dev/web playwright-core || npm install --no-audit --no-fund e2e @e2e-dev/web playwright-core`,
-    `node "$TC/node_modules/playwright-core/cli.js" install chromium 2>&1 | tail -1 || true`,
+    // the browsers MUST land where the runner looks: $TC-browsers — and skip
+    // the download when a previous run (or the Docker bake) already filled it
+    `if ls "$TC-browsers" 2>/dev/null | grep -q "^chromium-"; then echo "HOSTTOOLS: chromium already in $TC-browsers (skipping the download)"; else PLAYWRIGHT_BROWSERS_PATH="$TC-browsers" node "$TC/node_modules/playwright-core/cli.js" install chromium 2>&1 | tail -1 || true; fi`,
     `agent-browser --version >/dev/null 2>&1 || npm install --no-audit --no-fund --silent -g agent-browser || true`,
     `agent-browser install >/dev/null 2>&1 || true`,
     `SMOKE_OUT=/tmp/pdf-hosttools-smoke.out`,

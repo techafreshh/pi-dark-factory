@@ -181,10 +181,11 @@ create never loses the batch.
 
 - **Acceptance machines are not counted in the fleet slot pools** — the same
   standing rule as bake and `scen-test` machines (docs/parallel-mode.md,
-  "Not in scope"). A per-merge regression or a drain walk can therefore
-  over-subscribe a platform that is already at its lap cap; the platform's
-  own cap-reject and the 10-minute slot-queue deadline stay as the fallback.
-  On a fleet at the edge of its caps, keep one pool slot of headroom.
+  "Not in scope"). Only the drain walk boots one (the e2e gate rides the
+  lap's own box), so the over-subscription risk is one acceptance machine
+  per draining repo; the platform's own cap-reject and the 10-minute
+  slot-queue deadline stay as the fallback. On a fleet at the edge of its
+  caps, keep one pool slot of headroom.
 - **The e2e gate adds `e2e_minutes` to every lap's verify** (plus the
   merge queue's re-verify after a rebase — the same box, no extra boot).
   The post-merge extras still add a scan (≤10 min) inside the chain budget;
