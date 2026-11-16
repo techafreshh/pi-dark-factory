@@ -115,6 +115,36 @@ describe("parseE2eRunOutput (the framed in-box report)", () => {
     expect(rc).toBe(1);
     expect(report).toBeNull();
   });
+  test("collection failures carry the runner log tail (ANSI stripped, framing respected)", () => {
+    const out = [
+      "PDFE2ERC=2",
+      "PDFE2ENOREPORT",
+      "PDFE2ELOGBEGIN",
+      "\x1b[31m ERROR \x1b[0m configuration error NO_TESTS (collection)",
+      'no test file matched "tests/**/*.e2e.ts" under /tmp/pdf-e2e-suite',
+      "PDFE2ELOGEND",
+      "trailing noise after the frame",
+    ].join("\n");
+    const { rc, report, logTail } = parseE2eRunOutput(out);
+    expect(rc).toBe(2);
+    expect(report).toBeNull();
+    expect(logTail).toContain("NO_TESTS (collection)");
+    expect(logTail).toContain("no test file matched");
+    expect(logTail).not.toContain("\x1b[");
+    expect(logTail).not.toContain("trailing noise");
+  });
+  test("a long base64-ish line inside the log tail cannot impersonate the report", () => {
+    const fakeB64 = "A".repeat(200);
+    const out = `PDFE2ERC=2\nPDFE2ENOREPORT\nPDFE2ELOGBEGIN\n${fakeB64}\nPDFE2ELOGEND\n`;
+    const { report } = parseE2eRunOutput(out);
+    expect(report).toBeNull();
+  });
+  test("no report + a log tail → the summary names the cause", () => {
+    // summarizeE2e rides the logTail so the RECEIPT names NO_TESTS, not just "unparsable"
+    const cmd = e2eRunCommand({ suiteDir: "/s", toolchainDir: "/t", inBox: true });
+    expect(cmd).toContain("PDFE2ELOGBEGIN");
+    expect(cmd).toContain("tail -c 1500 run.log");
+  });
 });
 
 describe("e2eRunCommand (the suite runner both lanes share)", () => {

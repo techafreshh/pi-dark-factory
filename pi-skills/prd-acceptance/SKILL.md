@@ -37,7 +37,12 @@ directory it names (`e2e` framework shape):
 - an `e2e.config.ts` whose target reads `process.env.APP_URL`
   (`app: { url: process.env.APP_URL ?? "http://127.0.0.1:3000" }`);
 - test files ending `.e2e.ts` using `test` from `@e2e-dev/web` and `expect`
-  from `e2e`.
+  from `e2e`;
+- **layout is load-bearing**: the framework's default test glob is
+  `tests/**/*.e2e.ts` — test files go under a `tests/` subdirectory of the
+  suite dir, with `e2e.config.ts` at the suite root. Files at the suite root
+  collect nothing: the run exits with a `NO_TESTS (collection)` error and no
+  report.
 
 Symlink the installed toolchain so imports resolve:
 `ln -sfn <toolchain>/node_modules node_modules` (the prompt names the
