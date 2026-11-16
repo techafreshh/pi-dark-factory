@@ -125,3 +125,44 @@ export function stuckSummaryComment(
     .filter(Boolean)
     .join("\n");
 }
+
+/** The verify-time acceptance evidence, posted on the PR (report-only):
+ *  the authored browser suite's gate verdict + the branch penthera scan.
+ *  Finding details follow the same disclosure rule as issue filing — on a
+ *  public repo the comment carries counts, never file/line/sink. */
+export function evidenceComment(o: {
+  attempt?: number;
+  floor: string;
+  /** private/internal or acceptance.security_public — else details withhold */
+  mayDetailSecurity: boolean;
+  e2e?: { pass: boolean; summary: string; failures?: { file: string; testId: string; status: string }[] } | null;
+  security?: { pass: boolean; summary: string; note?: string } | null;
+}): string {
+  const lines: string[] = [`## Acceptance evidence — verify${o.attempt ? ` (attempt ${o.attempt})` : ""}`, ""];
+  const e = o.e2e;
+  if (!e) {
+    lines.push("🧪 **e2e gate**: _did not run_ — no authored suite yet; the drain-time PRD walk authors one");
+  } else if (e.pass) {
+    lines.push(`🧪 **e2e gate**: ✅ ${e.summary}`);
+  } else if (e.failures && e.failures.length > 0) {
+    lines.push(`🧪 **e2e gate**: ❌ ${e.summary}`, "");
+    for (const f of e.failures.slice(0, 5)) lines.push(`- ✗ \`${f.file} :: ${f.testId}\` (${f.status})`);
+    if (e.failures.length > 5) lines.push(`- … and ${e.failures.length - 5} more`);
+  } else {
+    lines.push(`🧪 **e2e gate**: ⏭️ ${e.summary} — the next lap retries`);
+  }
+  const s = o.security;
+  if (!s) {
+    lines.push("🔒 **penthera** (branch): _did not run_ (acceptance.security off)");
+  } else if (s.pass) {
+    lines.push(`🔒 **penthera** (branch): ✅ ${s.summary}`);
+  } else if (s.note && !s.summary) {
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.note}`);
+  } else if (o.mayDetailSecurity) {
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}`, "", "_The post-merge audit on merged main files the findings as issues._");
+  } else {
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary} — details withheld on this repo (public; a comment here would disclose the finding live)`);
+  }
+  lines.push("", "_Report-only evidence posted at verify time by pi-dark-factory. The post-merge audit on merged main files issue(s); nothing here gates the merge._");
+  return lines.join("\n");
+}

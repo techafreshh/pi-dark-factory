@@ -11,6 +11,7 @@ import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
 import { runVerify } from "../src/stages/verify";
 import { BOX_SUITE_DIR } from "../src/stages/acceptance";
+import { evidenceComment } from "../src/notify";
 import { reapOrphanMachines, opsBake } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
@@ -646,6 +647,28 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
     }
   });
 
+  slowTest("the branch penthera scan rides verify (report-only) and lands on the PR", async () => {
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("pass");
+    process.env.PDF_SECURITY_SCAN_OFF = "1"; // the seam: no live npx in tests
+    try {
+      const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+      w.cfg.acceptance = { e2e: true, prd_check: true, security: true };
+      const v = await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: 42, attempt: 1 });
+      expect(v.security?.pass).toBe(true);
+      expect(v.security?.summary).toContain("disabled");
+      const evidence = w.gh.comments.find((c) => c.startsWith("#42:") && c.includes("Acceptance evidence"));
+      expect(evidence).toBeTruthy();
+      expect(evidence).toContain("🧪 **e2e gate**: ✅");
+      expect(evidence).toContain("🔒 **penthera** (branch): ✅ scan disabled (PDF_SECURITY_SCAN_OFF)");
+      // the sidecar carries the security verdict too
+      const sidecar = JSON.parse(readFileSync(v.provenance!.sidecar, "utf8"));
+      expect(sidecar.security.summary).toContain("disabled");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+      delete process.env.PDF_SECURITY_SCAN_OFF;
+    }
+  });
+
   slowTest("a red suite is a GATE failure with the failing tests as repair evidence", async () => {
     const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
     process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("fail");
@@ -1077,6 +1100,53 @@ describe("collectSuiteFromBox (authoring safety net across candidate roots)", ()
     const got = await collectSuiteFromBox(m, stateDir, "toy");
     expect(got.got).toBe(false);
     expect(existsSync(join(stateDir, "repos", "toy", "e2e"))).toBe(false);
+  });
+});
+
+// ── PR evidence comment (report-only, verify-time) ──────────────────────────
+
+describe("evidenceComment (the PR's acceptance evidence)", () => {
+  const greenE2e = { pass: true, summary: "suite passed: 21 passed, 0 failed" };
+  const cleanScan = { pass: true, summary: "0 finding(s) at or above medium (of 12 scanned) — nothing to fix" };
+  const dirtyScan = { pass: false, summary: "2 finding(s) at or above high (of 12 scanned) — needs attention" };
+
+  test("green on both lanes reads as two checkmarks", () => {
+    const c = evidenceComment({ attempt: 2, floor: "medium", mayDetailSecurity: true, e2e: greenE2e, security: cleanScan });
+    expect(c).toContain("## Acceptance evidence — verify (attempt 2)");
+    expect(c).toContain("🧪 **e2e gate**: ✅ suite passed: 21 passed, 0 failed");
+    expect(c).toContain("🔒 **penthera** (branch): ✅ 0 finding(s)");
+    expect(c).toContain("Report-only evidence posted at verify time");
+  });
+
+  test("failing e2e tests are listed (repair input), capped at five", () => {
+    const failures = Array.from({ length: 7 }, (_, i) => ({ file: `tests/a.e2e.ts`, testId: `t${i}`, status: "failed" }));
+    const c = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: { pass: false, summary: "suite failed: 19 passed, 7 failed", failures }, security: cleanScan });
+    expect(c).toContain("❌ suite failed");
+    expect(c).toContain("`tests/a.e2e.ts :: t4`");
+    expect(c).toContain("… and 2 more");
+    expect(c).not.toContain("t5`");
+  });
+
+  test("infra skip reads as a retry, never a failure", () => {
+    const c = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: { pass: false, summary: "no parsable e2e report (rc 2) — runner log: NO_TESTS (collection)" }, security: cleanScan });
+    expect(c).toContain("⏭️ no parsable e2e report");
+    expect(c).toContain("the next lap retries");
+  });
+
+  test("findings WITHHOLD details on a public repo, name them on a private one", () => {
+    const pub = evidenceComment({ floor: "medium", mayDetailSecurity: false, e2e: greenE2e, security: dirtyScan });
+    expect(pub).toContain("details withheld on this repo (public");
+    const priv = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: greenE2e, security: dirtyScan });
+    expect(priv).toContain("⚠️ 2 finding(s) at or above high");
+    expect(priv).toContain("post-merge audit on merged main files the findings");
+  });
+
+  test("scan errors and not-run states are honest", () => {
+    const c = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: greenE2e, security: { pass: false, summary: "scan errored", note: "npx timeout" } });
+    expect(c).toContain("⚠️ scan errored");
+    const off = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: null, security: null });
+    expect(off).toContain("_did not run_ — no authored suite yet");
+    expect(off).toContain("acceptance.security off");
   });
 });
 

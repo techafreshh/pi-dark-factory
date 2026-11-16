@@ -120,22 +120,25 @@ export interface SecurityScanResult {
 export async function runSecurityScan(
   cfg: RepoConfig,
   gh: GhApi,
-  opts: { stateDir: string; pr?: number; atDrain?: boolean }
+  opts: { stateDir: string; pr?: number; atDrain?: boolean; ref?: string; reportOnly?: boolean }
 ): Promise<SecurityScanResult> {
   const src = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
-  const rev = await sh(["git", "-C", src, "rev-parse", `origin/${cfg.default_branch}`], { timeoutMs: 30_000 });
+  // ref: the post-merge/drain scans default to merged main; the verify-time
+  // evidence scan passes the lap's branch (report-only — see below)
+  const ref = opts.ref ?? `origin/${cfg.default_branch}`;
+  const rev = await sh(["git", "-C", src, "rev-parse", ref], { timeoutMs: 30_000 });
   const mainHead = rev.stdout.trim();
   // publish gate: on a PUBLIC repo, a filed finding is a live disclosure
   // (file, line, sink) minutes after the merge that introduced it — the scan
   // runs and receipts either way; filing needs a private repo or an explicit
   // acceptance.security_public
-  const visibility = await repoVisibility(cfg.repo);
+  const visibility = opts.reportOnly ? null : await repoVisibility(cfg.repo);
   const mayFile = mayFileSecurityFindings(visibility, cfg);
   const scanRoot = join(opts.stateDir, "repos", cfg.slug, "issues", "security");
   rmSync(scanRoot, { recursive: true, force: true });
   mkdirSync(scanRoot, { recursive: true });
   const wt = join(scanRoot, "wt");
-  const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, `origin/${cfg.default_branch}`], { timeoutMs: 120_000 });
+  const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, ref], { timeoutMs: 120_000 });
   if (added.code !== 0) {
     return { pass: false, summary: "worktree add failed", note: added.stderr.trim().slice(0, 300), filed: [] };
   }
@@ -171,17 +174,27 @@ export async function runSecurityScan(
     const summary = `${above.length} finding(s) at or above ${cfg.acceptance?.severity_floor ?? "medium"} (of ${all.length} scanned) — ${report.brief?.verdict ?? "unknown verdict"}`;
 
     // record the scan on its own verdict key — the PRD-acceptance verdict
-    // (state.last) is a different gate and must not be clobbered by it
-    const st = readAcceptanceState(opts.stateDir, cfg.slug);
-    const lastSecurity: AcceptanceLast = {
-      status: above.length === 0 ? "pass" : "fail",
-      main_head: mainHead,
-      at: new Date().toISOString(),
-      summary: `security: ${summary}`,
-    };
-    writeAcceptanceState(opts.stateDir, cfg.slug, { ...st, last_security: lastSecurity });
+    // (state.last) is a different gate and must not be clobbered by it.
+    // ONLY main scans record: a verify-time branch scan is report-only
+    // evidence and must never overwrite the merged-main verdict.
+    if (!opts.ref) {
+      const st = readAcceptanceState(opts.stateDir, cfg.slug);
+      const lastSecurity: AcceptanceLast = {
+        status: above.length === 0 ? "pass" : "fail",
+        main_head: mainHead,
+        at: new Date().toISOString(),
+        summary: `security: ${summary}`,
+      };
+      writeAcceptanceState(opts.stateDir, cfg.slug, { ...st, last_security: lastSecurity });
+    }
 
     if (above.length === 0) return { pass: true, summary, filed: [] };
+
+    if (opts.reportOnly) {
+      // the verify-time branch scan: evidence for the PR comment, never a
+      // filer — inherited findings especially are the post-merge scan's job
+      return { pass: false, summary, note: "report-only (branch evidence)", filed: [] };
+    }
 
     if (!mayFile) {
       // public repo + no explicit opt-in: the scan's facts stay in the

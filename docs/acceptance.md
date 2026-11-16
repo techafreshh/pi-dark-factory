@@ -62,6 +62,16 @@ needs retries to stay green is a bug in the suite. Machine repos need the
 browser in their golden snapshot — a re-`bake` with the flag on (the bake
 smoke fails loudly when a platform cannot carry one).
 
+**The PR sees the evidence.** After every verify, the factory posts one
+report-only comment on the PR: the e2e verdict (✅/❌ with the failing
+tests, ⏭️ infra-skip with its reason) and — when `acceptance.security` is
+on — a **branch penthera scan** (static, host-side, token-free, `ref` =
+the lap branch). The branch scan never gates and never files: inherited
+findings are the post-merge scan on merged main's job, and the comment
+follows the same disclosure rule as issue filing — on a public repo it
+carries counts, never file/line/sink. A comment failure is a receipt;
+it never touches the lap.
+
 ## 2. The post-merge audit
 
 After every squash-merge (serial post-merge block and the parallel merge
