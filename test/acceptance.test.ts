@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupWorlds, FakeGh, FakeMachine, makeMachineWorld, type World } from "./world";
 import { e2eSuiteExists, prdPath, readAcceptanceState, acceptanceRunsToday, recordAcceptanceRun, writeAcceptanceState, readPrd } from "../src/acceptance-state";
-import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir, acceptanceSuiteEnv, collectSuiteFromBox, BOX_AUTHORING_ROOTS } from "../src/stages/acceptance";
+import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir, acceptanceSuiteEnv, collectSuiteFromBox, collectFromHostDir, BOX_AUTHORING_ROOTS } from "../src/stages/acceptance";
 import { parsePentheraReport, findingsAboveFloor, runSecurityScan, mayFileSecurityFindings, pentheraSpec } from "../src/security";
 import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
@@ -674,6 +674,23 @@ describe("runVerify's e2e gate (the suite rides the lap's own machine)", () => {
     }
   });
 
+  slowTest("the evidence comment is UPDATED in place, one per PR across attempts (M5)", async () => {
+    process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("pass");
+    process.env.PDF_SECURITY_SCAN_OFF = "1";
+    try {
+      const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
+      w.cfg.acceptance = { e2e: true, prd_check: true, security: true };
+      await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: 42, attempt: 1 });
+      await runVerify(w.cfg, w.gh, { stateDir: w.stateDir, issue, machine, pr: 42, attempt: 2 });
+      const evidence = w.gh.comments.filter((c) => c.startsWith("#42:") && c.includes("Acceptance evidence"));
+      expect(evidence.length).toBe(1); // one comment, updated — not one per attempt
+      expect(evidence[0]).toContain("(attempt 2)");
+    } finally {
+      delete process.env.PDF_E2E_BOX_TOOLCHAIN_DIR;
+      delete process.env.PDF_SECURITY_SCAN_OFF;
+    }
+  });
+
   slowTest("a red suite is a GATE failure with the failing tests as repair evidence", async () => {
     const { w, machine, issue } = await gateWorld({ suite: true, e2eFlag: true });
     process.env.PDF_E2E_BOX_TOOLCHAIN_DIR = fakeBoxToolchain("fail");
@@ -1075,18 +1092,33 @@ describe("collectSuiteFromBox (authoring safety net across candidate roots)", ()
       bash: async (script: string) => ({ code: 0, stdout: script.includes("find /tmp/pdf-e2e-out") ? (tar ?? "") : "", stderr: "", timedOut: false }),
     }) as any;
 
-  test("finds suite files at several roots and depths, copies them flat into factory state", async () => {
+  test("finds suite files at several roots and KEEPS the tests/ layout (flattening re-created NO_TESTS)", async () => {
     const stateDir = tmp();
     const m = stubMachine(
       tarB64({
-        "e2e-out/home.e2e.ts": "test('home', () => {});",
-        "data/repo/tests/e2e.config.ts": "export default {};",
+        // two different roots, same destination layout: tests/ survives both
+        "e2e-out/tests/home.e2e.ts": "test('home', () => {});",
+        "tmp/pdf-e2e-out/tests/e2e.config.ts": "export default {};",
       })
     );
     const got = await collectSuiteFromBox(m, stateDir, "toy");
     expect(got.got).toBe(true);
     const suite = join(stateDir, "repos", "toy", "e2e");
-    expect(existsSync(join(suite, "home.e2e.ts"))).toBe(true);
+    // the framework's glob is tests/**/*.e2e.ts — the subdir must survive
+    expect(existsSync(join(suite, "tests", "home.e2e.ts"))).toBe(true);
+    expect(existsSync(join(suite, "tests", "e2e.config.ts"))).toBe(true);
+    expect(existsSync(join(suite, "home.e2e.ts"))).toBe(false);
+  });
+
+  test("host-lane collection keeps a nested tests/ directory too", async () => {
+    const stateDir = tmp();
+    const outDir = join(stateDir, "scratch", "e2e-out");
+    mkdirSync(join(outDir, "tests"), { recursive: true });
+    writeFileSync(join(outDir, "tests", "a.e2e.ts"), "test('a', () => {});");
+    writeFileSync(join(outDir, "e2e.config.ts"), "export default {};");
+    expect(collectFromHostDir(outDir, stateDir, "toy")).toBe(true);
+    const suite = join(stateDir, "repos", "toy", "e2e");
+    expect(existsSync(join(suite, "tests", "a.e2e.ts"))).toBe(true);
     expect(existsSync(join(suite, "e2e.config.ts"))).toBe(true);
   });
 
@@ -1096,7 +1128,7 @@ describe("collectSuiteFromBox (authoring safety net across candidate roots)", ()
     expect(got.got).toBe(false);
     expect(got.where).toBe("");
     expect(BOX_AUTHORING_ROOTS).toContain("/tmp/pdf-e2e-out");
-    expect(BOX_AUTHORING_ROOTS.length).toBeGreaterThanOrEqual(3);
+    expect(BOX_AUTHORING_ROOTS).not.toContain("."); // a product's own *.e2e.ts must not be swept into the gate
   });
 
   test("a tar with no suite-shaped files copies nothing", async () => {
@@ -1152,6 +1184,15 @@ describe("evidenceComment (the PR's acceptance evidence)", () => {
     const off = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: null, security: null });
     expect(off).toContain("_did not run_ — no authored suite yet");
     expect(off).toContain("acceptance.security off");
+  });
+  test("a kind:\"error\" scan result never claims findings will be filed (M1)", () => {
+    const c = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: greenE2e, security: { pass: false, summary: "scan errored", note: "unparsable report (exit 2)", kind: "error" } });
+    expect(c).toContain("⚠️ scan errored — unparsable report (exit 2)");
+    expect(c).not.toContain("files the findings as issues");
+  });
+  test("a skipped scan (another gate failed) is worded as such, not as a config off", () => {
+    const c = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: null, security: null });
+    expect(c).toContain("or another gate already failed this lap");
   });
 });
 

@@ -137,12 +137,12 @@ export function evidenceComment(o: {
   /** security_public !== false, or a private/internal repo */
   mayDetailSecurity: boolean;
   e2e?: { pass: boolean; summary: string; failures?: { file: string; testId: string; status: string }[] } | null;
-  security?: { pass: boolean; summary: string; note?: string } | null;
+  security?: { pass: boolean; summary: string; note?: string; kind?: "findings" | "error" } | null;
 }): string {
   const lines: string[] = [`## Acceptance evidence — verify${o.attempt ? ` (attempt ${o.attempt})` : ""}`, ""];
   const e = o.e2e;
   if (!e) {
-    lines.push("🧪 **e2e gate**: _did not run_ — no authored suite yet; the drain-time PRD walk authors one");
+    lines.push("🧪 **e2e gate**: _did not run_ — no authored suite yet (the drain-time PRD walk authors one), or another gate already failed this lap");
   } else if (e.pass) {
     lines.push(`🧪 **e2e gate**: ✅ ${e.summary}`);
   } else if (e.failures && e.failures.length > 0) {
@@ -154,11 +154,14 @@ export function evidenceComment(o: {
   }
   const s = o.security;
   if (!s) {
-    lines.push("🔒 **penthera** (branch): _did not run_ (acceptance.security off)");
+    lines.push("🔒 **penthera** (branch): _did not run_ (acceptance.security off, or another gate already failed this lap)");
+  } else if (s.kind === "error") {
+    // the scan itself failed — there are no findings, so the "files issues"
+    // footer would be a lie (PR #16 review, M1: the note/summary inference
+    // could never reach this branch)
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}${s.note ? ` — ${s.note}` : ""}`);
   } else if (s.pass) {
     lines.push(`🔒 **penthera** (branch): ✅ ${s.summary}`);
-  } else if (s.note && !s.summary) {
-    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.note}`);
   } else if (o.mayDetailSecurity) {
     lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}`, "", "_The post-merge audit on merged main files the findings as issues._");
   } else {

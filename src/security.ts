@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readAcceptanceState, writeAcceptanceState, type AcceptanceLast } from "./acceptance-state";
-import { ensureSource } from "./gitws";
+import { ensureSource, withSourceLock } from "./gitws";
 import { fileFactoryIssues, WONTFIX_LABEL } from "./fileissues";
 import { repoVisibility, type GhApi } from "./gh";
 import { agentEnv } from "./agentenv";
@@ -113,6 +113,10 @@ export interface SecurityScanResult {
   filed: { issue: number; title: string }[];
   /** scan errors / unparsable output — never an issue, always a receipt */
   note?: string;
+  /** "error" = the scan itself failed (unparsable, worktree, transport);
+   *  "findings" = the scan ran and this is its verdict. The PR evidence
+   *  comment words the two differently (an error has no findings to file). */
+  kind?: "findings" | "error";
 }
 
 /** Scan merged main and file the findings above the floor. Never throws on
@@ -124,28 +128,40 @@ export async function runSecurityScan(
   gh: GhApi,
   opts: { stateDir: string; pr?: number; atDrain?: boolean; ref?: string; reportOnly?: boolean }
 ): Promise<SecurityScanResult> {
-  const src = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
   // ref: the post-merge/drain scans default to merged main; the verify-time
   // evidence scan passes the lap's branch (report-only — see below)
   const ref = opts.ref ?? `origin/${cfg.default_branch}`;
-  const rev = await sh(["git", "-C", src, "rev-parse", ref], { timeoutMs: 30_000 });
-  const mainHead = rev.stdout.trim();
-  // publish gate: on a PUBLIC repo, a filed finding is a live disclosure
-  // (file, line, sink) minutes after the merge that introduced it — the scan
-  // runs and receipts either way; filing needs a private repo or an explicit
-  // acceptance.security_public
-  const visibility = opts.reportOnly ? null : await repoVisibility(cfg.repo);
-  const mayFile = mayFileSecurityFindings(visibility, cfg);
   const scanRoot = join(opts.stateDir, "repos", cfg.slug, "issues", "security");
-  rmSync(scanRoot, { recursive: true, force: true });
   mkdirSync(scanRoot, { recursive: true });
-  const wt = join(scanRoot, "wt");
-  const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, ref], { timeoutMs: 120_000 });
-  if (added.code !== 0) {
-    return { pass: false, summary: "worktree add failed", note: added.stderr.trim().slice(0, 300), filed: [] };
-  }
-  const reportPath = join(scanRoot, "penthera-report.json");
+  // a UNIQUE worktree per scan: the verify-time branch scan now runs inside
+  // laps (parallel lanes + the merge queue), so a shared `wt` let two scans
+  // delete each other's worktree mid-scan (PR #16 review, H2)
+  const wt = mkdtempSync(join(scanRoot, "wt-"));
+  const reportPath = join(wt, "penthera-report.json");
+  // hoisted: the cleanup finally runs outside the try that fills it
+  let src = "";
   try {
+    // the source checkout is SHARED (gitws.ts: parallel lanes + the merge
+    // queue read one .git): fetch/reset/clean and worktree add take the
+    // per-repo lock, exactly like every other source user. The scanner run
+    // itself stays OUTSIDE the lock — it touches only its own worktree.
+    const prepared = await withSourceLock(cfg.slug, async () => {
+      const src = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
+      const rev = await sh(["git", "-C", src, "rev-parse", ref], { timeoutMs: 30_000 });
+      const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, ref], { timeoutMs: 120_000 });
+      return { src, head: rev.stdout.trim(), addedCode: added.code, addedErr: added.stderr.trim().slice(0, 300) };
+    });
+    src = prepared.src;
+    const mainHead = prepared.head;
+    if (prepared.addedCode !== 0) {
+      return { pass: false, summary: "worktree add failed", note: prepared.addedErr, filed: [], kind: "error" };
+    }
+    // publish gate: on a PUBLIC repo, a filed finding is a live disclosure
+    // (file, line, sink) minutes after the merge that introduced it — the scan
+    // runs and receipts either way; filing needs a private repo or an explicit
+    // acceptance.security_public
+    const visibility = opts.reportOnly ? null : await repoVisibility(cfg.repo);
+    const mayFile = mayFileSecurityFindings(visibility, cfg);
     // the scanner is downloaded code running as the factory user: it gets
     // the agentEnv allowlist, never the service environment with the
     // factory's keys (PATH/HOME ride the allowlist base; npx needs both)
@@ -167,6 +183,7 @@ export async function runSecurityScan(
       return {
         pass: false,
         summary: `unparsable report (exit ${res.code})`,
+        kind: "error",
         note: `${res.stderr.trim().slice(0, 300) || res.stdout.trim().slice(0, 300)}`,
         filed: [],
       };
@@ -190,12 +207,12 @@ export async function runSecurityScan(
       writeAcceptanceState(opts.stateDir, cfg.slug, { ...st, last_security: lastSecurity });
     }
 
-    if (above.length === 0) return { pass: true, summary, filed: [] };
+    if (above.length === 0) return { pass: true, summary, filed: [], kind: "findings" };
 
     if (opts.reportOnly) {
       // the verify-time branch scan: evidence for the PR comment, never a
       // filer — inherited findings especially are the post-merge scan's job
-      return { pass: false, summary, note: "report-only (branch evidence)", filed: [] };
+      return { pass: false, summary, note: "report-only (branch evidence)", filed: [], kind: "findings" };
     }
 
     if (!mayFile) {
@@ -207,7 +224,7 @@ export async function runSecurityScan(
           : `filing on a ${visibility} repo needs acceptance.security_public (a public issue would disclose the finding live)`;
       const note = `${summary} — findings NOT filed: ${why}`;
       receipt(opts.stateDir, `security scan on main: ${note}`, cfg.slug);
-      return { pass: false, summary: note, note, filed: [] };
+      return { pass: false, summary: note, note, filed: [], kind: "findings" };
     }
 
     // cap the batch: a misconfigured repo with hundreds of matches must not
@@ -252,9 +269,11 @@ export async function runSecurityScan(
     });
     const filed = await fileFactoryIssues(opts.stateDir, cfg.slug, gh, items, { via: "security scan", dedupeWontfix: true });
     receipt(opts.stateDir, `security scan on main: ${summary}, filed ${filed.length}`, cfg.slug);
-    return { pass: false, summary, filed };
+    return { pass: false, summary, filed, kind: "findings" };
   } finally {
-    await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
-    rmSync(scanRoot, { recursive: true, force: true });
+    await withSourceLock(cfg.slug, async () => {
+      await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
+    });
+    rmSync(wt, { recursive: true, force: true });
   }
 }

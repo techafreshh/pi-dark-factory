@@ -294,9 +294,11 @@ export async function runVerify(
   // 5. the branch penthera scan — report-only PR evidence (docs/acceptance.md):
   // static and host-side, so it costs minutes of CPU and zero tokens. It NEVER
   // fails the lap and NEVER files: inherited findings are the post-merge scan
-  // on merged main's job; this one only feeds the evidence comment.
+  // on merged main's job; this one only feeds the evidence comment. Skipped
+  // when another gate already failed — the lap is heading to repair anyway
+  // and the scan would just spend its minutes for an unread comment.
   let security: SecurityScanResult | undefined;
-  if (cfg.acceptance?.security && opts.pr !== null) {
+  if (cfg.acceptance?.security && opts.pr !== null && failures.length === 0) {
     if (process.env.PDF_SECURITY_SCAN_OFF === "1") {
       // test seam: the wiring runs, the scanner doesn't
       security = { pass: true, summary: "scan disabled (PDF_SECURITY_SCAN_OFF)", filed: [] };
@@ -326,8 +328,10 @@ export async function runVerify(
   // the PR evidence comment (report-only, docs/acceptance.md): the e2e +
   // branch-scan verdicts where a human reviewer reads them. Finding details
   // follow the same disclosure rule as issue filing (public repos get
-  // counts, never file/line/sink). A failure here is a receipt — it never
-  // routes the lap into the error path.
+  // counts, never file/line/sink). The factory UPDATES its own previous
+  // evidence comment in place — one comment per PR, not one per attempt
+  // (PR #16 review, M5). A failure here is a receipt — it never routes the
+  // lap into the error path.
   if (opts.pr !== null && (e2e || security)) {
     try {
       const visibility = await repoVisibility(cfg.repo).catch(() => null);
@@ -336,9 +340,11 @@ export async function runVerify(
         floor: cfg.acceptance?.severity_floor ?? "medium",
         mayDetailSecurity: mayFileSecurityFindings(visibility, cfg),
         e2e: e2e ? { pass: e2e.pass, summary: e2e.summary, failures: e2e.report?.failures } : null,
-        security: security ? { pass: security.pass, summary: security.summary, note: security.note } : null,
+        security: security ? { pass: security.pass, summary: security.summary, note: security.note, kind: security.kind } : null,
       });
-      await gh.issueComment(opts.pr, body);
+      const mine = (await gh.issueComments(opts.pr)).filter((c) => c.body.startsWith("## Acceptance evidence"));
+      if (mine.length > 0) await gh.issueCommentUpdate(mine[mine.length - 1].id, body);
+      else await gh.issueComment(opts.pr, body);
       receipt(opts.stateDir, `acceptance evidence posted on PR#${opts.pr}`, cfg.slug);
     } catch (e) {
       receipt(opts.stateDir, `acceptance evidence comment failed (lap unaffected): ${String(e instanceof Error ? e.message : e).slice(0, 200)}`, cfg.slug);

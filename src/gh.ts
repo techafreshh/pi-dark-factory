@@ -51,6 +51,10 @@ export interface GhApi {
   issueList(state: "open" | "all", limit?: number): Promise<IssueLite[]>;
   issueView(n: number): Promise<IssueLite & { state: string }>;
   issueComment(n: number, body: string): Promise<void>;
+  /** the PR/issue's comments as {id, body} — the evidence comment updates
+   *  its own previous post in place instead of stacking one per attempt */
+  issueComments(n: number): Promise<{ id: number; body: string }[]>;
+  issueCommentUpdate(commentId: number, body: string): Promise<void>;
   issueClose(n: number): Promise<void>;
   issueCreate(title: string, body: string): Promise<number>;
   issueAddLabels(n: number, labels: string[]): Promise<void>;
@@ -132,6 +136,28 @@ export class Gh implements GhApi {
 
   async issueComment(n: number, body: string): Promise<void> {
     await shOk(await sh(["gh", "issue", "comment", String(n), "--repo", this.repo, "--body", body]), "gh issue comment");
+  }
+
+  async issueComments(n: number): Promise<{ id: number; body: string }[]> {
+    const res = await sh([
+      "gh", "api", `repos/${this.repo}/issues/${n}/comments`,
+      "--jq", "[.[] | {id: .id, body: .body}]",
+    ]);
+    const out = shOk(res, "gh api issues comments").trim();
+    if (!out) return [];
+    try {
+      const j = JSON.parse(out);
+      return Array.isArray(j) ? j.filter((c: any) => typeof c.id === "number" && typeof c.body === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async issueCommentUpdate(commentId: number, body: string): Promise<void> {
+    await shOk(
+      await sh(["gh", "api", "-X", "PATCH", `repos/${this.repo}/issues/comments/${commentId}`, "-f", `body=${body}`]),
+      "gh api patch comment"
+    );
   }
 
   async issueClose(n: number): Promise<void> {

@@ -25,6 +25,8 @@ function stubGh(opts: { openTitles?: string[] } = {}) {
     issueList: (state) => Promise.resolve(state === "open" ? open : []),
     issueView: () => Promise.resolve({ number: 0, title: "", body: "", labels: [], createdAt: "", state: "open" }),
     issueComment: () => Promise.resolve(),
+    issueComments: () => Promise.resolve([]),
+    issueCommentUpdate: () => Promise.resolve(),
     issueClose: () => Promise.resolve(),
     issueCreate: (title: string, body: string) => {
       calls.created.push([title, body]);
