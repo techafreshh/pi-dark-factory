@@ -867,6 +867,9 @@ describe("maybeDrainAcceptance (the end-of-project gate)", () => {
     // receipt says so LOUDLY (the live walk of 2026-11-15 passed silently
     // without authoring and nothing told the operator)
     expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("authoring was expected");
+    // the drain path's PROGRESS lines receipt too (they ran silenced in the
+    // live 2026-11-15/16 walks — the suite's rc-2 failure was invisible)
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("acceptance walk stage ok");
   });
 
   test("deferred-class issues (discovery/security/minor/prd-gap minors) do not block the walk", () => {

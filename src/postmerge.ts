@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { prdPath } from "./acceptance-state";
+import { receipt } from "./receipts";
 import { listClaimable, DISCOVERY_LABEL, MINOR_LABEL, PRD_GAP_LABEL, SECURITY_LABEL } from "./stages/intake";
 import { runSecurityScan } from "./security";
 import { runPrdAcceptance, type AcceptanceDeps } from "./stages/acceptance";
@@ -82,8 +83,12 @@ export async function maybeDrainAcceptance(
   const open = await deps.gh.issueList("open", 1000).catch(() => null);
   if (!open || !openIssuesAllDeferred(open)) return;
 
-  const log = (m: string) => m; // runPrdAcceptance receipts the outcomes itself
-  // the walk receipts its own outcomes; wiring/cap refusals stay quiet
+  // the walk's verdicts, filings, cap refusals and errors receipt themselves;
+  // its PROGRESS lines (suite summary, stage ok, authoring warnings) are
+  // operator-relevant too — ride them into laps.log, never a no-op: the live
+  // 2026-11-15/16 drain walks ran with this log silenced and the suite's
+  // rc-2 failure was invisible in the receipts
+  const log = (m: string) => receipt(stateDir, m, cfg.slug);
   await runPrdAcceptance(cfg, {
     stateDir,
     gh: deps.gh,
