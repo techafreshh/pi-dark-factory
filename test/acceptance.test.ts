@@ -250,12 +250,17 @@ describe("penthera report parsing (captured 2.4.0 shape)", () => {
     // an unknown floor word degrades to medium, never to "file everything"
     expect(findingsAboveFloor(all, "cosmic").map((f: any) => f.severity)).toEqual(["critical", "high", "medium"]);
   });
-  test("publish gate: a PUBLIC tracker files nothing without the explicit opt-in", () => {
+  test("visibility: findings file everywhere by default; an explicit false re-arms the public gate", () => {
     const cfg = (over: any) => parseRepoConfig({ repo: "acme/toy", models: { default: { provider: "x", model: "y" } }, ...over }, "t");
-    expect(mayFileSecurityFindings("PUBLIC", cfg({}))).toBe(false);
+    // default (security_public: true): visible everywhere, even public, even unreadable
+    expect(mayFileSecurityFindings("PUBLIC", cfg({}))).toBe(true);
+    expect(mayFileSecurityFindings(null, cfg({}))).toBe(true);
+    // the opt-out: public/unreadable files nothing again (fail closed stays
+    // fail closed for the repo that asked for it), private still files
+    expect(mayFileSecurityFindings("PUBLIC", cfg({ acceptance: { security_public: false } }))).toBe(false);
+    expect(mayFileSecurityFindings(null, cfg({ acceptance: { security_public: false } }))).toBe(false);
+    expect(mayFileSecurityFindings("PRIVATE", cfg({ acceptance: { security_public: false } }))).toBe(true);
     expect(mayFileSecurityFindings("PUBLIC", cfg({ acceptance: { security_public: true } }))).toBe(true);
-    expect(mayFileSecurityFindings("PRIVATE", cfg({}))).toBe(true);
-    expect(mayFileSecurityFindings(null, cfg({}))).toBe(false); // gh broke → fail CLOSED: a miss is retried next merge, a disclosure is one-way
   });
   test("the scanner spec is PINNED to the version the fixture was captured against", () => {
     delete process.env.PDF_PENTHERA_SPEC;
@@ -340,7 +345,7 @@ describe("acceptance config block", () => {
     expect(cfg.acceptance!.e2e).toBe(false);
     expect(cfg.acceptance!.prd_check).toBe(false);
     expect(cfg.acceptance!.security).toBe(false);
-    expect(cfg.acceptance!.security_public).toBe(false);
+    expect(cfg.acceptance!.security_public).toBe(true);
     expect(cfg.acceptance!.severity_floor).toBe("medium");
     expect(cfg.acceptance!.e2e_minutes).toBe(10);
     expect(cfg.acceptance!.prd_minutes).toBe(25);
@@ -1133,9 +1138,9 @@ describe("evidenceComment (the PR's acceptance evidence)", () => {
     expect(c).toContain("the next lap retries");
   });
 
-  test("findings WITHHOLD details on a public repo, name them on a private one", () => {
+  test("findings WITHHOLD details only for an explicit security_public: false repo", () => {
     const pub = evidenceComment({ floor: "medium", mayDetailSecurity: false, e2e: greenE2e, security: dirtyScan });
-    expect(pub).toContain("details withheld on this repo (public");
+    expect(pub).toContain("details withheld (this repo sets `security_public: false`)");
     const priv = evidenceComment({ floor: "medium", mayDetailSecurity: true, e2e: greenE2e, security: dirtyScan });
     expect(priv).toContain("⚠️ 2 finding(s) at or above high");
     expect(priv).toContain("post-merge audit on merged main files the findings");

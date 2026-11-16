@@ -87,12 +87,14 @@ step individually caught — a hook failure is a receipt, never a lap error:
    Penthera's own fix diffs are deliberately NOT applied — a fix goes through
    plan/implement/verify/review like every other change.
 
-   **The publish gate:** on a PUBLIC repo, a filed finding is a live
-   disclosure (file, line, sink) minutes after the merge that introduced it,
-   so findings are filed only when the repo is private/internal or
-   `acceptance.security_public: true` is set explicitly (default false). An
-   unreadable visibility (gh failed) fails closed too — the scan still runs
-   and receipts, and the next merge's scan retries the filing.
+   **Visibility (operator call, 2026-11-16): findings are public by
+   default.** `acceptance.security_public` defaults to true — findings file
+   and show in the PR evidence comment on public repos exactly as they do on
+   private ones. A repo that treats its tracker as sensitive opts OUT with
+   an explicit `security_public: false`: the scan still runs and receipts
+   there, it just does not publish, and an unreadable visibility (gh failed)
+   fails closed for that repo — the opt-out's whole point is preventing a
+   one-way disclosure, so its failure mode must not publish.
 
    **Sticky closes need the `wontfix` label.** The factory closes an issue
    itself when it merges the fix, so a bare close suppresses nothing: a
@@ -102,11 +104,7 @@ step individually caught — a hook failure is a receipt, never a lap error:
    that finding (gh 2.45 cannot read a close's `stateReason`, so the label
    is the signal). GitHub's default label set includes `wontfix`; if a repo
    removed it, create it again (`gh label create wontfix --repo R --color
-   F9D0C4`) or the suppression signal has nowhere to live. Operator note: on
-   a public repo with `security: true` and no `security_public`, every merge
-   runs the full scan and files nothing, and `status` shows
-   `last_security: fail` for as long as findings above the floor exist —
-   that is the gate working, not a stuck scan.
+   F9D0C4`) or the suppression signal has nowhere to live.
 2. The pre-existing scenario regression (`runPostMergeRegression`) is
    unchanged and runs alongside. The browser e2e suite is NOT here — it is a
    verify-stage gate (§1): its failures block the merge through the repair

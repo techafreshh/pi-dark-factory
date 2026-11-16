@@ -128,12 +128,13 @@ export function stuckSummaryComment(
 
 /** The verify-time acceptance evidence, posted on the PR (report-only):
  *  the authored browser suite's gate verdict + the branch penthera scan.
- *  Finding details follow the same disclosure rule as issue filing — on a
- *  public repo the comment carries counts, never file/line/sink. */
+ *  Finding details follow the same visibility rule as issue filing —
+ *  visible everywhere by default; a repo with an explicit
+ *  security_public: false gets counts, never file/line/sink. */
 export function evidenceComment(o: {
   attempt?: number;
   floor: string;
-  /** private/internal or acceptance.security_public — else details withhold */
+  /** security_public !== false, or a private/internal repo */
   mayDetailSecurity: boolean;
   e2e?: { pass: boolean; summary: string; failures?: { file: string; testId: string; status: string }[] } | null;
   security?: { pass: boolean; summary: string; note?: string } | null;
@@ -161,7 +162,7 @@ export function evidenceComment(o: {
   } else if (o.mayDetailSecurity) {
     lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}`, "", "_The post-merge audit on merged main files the findings as issues._");
   } else {
-    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary} — details withheld on this repo (public; a comment here would disclose the finding live)`);
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary} — details withheld (this repo sets \`security_public: false\`)`);
   }
   lines.push("", "_Report-only evidence posted at verify time by pi-dark-factory. The post-merge audit on merged main files issue(s); nothing here gates the merge._");
   return lines.join("\n");

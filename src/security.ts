@@ -51,14 +51,16 @@ function floorRank(floor: string): number {
   return i >= 0 ? i : severityRank("medium");
 }
 
-/** The publish gate for [security] findings, pure for the tests: a PUBLIC
- *  tracker files nothing unless acceptance.security_public is set, and an
- *  UNREADABLE visibility fails closed too (null → do not file) — the gate
- *  exists to prevent a one-way disclosure, so the failure mode that
- *  publishes must not be its default. The cost is a missed filing the next
- *  merge's scan retries. Private/internal repos file as before. */
+/** The publish gate for [security] findings, pure for the tests: findings
+ *  are VISIBLE by default (security_public defaults true — operator call,
+ *  2026-11-16: the factory's own smoke repos publish their findings on
+ *  purpose). A repo that treats its tracker as sensitive opts OUT with an
+ *  explicit security_public: false — and for THOSE repos an unreadable
+ *  visibility still fails closed (null → do not file), because the opt-out's
+ *  whole point is to prevent a one-way disclosure. */
 export function mayFileSecurityFindings(visibility: string | null, cfg: RepoConfig): boolean {
-  return (visibility !== null && visibility !== "PUBLIC") || cfg.acceptance?.security_public === true;
+  if (cfg.acceptance?.security_public === false) return visibility !== null && visibility !== "PUBLIC";
+  return true;
 }
 
 /** The findings the scan would file: severity at or above the floor, ordered

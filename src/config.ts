@@ -26,13 +26,14 @@ const DEFAULTS = {
   // default off — an autonomous factory must not start spending acceptance
   // tokens or filing issues because a config was half-written. The caps are
   // shared defaults so a repo enabling e2e/prd_check without tuning them is
-  // still bounded. security_public stays false so a public tracker never
-  // becomes a live disclosure channel by default.
+  // still bounded. security_public defaults TRUE (operator call, 2026-11-16):
+  // penthera findings are visible on public repos too; a repo that treats
+  // its tracker as sensitive opts OUT with an explicit false.
   acceptance: {
     e2e: false,
     prd_check: false,
     security: false,
-    security_public: false,
+    security_public: true,
     severity_floor: "medium" as const,
     e2e_minutes: 10,
     prd_minutes: 25,
