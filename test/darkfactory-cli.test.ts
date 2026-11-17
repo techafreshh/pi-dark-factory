@@ -29,12 +29,46 @@ describe("parseArgs", () => {
     expect((parseArgs(["status", "--raw"]) as any).raw).toBe(true);
     expect(parseArgs(["status", "--wat"])?.error).toContain("unknown flag");
   });
+  test("acceptance --status is a boolean flag (it was missing from BOOL_FLAGS — the parser rejected the documented read path)", () => {
+    expect((parseArgs(["acceptance", "app", "--status"]) as any).status).toBe(true);
+  });
   test("a value flag at the end errors instead of reading undefined", () => {
     expect(parseArgs(["logs", "--repo"])?.error).toContain("needs a value");
   });
 });
 
 describe("run (verbs over a mocked API)", () => {
+  test("acceptance SLUG --status reads the stored verdicts (flag → cmdAcceptance read path, end to end)", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return {
+        status: 200,
+        body: {
+          repos: [
+            {
+              slug: "app",
+              acceptance: {
+                prd_stored: true,
+                gen: 2,
+                last: { status: "pass", at: "2026-11-15T10:00:00Z" },
+                last_security: { status: "pass", at: "2026-11-15T10:05:00Z", summary: "0 findings above medium" },
+              },
+            },
+          ],
+        },
+      };
+    };
+    const code = await run(["acceptance", "app", "--status"], { ...silence(), out: (s) => out.push(String(s)), api });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["GET /status"]);
+    const text = out.join("");
+    expect(text).toContain("prd stored: yes · generation 2");
+    expect(text).toContain("walk verdict: pass at 2026-11-15T10:00:00Z");
+    expect(text).toContain("security verdict: pass at 2026-11-15T10:05:00Z — 0 findings above medium");
+  });
+
   test("no verb prints usage and exits 2; help exits 0; unknown verb exits 2", async () => {
     const out: string[] = [];
     expect(await run([], { ...silence(), out: (s) => out.push(String(s)) })).toBe(2);

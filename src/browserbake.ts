@@ -22,7 +22,12 @@ export const BOX_TOOLCHAIN_DIR = "/opt/pdf-e2e";
 
 const TOOLCHAIN_INSTALL = [
   `set -eu`,
-  `mkdir -p ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers`,
+  // /opt is root-owned and the bake ssh user is non-root on instabox/boxd
+  // (the lap clone block sudo-prepares /data for the same reason): create
+  // the dirs with sudo and hand them to the invoking user so the installs
+  // below stay unprivileged; root lanes (and no-sudo boxes) fall through to
+  // plain mkdir
+  `(sudo -n mkdir -p ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers && sudo -n chown "$(id -u):$(id -g)" ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers) || mkdir -p ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers`,
   // node 22+: the boxd base ships bun only, instavm's is bare ubuntu —
   // install node where it is missing (idempotent everywhere else)
   `if ! command -v node >/dev/null 2>&1; then`,

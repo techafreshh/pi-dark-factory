@@ -53,7 +53,7 @@ const ISSUE_STATE_COLOR = {
 const section = (P, label) => `\n\n${P.header(`── ${label} ` + "─".repeat(Math.max(2, 46 - label.length)))}`;
 
 const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format"];
-const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--help", "-h"];
+const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--status", "--help", "-h"];
 
 export function parseArgs(argv) {
   const a = { _: [] };
