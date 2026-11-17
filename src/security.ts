@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readAcceptanceState, writeAcceptanceState, type AcceptanceLast } from "./acceptance-state";
 import { ensureSource, withSourceLock } from "./gitws";
@@ -141,15 +141,24 @@ export async function runSecurityScan(
   // hoisted: the cleanup finally runs outside the try that fills it
   let src = "";
   try {
+    // round-2 suggestion: a killed scan leaves its wt-* dir and a stale
+    // .git/worktrees entry behind — sweep + prune the orphans at scan start
+    // (the prune touches the shared .git, so it rides the lock below)
+    try {
+      for (const e of readdirSync(scanRoot, { withFileTypes: true })) {
+        if (e.isDirectory() && e.name.startsWith("wt-")) rmSync(join(scanRoot, e.name), { recursive: true, force: true });
+      }
+    } catch {}
     // the source checkout is SHARED (gitws.ts: parallel lanes + the merge
     // queue read one .git): fetch/reset/clean and worktree add take the
     // per-repo lock, exactly like every other source user. The scanner run
     // itself stays OUTSIDE the lock — it touches only its own worktree.
     const prepared = await withSourceLock(cfg.slug, async () => {
-      const src = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
-      const rev = await sh(["git", "-C", src, "rev-parse", ref], { timeoutMs: 30_000 });
-      const added = await sh(["git", "-C", src, "worktree", "add", "--detach", wt, ref], { timeoutMs: 120_000 });
-      return { src, head: rev.stdout.trim(), addedCode: added.code, addedErr: added.stderr.trim().slice(0, 300) };
+      await sh(["git", "worktree", "prune"], { timeoutMs: 30_000, cwd: opts.stateDir });
+      const inner = await ensureSource(opts.stateDir, cfg); // fetch + reset, throws on transport failure
+      const rev = await sh(["git", "-C", inner, "rev-parse", ref], { timeoutMs: 30_000 });
+      const added = await sh(["git", "-C", inner, "worktree", "add", "--detach", wt, ref], { timeoutMs: 120_000 });
+      return { src: inner, head: rev.stdout.trim(), addedCode: added.code, addedErr: added.stderr.trim().slice(0, 300) };
     });
     src = prepared.src;
     const mainHead = prepared.head;
@@ -271,9 +280,13 @@ export async function runSecurityScan(
     receipt(opts.stateDir, `security scan on main: ${summary}, filed ${filed.length}`, cfg.slug);
     return { pass: false, summary, filed, kind: "findings" };
   } finally {
-    await withSourceLock(cfg.slug, async () => {
-      await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
-    });
+    // round-2 suggestion: src is "" when ensureSource threw — git -C "" would
+    // run the removal in whatever cwd the process has; skip it instead
+    if (src) {
+      await withSourceLock(cfg.slug, async () => {
+        await sh(["git", "-C", src, "worktree", "remove", "--force", wt], { timeoutMs: 30_000 });
+      });
+    }
     rmSync(wt, { recursive: true, force: true });
   }
 }

@@ -52,15 +52,12 @@ export class FakeGh implements GhApi {
     this.comments.push(`#${n}: ${body}`);
     return Promise.resolve();
   }
-  issueComments(n: number): Promise<{ id: number; body: string }[]> {
-    // ids are the index into `comments` — issueCommentUpdate rewrites by it
+  issueComments(n: number): Promise<{ id: number; body: string; login: string }[]> {
     return Promise.resolve(
-      this.comments
-        .map((body, i) => ({ id: i, body }))
-        .filter((c) => c.body.startsWith(`#${n}: `))
-        .map((c) => ({ id: c.id, body: c.body.slice(`#${n}: `.length) }))
+      this.comments.map((body, i) => ({ id: i, body, login: "factory-bot" })).filter((c) => c.body.startsWith(`#${n}: `)).map((c) => ({ id: c.id, body: c.body.slice(`#${n}: `.length), login: "factory-bot" }))
     );
   }
+
   issueCommentUpdate(commentId: number, body: string): Promise<void> {
     const old = this.comments[commentId];
     if (old === undefined) return Promise.reject(new Error("no such comment"));

@@ -276,10 +276,13 @@ function suiteRelPath(p: string): string {
 }
 
 /** Copy every suite-shaped file under `dir` into the factory suite,
- *  preserving its path relative to `dir`. */
+ *  preserving its path relative to `dir`. Skips node_modules/.e2e — an
+ *  agent that installed inside outDir would otherwise have its whole
+ *  dependency tree walked (PR #16 round 2, suggestion 4). */
 function collectWalk(dir: string, dest: string, rel = ""): boolean {
   let copied = false;
   for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory() && (e.name === "node_modules" || e.name === ".e2e")) continue;
     const from = join(dir, e.name);
     const relTo = rel ? join(rel, e.name) : e.name;
     if (e.isDirectory()) {

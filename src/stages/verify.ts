@@ -335,6 +335,7 @@ export async function runVerify(
   if (opts.pr !== null && (e2e || security)) {
     try {
       const visibility = await repoVisibility(cfg.repo).catch(() => null);
+      const viewer = await gh.viewerLogin().catch(() => null);
       const body = evidenceComment({
         attempt: opts.attempt,
         floor: cfg.acceptance?.severity_floor ?? "medium",
@@ -342,7 +343,9 @@ export async function runVerify(
         e2e: e2e ? { pass: e2e.pass, summary: e2e.summary, failures: e2e.report?.failures } : null,
         security: security ? { pass: security.pass, summary: security.summary, note: security.note, kind: security.kind } : null,
       });
-      const mine = (await gh.issueComments(opts.pr)).filter((c) => c.body.startsWith("## Acceptance evidence"));
+      // only OUR comment is updated — a same-marker comment by someone else
+      // must not be PATCHed by the factory (PR #16 round 2, suggestion 3)
+      const mine = (await gh.issueComments(opts.pr)).filter((c) => c.login === viewer && c.body.startsWith("## Acceptance evidence"));
       if (mine.length > 0) await gh.issueCommentUpdate(mine[mine.length - 1].id, body);
       else await gh.issueComment(opts.pr, body);
       receipt(opts.stateDir, `acceptance evidence posted on PR#${opts.pr}`, cfg.slug);
