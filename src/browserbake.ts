@@ -28,6 +28,9 @@ const TOOLCHAIN_INSTALL = [
   // below stay unprivileged; root lanes (and no-sudo boxes) fall through to
   // plain mkdir
   `(sudo -n mkdir -p ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers && sudo -n chown "$(id -u):$(id -g)" ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers) || mkdir -p ${BOX_TOOLCHAIN_DIR} ${BOX_TOOLCHAIN_DIR}-browsers`,
+  // a half-prepared dir (sudo mkdir ok, chown refused) would EACCES three
+  // steps later inside npm — name the real cause here instead
+  `[ -w ${BOX_TOOLCHAIN_DIR} ] || { echo "BROWSER_BAKE_FAILED: ${BOX_TOOLCHAIN_DIR} is not writable by $(id -u) after mkdir/chown (sudo refused?)"; exit 31; }`,
   // node 22+: the boxd base ships bun only, instavm's is bare ubuntu —
   // install node where it is missing (idempotent everywhere else)
   `if ! command -v node >/dev/null 2>&1; then`,

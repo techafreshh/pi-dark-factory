@@ -125,3 +125,48 @@ export function stuckSummaryComment(
     .filter(Boolean)
     .join("\n");
 }
+
+/** The verify-time acceptance evidence, posted on the PR (report-only):
+ *  the authored browser suite's gate verdict + the branch penthera scan.
+ *  Finding details follow the same visibility rule as issue filing —
+ *  visible everywhere by default; a repo with an explicit
+ *  security_public: false gets counts, never file/line/sink. */
+export function evidenceComment(o: {
+  attempt?: number;
+  floor: string;
+  /** security_public !== false, or a private/internal repo */
+  mayDetailSecurity: boolean;
+  e2e?: { pass: boolean; summary: string; failures?: { file: string; testId: string; status: string }[] } | null;
+  security?: { pass: boolean; summary: string; note?: string; kind?: "findings" | "error" } | null;
+}): string {
+  const lines: string[] = [`## Acceptance evidence — verify${o.attempt ? ` (attempt ${o.attempt})` : ""}`, ""];
+  const e = o.e2e;
+  if (!e) {
+    lines.push("🧪 **e2e gate**: _did not run_ — no authored suite yet (the drain-time PRD walk authors one), or another gate already failed this lap");
+  } else if (e.pass) {
+    lines.push(`🧪 **e2e gate**: ✅ ${e.summary}`);
+  } else if (e.failures && e.failures.length > 0) {
+    lines.push(`🧪 **e2e gate**: ❌ ${e.summary}`, "");
+    for (const f of e.failures.slice(0, 5)) lines.push(`- ✗ \`${f.file} :: ${f.testId}\` (${f.status})`);
+    if (e.failures.length > 5) lines.push(`- … and ${e.failures.length - 5} more`);
+  } else {
+    lines.push(`🧪 **e2e gate**: ⏭️ ${e.summary} — the next lap retries`);
+  }
+  const s = o.security;
+  if (!s) {
+    lines.push("🔒 **penthera** (branch): _did not run_ (acceptance.security off, or another gate already failed this lap)");
+  } else if (s.kind === "error") {
+    // the scan itself failed — there are no findings, so the "files issues"
+    // footer would be a lie (PR #16 review, M1: the note/summary inference
+    // could never reach this branch)
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}${s.note ? ` — ${s.note}` : ""}`);
+  } else if (s.pass) {
+    lines.push(`🔒 **penthera** (branch): ✅ ${s.summary}`);
+  } else if (o.mayDetailSecurity) {
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary}`, "", "_The post-merge audit on merged main files the findings as issues._");
+  } else {
+    lines.push(`🔒 **penthera** (branch): ⚠️ ${s.summary} — details withheld (this repo sets \`security_public: false\`)`);
+  }
+  lines.push("", "_Report-only evidence posted at verify time by pi-dark-factory. The post-merge audit on merged main files issue(s); nothing here gates the merge._");
+  return lines.join("\n");
+}

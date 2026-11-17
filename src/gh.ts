@@ -51,6 +51,11 @@ export interface GhApi {
   issueList(state: "open" | "all", limit?: number): Promise<IssueLite[]>;
   issueView(n: number): Promise<IssueLite & { state: string }>;
   issueComment(n: number, body: string): Promise<void>;
+  /** the PR/issue's comments as {id, body, author login} — the evidence
+   *  comment updates its own previous post in place instead of stacking one
+   *  per attempt; paginated, so the lookup works past the first page */
+  issueComments(n: number): Promise<{ id: number; body: string; login: string }[]>;
+  issueCommentUpdate(commentId: number, body: string): Promise<void>;
   issueClose(n: number): Promise<void>;
   issueCreate(title: string, body: string): Promise<number>;
   issueAddLabels(n: number, labels: string[]): Promise<void>;
@@ -132,6 +137,31 @@ export class Gh implements GhApi {
 
   async issueComment(n: number, body: string): Promise<void> {
     await shOk(await sh(["gh", "issue", "comment", String(n), "--repo", this.repo, "--body", body]), "gh issue comment");
+  }
+
+  async issueComments(n: number): Promise<{ id: number; body: string; login: string }[]> {
+    // --paginate: the evidence comment must be findable on a PR with more
+    // comments than the API's default first page (PR #16 round 2)
+    const res = await sh([
+      "gh", "api", "--paginate", `repos/${this.repo}/issues/${n}/comments`,
+      "--jq", "[.[] | {id: .id, body: .body, login: .user.login}]",
+    ]);
+    const out = shOk(res, "gh api issues comments").trim();
+    if (!out) return [];
+    try {
+      // --paginate emits one JSON array per page — stitch them before parsing
+      const pages = JSON.parse(`[${out.replace(/\]\s*\[/g, "],[")}]`).flat();
+      return pages.filter((c: any) => typeof c.id === "number" && typeof c.body === "string" && typeof c.login === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  async issueCommentUpdate(commentId: number, body: string): Promise<void> {
+    await shOk(
+      await sh(["gh", "api", "-X", "PATCH", `repos/${this.repo}/issues/comments/${commentId}`, "-f", `body=${body}`]),
+      "gh api patch comment"
+    );
   }
 
   async issueClose(n: number): Promise<void> {

@@ -210,11 +210,11 @@ export interface RepoConfig {
     prd_check?: boolean;
     /** penthera security scan per merge (files [security] issues) */
     security?: boolean;
-    /** file [security] issues even on a PUBLIC repo. Default false: on a
-     *  public tracker a published finding is a live disclosure (file, line,
-     *  sink) minutes after the merge that introduced it — the scan still
-     *  runs and receipts, it just does not publish. Private repos always
-     *  file. */
+    /** file [security] issues even on a PUBLIC repo. Default true (operator
+     *  call, 2026-11-16): findings are visible everywhere by default. A repo
+     *  that treats its tracker as sensitive opts OUT with an explicit false —
+     *  the scan still runs and receipts there, it just does not publish, and
+     *  an unreadable visibility fails closed for that repo. */
     security_public?: boolean;
     /** penthera findings below this stay receipt-only (default medium) */
     severity_floor?: SecuritySeverity;

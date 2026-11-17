@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ShRes } from "../sh";
 import type { Ledger } from "../ledger";
 import {
@@ -254,15 +254,64 @@ export async function shipSuiteInBox(machine: SuiteMachine, suiteDir: string, bo
 }
 
 /** Where the walk agent may have written the authored suite. The prompt
- *  names /tmp/pdf-e2e-out, but agents write relative to their cwd too —
- *  walk 2026-11-15: DELIVERED, authoring expected, the single-dir collect
- *  found nothing, and nothing receipted. Search every candidate root. */
-export const BOX_AUTHORING_ROOTS = ["/tmp/pdf-e2e-out", "e2e-out", "."];
+ *  names /tmp/pdf-e2e-out; `e2e-out` catches an agent that wrote relative to
+ *  its cwd. The repo dir itself is deliberately NOT a root — a product with
+ *  its own *.e2e.ts files would have them swept into the factory's gate
+ *  (PR #16 review, M4). */
+export const BOX_AUTHORING_ROOTS = ["/tmp/pdf-e2e-out", "e2e-out"];
+
+/** Path of a collected file INSIDE the suite dir, relative — the framework's
+ *  default test glob only matches files under the `tests/` subdirectory, so
+ *  `tests/` must survive the trip (flattening it re-creates the NO_TESTS
+ *  failure the layout fix removed, PR #16 H1). */
+function suiteRelPath(p: string): string {
+  let r = p.replace(/^\.\//, "");
+  for (const pre of ["tmp/pdf-e2e-out/", "e2e-out/"]) {
+    if (r.startsWith(pre)) {
+      r = r.slice(pre.length);
+      break;
+    }
+  }
+  return r;
+}
+
+/** Copy every suite-shaped file under `dir` into the factory suite,
+ *  preserving its path relative to `dir`. Skips node_modules/.e2e — an
+ *  agent that installed inside outDir would otherwise have its whole
+ *  dependency tree walked (PR #16 round 2, suggestion 4). */
+function collectWalk(dir: string, dest: string, rel = ""): boolean {
+  let copied = false;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory() && (e.name === "node_modules" || e.name === ".e2e")) continue;
+    const from = join(dir, e.name);
+    const relTo = rel ? join(rel, e.name) : e.name;
+    if (e.isDirectory()) {
+      if (collectWalk(from, dest, relTo)) copied = true;
+      continue;
+    }
+    if (e.name.endsWith(".e2e.ts") || e.name.endsWith(".e2e.js") || e.name === "e2e.config.ts") {
+      const to = join(dest, suiteRelPath(relTo));
+      mkdirSync(dirname(to), { recursive: true });
+      cpSync(from, to);
+      copied = true;
+    }
+  }
+  return copied;
+}
+
+/** Host-lane collection: the walk agent writes into `outDir` on the VPS. */
+export function collectFromHostDir(outDir: string, stateDir: string, slug: string): boolean {
+  try {
+    return collectWalk(outDir, e2eSuiteDir(stateDir, slug));
+  } catch {
+    return false;
+  }
+}
 
 /** Collect the suite files the walk agent authored in the box back into
  *  factory state (discoveries-<attempt>.json rides back the same way):
  *  find the suite-shaped files across every candidate root, tar exactly
- *  those, copy them (any depth — tar paths may nest) into factory state. */
+ *  those, copy them path-preserved into factory state. */
 export async function collectSuiteFromBox(machine: LapMachineLike, stateDir: string, slug: string): Promise<{ got: boolean; where: string }> {
   const roots = BOX_AUTHORING_ROOTS.join(" ");
   const res = await machine.bash(
@@ -279,20 +328,11 @@ export async function collectSuiteFromBox(machine: LapMachineLike, stateDir: str
   try {
     const x = await sh(["bash", "-c", `printf %s ${out} | base64 -d | tar xzf - -C ${tmp}`], { timeoutMs: 30_000 });
     if (x.code !== 0) return { got: false, where: "" };
-    let copied = false;
-    const walkDir = (dir: string) => {
-      for (const e of readdirSync(dir, { withFileTypes: true })) {
-        const p = join(dir, e.name);
-        if (e.isDirectory()) { walkDir(p); continue; }
-        if (e.name.endsWith(".e2e.ts") || e.name.endsWith(".e2e.js") || e.name === "e2e.config.ts") {
-          mkdirSync(dest, { recursive: true });
-          cpSync(p, join(dest, e.name));
-          copied = true;
-        }
-      }
-    };
-    walkDir(tmp);
-    return { got: copied, where: copied ? BOX_AUTHORING_ROOTS.join(", ") : "" };
+    // tar members arrive root-prefixed (`tmp/pdf-e2e-out/tests/home.e2e.ts`,
+    // `e2e-out/...`) or repo-relative — suiteRelPath strips the known roots
+    // and keeps `tests/` intact
+    const got = collectWalk(tmp, dest);
+    return { got, where: got ? BOX_AUTHORING_ROOTS.join(", ") : "" };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -527,27 +567,17 @@ async function acceptanceWindow(
   if (args.machine) {
     const got = await collectSuiteFromBox(args.machine, stateDir, slug);
     if (got.got) deps.log("acceptance: authored suite files collected from the box into factory state");
-  } else {
-    const dest = e2eSuiteDir(stateDir, slug);
-    let copied = false;
-    try {
-      for (const e of readdirSync(outDir)) {
-        if (e.endsWith(".e2e.ts") || e.endsWith(".e2e.js") || e === "e2e.config.ts") {
-          mkdirSync(dest, { recursive: true });
-          cpSync(join(outDir, e), join(dest, e));
-          copied = true;
-        }
-      }
-    } catch {}
-    if (copied) deps.log("acceptance: authored suite files stored in factory state");
+  } else if (collectFromHostDir(outDir, stateDir, slug)) {
+    deps.log("acceptance: authored suite files stored in factory state");
   }
   // an authoring walk that produced no suite is SILENT only once — the gate
   // would stay skipped forever on a repo whose walks keep passing without
   // authoring, so receipt it loudly every time it happens
   if (!suiteExisted && !e2eSuiteExists(stateDir, slug)) {
+    const searched = args.machine ? `the box's ${BOX_AUTHORING_ROOTS.join(", ")}` : outDir;
     receipt(
       stateDir,
-      `acceptance: authoring was expected but no suite files landed in factory state (searched the box's ${BOX_AUTHORING_ROOTS.join(", ")}) — the verify gate stays skipped until a walk authors one`,
+      `acceptance: authoring was expected but no suite files landed in factory state (searched ${searched}) — the verify gate stays skipped until a walk authors one`,
       slug
     );
   }
