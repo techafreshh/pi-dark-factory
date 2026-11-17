@@ -188,24 +188,43 @@ export function e2eRunCommand(opts: { suiteDir: string; toolchainDir: string; in
     `RC=$?`,
     `echo "PDFE2ERC=$RC"`,
     `if [ -f .e2e/report.json ]; then base64 -w0 .e2e/report.json; else echo PDFE2ENOREPORT; fi`,
+    // collection errors (NO_TESTS, bad config) write NO report and rc != 0 —
+    // without the run log the receipt can only say "unparsable", which sent
+    // the 2026-11-15 rollout to a full debug box to learn the test glob was
+    // wrong. Frame the tail so every failure names its cause.
+    `echo "PDFE2ELOGBEGIN"`,
+    `tail -c 1500 run.log 2>/dev/null`,
+    `echo "PDFE2ELOGEND"`,
     `exit $RC`,
   ].join("\n");
 }
 
-/** Parse the framed output of e2eRunCommand (rc line + report b64). */
-export function parseE2eRunOutput(stdout: string): { rc: number | null; report: E2eSummary | null } {
-  const lines = stdout.split("\n");
+/** Parse the framed output of e2eRunCommand (rc line + report b64 + log tail). */
+export function parseE2eRunOutput(stdout: string): { rc: number | null; report: E2eSummary | null; logTail: string } {
+  const logIdx = stdout.indexOf("PDFE2ELOGBEGIN");
+  const head = logIdx === -1 ? stdout : stdout.slice(0, logIdx);
+  const lines = head.split("\n");
   const rcLine = lines.find((l) => l.startsWith("PDFE2ERC="));
   const rc = rcLine ? Number(rcLine.slice("PDFE2ERC=".length)) : null;
   const b64 = lines.filter((l) => /^[A-Za-z0-9+/=]{100,}$/.test(l.trim())).pop()?.trim();
   const report = b64 && b64 !== "PDFE2ENOREPORT" ? parseE2eReport(Buffer.from(b64, "base64").toString("utf8")) : null;
-  return { rc, report };
+  const logTail =
+    logIdx === -1
+      ? ""
+      : stdout
+          .slice(logIdx + "PDFE2ELOGBEGIN".length)
+          .replace(/PDFE2ELOGEND[\s\S]*$/, "")
+          // strip ANSI, squash whitespace: the log rides receipts
+          .replace(/\x1b\[[0-9;]*m/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+  return { rc, report, logTail };
 }
 
-export function summarizeE2e(report: E2eSummary | null, rc: number | null): string {
-  return report
-    ? `suite ${report.status}: ${report.passed} passed, ${report.failed} failed${report.flaky ? `, ${report.flaky} flaky` : ""}`
-    : `no parsable e2e report (rc ${rc ?? "?"})`;
+export function summarizeE2e(report: E2eSummary | null, rc: number | null, logTail = ""): string {
+  if (report) return `suite ${report.status}: ${report.passed} passed, ${report.failed} failed${report.flaky ? `, ${report.flaky} flaky` : ""}`;
+  const cause = logTail ? ` — runner log: ${logTail.slice(0, 220)}` : "";
+  return `no parsable e2e report (rc ${rc ?? "?"})${cause}`;
 }
 
 const b64TarOf = async (dir: string, timeoutMs = 60_000): Promise<string> => {
@@ -234,29 +253,46 @@ export async function shipSuiteInBox(machine: SuiteMachine, suiteDir: string, bo
   }
 }
 
+/** Where the walk agent may have written the authored suite. The prompt
+ *  names /tmp/pdf-e2e-out, but agents write relative to their cwd too —
+ *  walk 2026-11-15: DELIVERED, authoring expected, the single-dir collect
+ *  found nothing, and nothing receipted. Search every candidate root. */
+export const BOX_AUTHORING_ROOTS = ["/tmp/pdf-e2e-out", "e2e-out", "."];
+
 /** Collect the suite files the walk agent authored in the box back into
- *  factory state (discoveries-<attempt>.json rides back the same way). */
-async function collectSuiteFromBox(machine: LapMachineLike, boxDir: string, stateDir: string, slug: string): Promise<boolean> {
+ *  factory state (discoveries-<attempt>.json rides back the same way):
+ *  find the suite-shaped files across every candidate root, tar exactly
+ *  those, copy them (any depth — tar paths may nest) into factory state. */
+export async function collectSuiteFromBox(machine: LapMachineLike, stateDir: string, slug: string): Promise<{ got: boolean; where: string }> {
+  const roots = BOX_AUTHORING_ROOTS.join(" ");
   const res = await machine.bash(
-    `cd ${boxDir} 2>/dev/null && ls *.e2e.ts e2e.config.ts >/dev/null 2>&1 && tar czf - --exclude=node_modules --exclude=.e2e --exclude=run.log . | base64 -w0 || true`,
+    [
+      `FILES=$(find ${roots} -maxdepth 2 \\( -name '*.e2e.ts' -o -name '*.e2e.js' -o -name 'e2e.config.ts' \\) -not -path '*/node_modules/*' 2>/dev/null | sort -u)`,
+      `[ -n "$FILES" ] && tar czf - $FILES 2>/dev/null | base64 -w0`,
+    ].join("\n"),
     { timeoutMs: 60_000 }
   );
   const out = res.stdout.trim().split("\n").filter((l) => /^[A-Za-z0-9+/=]{100,}$/.test(l.trim())).pop()?.trim();
-  if (!out) return false;
+  if (!out) return { got: false, where: "" };
   const dest = e2eSuiteDir(stateDir, slug);
   const tmp = mkdtempSync(join(tmpdir(), `pdf-e2e-collect-${slug}-`));
   try {
     const x = await sh(["bash", "-c", `printf %s ${out} | base64 -d | tar xzf - -C ${tmp}`], { timeoutMs: 30_000 });
-    if (x.code !== 0) return false;
+    if (x.code !== 0) return { got: false, where: "" };
     let copied = false;
-    for (const e of readdirSync(tmp)) {
-      if (e.endsWith(".e2e.ts") || e.endsWith(".e2e.js") || e === "e2e.config.ts") {
-        mkdirSync(dest, { recursive: true });
-        cpSync(join(tmp, e), join(dest, e));
-        copied = true;
+    const walkDir = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) { walkDir(p); continue; }
+        if (e.name.endsWith(".e2e.ts") || e.name.endsWith(".e2e.js") || e.name === "e2e.config.ts") {
+          mkdirSync(dest, { recursive: true });
+          cpSync(p, join(dest, e.name));
+          copied = true;
+        }
       }
-    }
-    return copied;
+    };
+    walkDir(tmp);
+    return { got: copied, where: copied ? BOX_AUTHORING_ROOTS.join(", ") : "" };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -289,11 +325,22 @@ export interface SuiteRunResult {
   pass: boolean;
   summary: string;
   report: E2eSummary | null;
+  /** tail of the runner's own log — collection errors (NO_TESTS, bad config)
+   *  write NO report, so this is the only place the failure names itself */
+  logTail?: string;
 }
 
 function readReportSafe(suiteDir: string): string {
   try {
     return readFileSync(join(suiteDir, ".e2e", "report.json"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function readLogTailSafe(suiteDir: string): string {
+  try {
+    return readFileSync(join(suiteDir, "run.log"), "utf8").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+/g, " ").trim().slice(-1500);
   } catch {
     return "";
   }
@@ -324,11 +371,13 @@ export async function runSuiteInLane(opts: {
     });
   let rc: number | null;
   let report: E2eSummary | null;
+  let logTail = "";
   if (opts.lane === "box") {
     const res = await opts.machineBash!(cmd, { timeoutMs: opts.timeoutMs + 60_000 });
     const parsed = parseE2eRunOutput(res.stdout);
     rc = parsed.rc;
     report = parsed.report;
+    logTail = parsed.logTail;
   } else {
     const res = await sh(["bash", "-c", cmd], {
       cwd: opts.suiteDir,
@@ -339,10 +388,11 @@ export async function runSuiteInLane(opts: {
     });
     rc = res.code;
     report = parseE2eReport(readReportSafe(opts.suiteDir));
+    logTail = readLogTailSafe(opts.suiteDir);
   }
   // green requires the suite's OWN exit code too: a nonzero rc with a
   // "passed" report (the runner died after the tests) is infra, not green
-  return { pass: !!report && report.status === "passed" && rc === 0, summary: summarizeE2e(report, rc), report };
+  return { pass: !!report && report.status === "passed" && rc === 0, summary: summarizeE2e(report, rc, logTail), report, logTail };
 }
 
 export interface AcceptanceDeps {
@@ -388,8 +438,8 @@ export function buildAcceptancePrompt(
     `## Stored e2e suite`,
     "",
     o.authoring
-      ? `No suite exists yet. AUTHOR one this run: write e2e tests (the \`e2e\` framework; a toolchain is installed — create \`package.json\` with {"type":"module"}, symlink the toolchain's node_modules with \`ln -sfn ${o.inBox ? boxToolchainDir() : hostToolchainDir()}/node_modules node_modules\`, add an \`e2e.config.ts\` whose target app.url reads process.env.APP_URL) into: ${o.outDir}`
-      : `Last deterministic run: ${o.suiteSummary}. Extend or correct it in ${o.outDir} if it is stale against today's PRD — never delete tests to make a run pass.`,
+      ? `No suite exists yet. AUTHOR one this run: write e2e tests (the \`e2e\` framework; a toolchain is installed — create \`package.json\` with {"type":"module"}, symlink the toolchain's node_modules with \`ln -sfn ${o.inBox ? boxToolchainDir() : hostToolchainDir()}/node_modules node_modules\`, add an \`e2e.config.ts\` whose target app.url reads process.env.APP_URL) into: ${o.outDir}. LAYOUT IS LOAD-BEARING: the framework's default test glob is \`tests/**/*.e2e.ts\` — put test files under a \`tests/\` subdirectory of the suite dir (files at the suite root collect nothing and the run errors NO_TESTS); \`e2e.config.ts\` sits at the suite root.`
+      : `Last deterministic run: ${o.suiteSummary}. Extend or correct it in ${o.outDir} if it is stale against today's PRD — never delete tests to make a run pass. Keep the layout: tests under \`tests/\`, config at the suite root.`,
     "",
     `## Output contract (your final message — parseable, no extra prose after it)`,
     "",
@@ -475,8 +525,8 @@ async function acceptanceWindow(
 
   // 3. collect the authored suite files
   if (args.machine) {
-    const got = await collectSuiteFromBox(args.machine, "/tmp/pdf-e2e-out", stateDir, slug);
-    if (got) deps.log("acceptance: authored suite files collected from the box into factory state");
+    const got = await collectSuiteFromBox(args.machine, stateDir, slug);
+    if (got.got) deps.log("acceptance: authored suite files collected from the box into factory state");
   } else {
     const dest = e2eSuiteDir(stateDir, slug);
     let copied = false;
@@ -490,6 +540,16 @@ async function acceptanceWindow(
       }
     } catch {}
     if (copied) deps.log("acceptance: authored suite files stored in factory state");
+  }
+  // an authoring walk that produced no suite is SILENT only once — the gate
+  // would stay skipped forever on a repo whose walks keep passing without
+  // authoring, so receipt it loudly every time it happens
+  if (!suiteExisted && !e2eSuiteExists(stateDir, slug)) {
+    receipt(
+      stateDir,
+      `acceptance: authoring was expected but no suite files landed in factory state (searched the box's ${BOX_AUTHORING_ROOTS.join(", ")}) — the verify gate stays skipped until a walk authors one`,
+      slug
+    );
   }
   return res.outcome.text;
 }
@@ -590,6 +650,17 @@ export async function runPrdAcceptance(cfg: RepoConfig, deps: AcceptanceDeps, op
       }
 
       // ── verdict + filing (fail closed on an unparsable walk) ──
+      // the walk's full narration is the only evidence trail for what the
+      // agent did (machine-lane sessions die with the box, and the verdict
+      // summary is one line) — persist it BEFORE parsing so even an
+      // unparsable or empty-verdict walk leaves its text behind
+      if (holder.text) {
+        const walkLog = join(stateDir, "repos", slug, `acceptance-walk-${new Date().toISOString().replace(/[:.]/g, "-")}.log`);
+        try {
+          writeFileSync(walkLog, holder.text);
+          receipt(stateDir, `acceptance walk narration: ${walkLog}`, slug);
+        } catch {}
+      }
       const verdict = parseAcceptanceVerdict(holder.text);
       if (verdict.delivered === null) {
         const last: AcceptanceLast = {

@@ -1,11 +1,11 @@
 import { describe, expect, test, afterAll } from "bun:test";
 import { execSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupWorlds, FakeGh, FakeMachine, makeMachineWorld, type World } from "./world";
 import { e2eSuiteExists, prdPath, readAcceptanceState, acceptanceRunsToday, recordAcceptanceRun, writeAcceptanceState, readPrd } from "../src/acceptance-state";
-import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir, acceptanceSuiteEnv } from "../src/stages/acceptance";
+import { parseAcceptanceVerdict, parseE2eReport, parseE2eRunOutput, e2eRunCommand, runPrdAcceptance, buildAcceptancePrompt, hostToolchainDir, boxToolchainDir, acceptanceSuiteEnv, collectSuiteFromBox, BOX_AUTHORING_ROOTS } from "../src/stages/acceptance";
 import { parsePentheraReport, findingsAboveFloor, runSecurityScan, mayFileSecurityFindings, pentheraSpec } from "../src/security";
 import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
@@ -114,6 +114,36 @@ describe("parseE2eRunOutput (the framed in-box report)", () => {
     const { rc, report } = parseE2eRunOutput("PDFE2ERC=1\nPDFE2ENOREPORT");
     expect(rc).toBe(1);
     expect(report).toBeNull();
+  });
+  test("collection failures carry the runner log tail (ANSI stripped, framing respected)", () => {
+    const out = [
+      "PDFE2ERC=2",
+      "PDFE2ENOREPORT",
+      "PDFE2ELOGBEGIN",
+      "\x1b[31m ERROR \x1b[0m configuration error NO_TESTS (collection)",
+      'no test file matched "tests/**/*.e2e.ts" under /tmp/pdf-e2e-suite',
+      "PDFE2ELOGEND",
+      "trailing noise after the frame",
+    ].join("\n");
+    const { rc, report, logTail } = parseE2eRunOutput(out);
+    expect(rc).toBe(2);
+    expect(report).toBeNull();
+    expect(logTail).toContain("NO_TESTS (collection)");
+    expect(logTail).toContain("no test file matched");
+    expect(logTail).not.toContain("\x1b[");
+    expect(logTail).not.toContain("trailing noise");
+  });
+  test("a long base64-ish line inside the log tail cannot impersonate the report", () => {
+    const fakeB64 = "A".repeat(200);
+    const out = `PDFE2ERC=2\nPDFE2ENOREPORT\nPDFE2ELOGBEGIN\n${fakeB64}\nPDFE2ELOGEND\n`;
+    const { report } = parseE2eRunOutput(out);
+    expect(report).toBeNull();
+  });
+  test("no report + a log tail → the summary names the cause", () => {
+    // summarizeE2e rides the logTail so the RECEIPT names NO_TESTS, not just "unparsable"
+    const cmd = e2eRunCommand({ suiteDir: "/s", toolchainDir: "/t", inBox: true });
+    expect(cmd).toContain("PDFE2ELOGBEGIN");
+    expect(cmd).toContain("tail -c 1500 run.log");
   });
 });
 
@@ -828,6 +858,18 @@ describe("maybeDrainAcceptance (the end-of-project gate)", () => {
     expect(readAcceptanceState(w.stateDir, "toy").last?.status).toBe("pass");
     await maybeDrainAcceptance(w.cfg, w.stateDir, deps);
     expect(w.machines.length).toBe(1); // already DELIVERED on this main
+    // the walk's narration is the only evidence trail (machine sessions die
+    // with the box) — one sidecar with the full agent text, every walk
+    const walks = readdirSync(join(w.stateDir, "repos", "toy")).filter((f) => f.startsWith("acceptance-walk-"));
+    expect(walks.length).toBe(1);
+    expect(readFileSync(join(w.stateDir, "repos", "toy", walks[0]), "utf8")).toContain("VERDICT: DELIVERED");
+    // this fake walk authored nothing: the gate stays skipped and the
+    // receipt says so LOUDLY (the live walk of 2026-11-15 passed silently
+    // without authoring and nothing told the operator)
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("authoring was expected");
+    // the drain path's PROGRESS lines receipt too (they ran silenced in the
+    // live 2026-11-15/16 walks — the suite's rc-2 failure was invisible)
+    expect(readFileSync(join(w.stateDir, "laps.log"), "utf8")).toContain("acceptance walk stage ok");
   });
 
   test("deferred-class issues (discovery/security/minor/prd-gap minors) do not block the walk", () => {
@@ -974,6 +1016,67 @@ describe("buildAcceptancePrompt", () => {
     expect(p2).toContain(boxToolchainDir());
     const p3 = buildAcceptancePrompt(cfg, { prd: "x", url: "u", suiteSummary: "s", outDir: "/o", authoring: true, inBox: false });
     expect(p3).toContain(hostToolchainDir());
+  });
+});
+
+// ── the authoring safety net (multi-root in-box collection) ─────────────────
+
+describe("collectSuiteFromBox (authoring safety net across candidate roots)", () => {
+  const dirs: string[] = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), "pdfcollect-"));
+    dirs.push(d);
+    return d;
+  };
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+
+  /** A real tar (nested paths included) b64'd, as the box's find|tar would emit. */
+  function tarB64(files: Record<string, string>): string {
+    const dir = tmp();
+    for (const [p, c] of Object.entries(files)) {
+      mkdirSync(join(dir, p, ".."), { recursive: true });
+      writeFileSync(join(dir, p), c);
+    }
+    const names = Object.keys(files).map((f) => `'${f}'`).join(" ");
+    return execSync(`tar czf - -C ${dir} ${names} | base64 -w0`).toString().trim();
+  }
+  const stubMachine = (tar: string | null) =>
+    ({
+      bash: async (script: string) => ({ code: 0, stdout: script.includes("find /tmp/pdf-e2e-out") ? (tar ?? "") : "", stderr: "", timedOut: false }),
+    }) as any;
+
+  test("finds suite files at several roots and depths, copies them flat into factory state", async () => {
+    const stateDir = tmp();
+    const m = stubMachine(
+      tarB64({
+        "e2e-out/home.e2e.ts": "test('home', () => {});",
+        "data/repo/tests/e2e.config.ts": "export default {};",
+      })
+    );
+    const got = await collectSuiteFromBox(m, stateDir, "toy");
+    expect(got.got).toBe(true);
+    const suite = join(stateDir, "repos", "toy", "e2e");
+    expect(existsSync(join(suite, "home.e2e.ts"))).toBe(true);
+    expect(existsSync(join(suite, "e2e.config.ts"))).toBe(true);
+  });
+
+  test("nothing in any root → got:false; the searched roots are named", async () => {
+    const stateDir = tmp();
+    const got = await collectSuiteFromBox(stubMachine(null), stateDir, "toy");
+    expect(got.got).toBe(false);
+    expect(got.where).toBe("");
+    expect(BOX_AUTHORING_ROOTS).toContain("/tmp/pdf-e2e-out");
+    expect(BOX_AUTHORING_ROOTS.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a tar with no suite-shaped files copies nothing", async () => {
+    const stateDir = tmp();
+    const m = stubMachine(tarB64({ "scratch/notes.txt": "the agent wrote prose here" }));
+    const got = await collectSuiteFromBox(m, stateDir, "toy");
+    expect(got.got).toBe(false);
+    expect(existsSync(join(stateDir, "repos", "toy", "e2e"))).toBe(false);
   });
 });
 
