@@ -32,6 +32,11 @@ import { dirname } from "node:path";
 const STDOUT_CAP = 4_000_000;
 const STDERR_CAP = 20_000;
 
+/** The shared boxd base every repo boots from until its own bake names a
+ *  per-repo snapshot (config.ts carries the same default). bakeBoxd treats
+ *  "still on this default" as "no golden snapshot of its own yet". */
+export const BOXD_DEFAULT_SNAPSHOT = "factory-base-boxd-r1";
+
 export function boxdClientFromEnv(): Boxd {
   const key = process.env.BOXD_API_KEY;
   if (!key) throw new Error("BOXD_API_KEY is not set — boxd-mode repos cannot boot machines (set it in factoryd.env)");
@@ -232,7 +237,7 @@ export class BoxdLapMachine implements LapMachineLike {
   }
 
   private snapshotName(): string {
-    const raw = this.bdx().snapshot ?? "factory-base-boxd-r1";
+    const raw = this.bdx().snapshot ?? BOXD_DEFAULT_SNAPSHOT;
     return this.stateDir ? resolveSnapshotName(this.stateDir, raw) : raw;
   }
 

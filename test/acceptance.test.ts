@@ -11,7 +11,7 @@ import { fileFactoryIssues } from "../src/fileissues";
 import { maybeDrainAcceptance, openIssuesAllDeferred, runPostMergeExtras } from "../src/postmerge";
 import { runVerify } from "../src/stages/verify";
 import { BOX_SUITE_DIR } from "../src/stages/acceptance";
-import { reapOrphanMachines } from "../src/ops";
+import { reapOrphanMachines, opsBake } from "../src/ops";
 import { browserBakeScript, hostToolsScript } from "../src/browserbake";
 import { parseRepoConfig } from "../src/config";
 import { ensureSource, uncommitted } from "../src/gitws";
@@ -974,6 +974,204 @@ describe("buildAcceptancePrompt", () => {
     expect(p2).toContain(boxToolchainDir());
     const p3 = buildAcceptancePrompt(cfg, { prd: "x", url: "u", suiteSummary: "s", outDir: "/o", authoring: true, inBox: false });
     expect(p3).toContain(hostToolchainDir());
+  });
+});
+
+// ── boxd bake ───────────────────────────────────────────────────────────────
+
+describe("bakeBoxd (fake boxd org, real bootstrap over the exec wrapper)", () => {
+  const dirs: string[] = [];
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), "pdfboxdbake-"));
+    dirs.push(d);
+    return d;
+  };
+
+  /** A fake boxd org. The CLONE payload runs for real (bootstrapScriptFor
+   *  over the genuine exec wrapper, against a local bare origin); the
+   *  browser-toolchain payload is intercepted — apt/npm/playwright never run
+   *  in tests (the real script's verdict came from the live instabox bake). */
+  function fakeBoxd(o: { toolchain?: "ok" | "fail"; snapAfterCapture?: "ready" | "failed" | "pending"; preExisting?: Record<string, any> } = {}) {
+    const machines: any[] = [];
+    const snaps: Record<string, any> = { ...(o.preExisting ?? {}) };
+    const captures: string[] = [];
+    const frame = (nonce: string, rc: number, out: string, err = "") =>
+      `PDFRC-${nonce}:${rc}\nPDFO-${nonce}-START\n${out}\nPDFO-${nonce}-END\nPDFE-${nonce}-START\n${err}\nPDFE-${nonce}-END`;
+    const client = {
+      machines: {
+        list: async () => ({ machines: machines.map((m) => ({ ...m })) }),
+        create: async (spec: any) => {
+          const m = { id: `m-${machines.length + 1}`, name: spec.name, fromSnapshot: spec.fromSnapshot, labels: spec.labels };
+          machines.push(m);
+          return { ...m };
+        },
+        waitUntilReady: async () => {},
+        delete: async (id: string) => {
+          const i = machines.findIndex((m) => m.id === id);
+          if (i >= 0) machines.splice(i, 1);
+        },
+        exec: async (_id: string, p: any) => {
+          const wrapped = String(p.command[2]); // ["bash", "-c", <wrapped>]
+          const nonce = wrapped.match(/PDFRC-([A-Za-z0-9]+):/)![1];
+          const outer = Buffer.from(wrapped.match(/printf %s '([A-Za-z0-9+/=]+)'/)![1], "base64").toString("utf8");
+          // bake payloads nest the real script one level:
+          // "set -eu\nprintf %s <b64> | base64 -d | bash"
+          const nested = outer.match(/printf %s ([A-Za-z0-9+/=]+) \| base64 -d/);
+          const inner = nested ? Buffer.from(nested[1], "base64").toString("utf8") : "";
+          if (inner.includes("/opt/pdf-e2e")) {
+            // the browser toolchain payload: intercepted, never executed
+            if ((o.toolchain ?? "ok") === "fail") return { stdout: frame(nonce, 1, "", "apt-get: simulated platform failure") };
+            return { stdout: frame(nonce, 0, "NODE_OK v22\nCHROME_OK system\nTOOLCHAIN_OK") };
+          }
+          const proc = Bun.spawnSync(["bash", "-c", wrapped], { env: { PATH: process.env.PATH, HOME: process.env.HOME, ...p.env } });
+          return { stdout: proc.stdout.toString() };
+        },
+      },
+      snapshots: {
+        create: async (_machine: string, name: string) => {
+          captures.push(name);
+          const prev = snaps[name];
+          snaps[name] = { id: `s-${name}`, name, version: (prev?.version ?? 0) + 1, status: o.snapAfterCapture ?? "pending", sizeBytes: 0, createdAt: null };
+          return { ...snaps[name] };
+        },
+        get: async (name: string) => {
+          const s = snaps[name];
+          if (!s) throw new Error(`snapshot ${name} not found`);
+          if (s.status === "pending") {
+            s.status = "ready";
+            s.sizeBytes = 8 * 2 ** 30;
+          }
+          return { ...s };
+        },
+        list: async () => ({ snapshots: Object.values(snaps) }),
+      },
+      _machines: machines,
+      _snaps: snaps,
+      _captures: captures,
+    };
+    return client;
+  }
+
+  /** Real state dir + repo config + a local bare origin with one commit. */
+  function world(o: { snapshot?: string; acceptance?: boolean }) {
+    const dir = tmp();
+    const stateDir = join(dir, "state");
+    mkdirSync(join(stateDir, "repos", "boxy"), { recursive: true });
+    const origin = join(dir, "origin.git");
+    const seed = join(dir, "seed");
+    execSync(`git init -q --bare -b main ${origin}`);
+    execSync(`git init -q -b main ${seed}`);
+    writeFileSync(join(seed, "app.js"), "console.log('hi');\n");
+    execSync(`git -C ${seed} add -A && git -C ${seed} -c user.email=t@x -c user.name=t commit -qm one && git -C ${seed} push -q ${origin} main`);
+    const cfg = {
+      repo: "techafreshh/boxy",
+      slug: "boxy",
+      default_branch: "main",
+      origin_url: origin, // a local bare repo: the clone runs for real, no network
+      models: { default: { provider: "meta", model: "muse-spark-1.3-contributor", fallback: [] } },
+      env: { mode: "boxd", boxd: { repo_dir: join(dir, "repo"), ...(o.snapshot ? { snapshot: o.snapshot } : {}) } },
+      ...(o.acceptance === false ? {} : { acceptance: { e2e: true, prd_check: true, security: false } }),
+    };
+    writeFileSync(join(stateDir, "repos", "boxy", "config.json"), JSON.stringify(cfg, null, 2));
+    return { stateDir, origin, dir };
+  }
+
+  slowTest("first bake: boots the shared base, clones for real, captures <slug>-base, names it in the config", async () => {
+    const w = world({});
+    const client = fakeBoxd();
+    const r = await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
+    expect(r.platform).toBe("boxd");
+    expect(r.snapshot).toBe("boxy-base");
+    expect(r.config_updated).toBe(true);
+    expect(r.rootSizeBytes).toBe(8 * 2 ** 30);
+    expect(client._captures).toEqual(["boxy-base"]);
+    // the machine booted from the resolved shared boxd base and is gone after
+    expect(client._machines).toHaveLength(0);
+    expect(client._snaps["boxy-base"].status).toBe("ready");
+    const cfgAfter = JSON.parse(readFileSync(join(w.stateDir, "repos", "boxy", "config.json"), "utf8"));
+    expect(cfgAfter.env.boxd.snapshot).toBe("boxy-base");
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("booting boxd machine pdf-bake-boxy from snapshot factory-base-boxd-r1");
+    expect(log).toContain("installing the browser toolchain (acceptance on)");
+    expect(log).toContain("snapshot boxy-base ready (8 GiB)");
+  });
+
+  slowTest("the clone really ran: the repo dir holds the pushed file (bootstrapScriptFor over the exec wrapper)", async () => {
+    const w = world({});
+    const client = fakeBoxd();
+    await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
+    const cloned = client._machines.length === 0; // only a marker: inspect via the recorded payload path instead
+    void cloned;
+    // the fake executes payloads against the REAL filesystem — the clone
+    // landed in the configured repo_dir under the test's own HOME
+    expect(existsSync(join(w.dir, "repo", ".git"))).toBe(true);
+    expect(readFileSync(join(w.dir, "repo", "app.js"), "utf8")).toContain("hi");
+  });
+
+  slowTest("enrichment re-bake: re-saves under the config's own name, bumps the version, config untouched", async () => {
+    const w = world({ snapshot: "boxy-base" });
+    const client = fakeBoxd({ preExisting: { "boxy-base": { id: "s-old", name: "boxy-base", version: 3, status: "ready", sizeBytes: 4 * 2 ** 30, createdAt: null } } });
+    const r = await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
+    expect(r.snapshot).toBe("boxy-base");
+    expect(r.config_updated).toBe(false);
+    expect(client._captures).toEqual(["boxy-base"]);
+    expect(client._snaps["boxy-base"].version).toBe(4); // boxd versions re-saves latest-only
+    const cfgAfter = JSON.parse(readFileSync(join(w.stateDir, "repos", "boxy", "config.json"), "utf8"));
+    expect(cfgAfter.env.boxd.snapshot).toBe("boxy-base");
+  });
+
+  test("a shared-base alias is refused before any machine is created", async () => {
+    const w = world({ snapshot: "browser-base" });
+    writeFileSync(join(w.stateDir, "base-snapshot.json"), JSON.stringify({ "browser-base": { snapshot: "factory-base-r4-browser", bakedAt: "t", template: "t", contents: "c" } }));
+    const client = fakeBoxd();
+    await expect(opsBake(w.stateDir, "boxy", { boxdClient: client as any })).rejects.toThrow(/is a base alias/);
+    expect(client._machines).toHaveLength(0);
+    expect(client._captures).toHaveLength(0);
+  });
+
+  slowTest("a failing toolchain smoke fails the bake loudly and deletes the machine", async () => {
+    const w = world({});
+    const client = fakeBoxd({ toolchain: "fail" });
+    await expect(opsBake(w.stateDir, "boxy", { boxdClient: client as any })).rejects.toThrow(/browser toolchain bake failed/);
+    expect(client._machines).toHaveLength(0);
+    expect(client._captures).toHaveLength(0);
+  });
+
+  slowTest("a snapshot that never lands (stuck pending) times out with the configured deadline", async () => {
+    const w = world({});
+    const client = fakeBoxd({ snapAfterCapture: "pending" });
+    // the fake flips pending→ready on get; pin it stuck by re-asserting pending
+    const realGet = client.snapshots.get.bind(client.snapshots);
+    (client as any).snapshots.get = async (name: string) => ({ ...(await realGet(name)), status: "pending" });
+    process.env.PDF_BOXD_SNAPSHOT_TIMEOUT_MS = "1500";
+    process.env.PDF_BOXD_SNAPSHOT_POLL_MS = "200";
+    try {
+      await expect(opsBake(w.stateDir, "boxy", { boxdClient: client as any })).rejects.toThrow(/still pending after 0 min/);
+    } finally {
+      delete process.env.PDF_BOXD_SNAPSHOT_TIMEOUT_MS;
+      delete process.env.PDF_BOXD_SNAPSHOT_POLL_MS;
+    }
+    expect(client._machines).toHaveLength(0); // the finally-block delete ran
+  });
+
+  test("a platform-side capture failure fails the bake, machine still cleaned up", async () => {
+    const w = world({});
+    const client = fakeBoxd({ snapAfterCapture: "failed" });
+    await expect(opsBake(w.stateDir, "boxy", { boxdClient: client as any })).rejects.toThrow(/failed platform-side/);
+    expect(client._machines).toHaveLength(0);
+  });
+
+  test("acceptance off: no toolchain install receipt, capture still happens", async () => {
+    const w = world({ acceptance: false });
+    const client = fakeBoxd();
+    const r = await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
+    expect(r.snapshot).toBe("boxy-base");
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).not.toContain("installing the browser toolchain");
+  });
+
+  afterAll(() => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
   });
 });
 

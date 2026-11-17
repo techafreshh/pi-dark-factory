@@ -76,6 +76,13 @@ review and scenarios all in a per-lap box), driven differently:
   and `env.boxd.snapshot` (default `factory-base-boxd-r1`; aliases in
   `state/base-snapshot.json` resolve as they do for instabox). The only secret is
   `BOXD_API_KEY` in `factoryd.env`.
+- **Bake**: `foreman bake <slug>` boots a machine from the shared base (a repo still on the
+  default counts as "no snapshot of its own yet" — the first bake boots read-only from the
+  base and saves `<slug>-base`, naming it in the config), clones, runs the browser toolchain
+  bake when acceptance is on, and captures with `snapshots.create` — boxd re-saves version
+  latest-only, so an enrichment re-bake just bumps the version; it must never target the
+  shared base's own name (same standing rule as every platform). The capture returns before
+  the artifact lands, so the bake polls until the snapshot flips ready.
 - **Everything in-box rides one exec wrapper**, with no ssh and no tunnels. The payload runs
   in its own `setsid` process group, the wrapper enforces the deadline inside the box (TERM,
   then KILL) and frames stdout/stderr with a per-call nonce, because the SDK's server-side
