@@ -17,7 +17,7 @@ Commands:
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)
                                          [--max N] [--dry-run]
   bake <slug>                         build the repo's golden snapshot on its machine
-                                         platform (instabox machine flow; daytona sandbox
+                                         platform (instabox/boxd machine flow; daytona sandbox
                                          flow; e2b/instavm remote builds) from the base
                                          snapshot/template + clone + env.<platform>.bake
                                          script; sets env.<platform>.snapshot in the config

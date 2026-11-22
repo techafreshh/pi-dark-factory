@@ -201,13 +201,14 @@ dark-factory config SLUG            # read back the effective config and check i
 Config rules (all enforced at write time):
 - **Allowed top-level keys:** `models`, `env`, `timeouts`, `merge`,
   `default_branch`, `attempts`, `skip_labels`, `trusted_authors`, `pi`,
-  `discoveries`, `limits`, `scheduling`. Anything else is rejected, including `_readme`,
+  `discoveries`, `limits`, `scheduling`, `acceptance`. Anything else is rejected, including `_readme`,
   `repo`, `scenario` and `ui`. `ui.enabled:false` is a server-side edit.
 - **Models are objects:** `{"provider", "model", "thinking", "fallback": []}`.
   - `model` is the bare id; the level goes in `thinking`.
   - `fallback` entries are `"provider/model[:thinking]"` strings, the only
     place that form is valid.
-  - Stages `plan`, `implement` and `review` inherit from `default`.
+  - Stages `plan`, `implement`, `review` and `acceptance` (the drain-time PRD
+    walk) inherit from `default`.
 - **Roster checks:** an unknown provider is rejected, and so is a thinking
   level the model doesn't support. An unknown model id only warns, and the
   CLI doesn't print the warning, so use ids that appear in `models`.
@@ -456,9 +457,9 @@ details are in the repo's `docs/operations.md`.
 | provider keys, top-ups, new models | edit the factory user's `~/.pi/agent/models.json` / `auth.json`; check with `dark-factory models` |
 | GitHub, InstaBox, boxd, Daytona, E2B, InstaVM or TinyFish keys | `/home/factory/factoryd.env` (600), then restart `pi-factoryd`. Daytona keys need the sandbox+snapshot write/delete scopes (a create-only key 403s every delete and the janitor silently can't reap) |
 | ClinePass keys | `/home/factory/state/clinepass.keys`, one per line, live-reloaded |
-| bake a repo snapshot (machine repos) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.<platform>.snapshot` empty it builds the first golden snapshot (instabox: plain template machine; daytona: `node:22-bookworm` sandbox; e2b/instavm: remote builds), clones, runs `env.<platform>.bake`, saves `<slug>-base` and writes the name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
+| bake a repo snapshot (machine repos) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.<platform>.snapshot` empty it builds the first golden snapshot (instabox: plain template machine; boxd: shared base → `<slug>-base`; daytona: `node:22-bookworm` sandbox; e2b/instavm: remote builds), clones, runs `env.<platform>.bake`, saves `<slug>-base` and writes the name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
 | upgrade a stack base | fresh-template bake under a new versioned name, then repoint the alias in `state/base-snapshot.json` |
 | `ui.enabled:false` or other non-allowlisted config | edit `state/repos/SLUG/config.json` |
 | offboard a repo | `pause` it, move `state/repos/SLUG` aside, `cleanup`. Ledger rows stay as history |
 | dashboard, backups, restore | `pi-factory-dashboard`, `pi-factory-backup.timer`, `bun bin/backup.ts list \| restore <id> <empty-dir>` |
-| browser acceptance (PRD walk / e2e regression / security audit) | patch the repo config `{"acceptance":{"e2e":true,"prd_check":true,"security":true}}`, run `host-tools` (host/compose repos) or re-`bake` the repo (machine repos — the toolchain rides into the snapshot, and the bake fails loudly when a platform cannot carry a browser), then `acceptance SLUG` to walk the PRD once. Backlog slicing stores the PRD automatically; `prd` updates it without re-slicing. Details: `docs/acceptance.md` |
+| browser acceptance (e2e verify gate / PRD walk / security audit) | patch the repo config `{"acceptance":{"e2e":true,"prd_check":true,"security":true}}`, run `host-tools` (host/compose repos) or re-`bake` the repo (machine repos — the toolchain rides into the snapshot, and the bake fails loudly when a platform cannot carry a browser), then `acceptance SLUG` to walk the PRD once. Backlog slicing stores the PRD automatically; `prd` updates it without re-slicing. Details: `docs/acceptance.md` |

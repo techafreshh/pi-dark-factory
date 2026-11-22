@@ -7,13 +7,15 @@ known security problems. Every finding loops back through the normal lap
 machinery — the factory files the issue, a lap builds the fix, the gates re-run.
 
 Three capabilities, one config block (`docs/acceptance.md` config keys live in
-the repo config's `acceptance` block; all default OFF):
+the repo config's `acceptance` block; the three capabilities default OFF, while
+the `security_public` sub-flag defaults ON):
 
 ```jsonc
 "acceptance": {
-  "e2e": false,          // verify gate: run the authored browser suite on every lap
-  "prd_check": false,    // drain-time: walk the whole PRD against the live product
-  "security": false,     // per-merge: penthera scan of merged main
+  "e2e": false,             // verify gate: run the authored browser suite on every lap
+  "prd_check": false,       // drain-time: walk the whole PRD against the live product
+  "security": false,        // per-merge: penthera scan of merged main
+  "security_public": true,  // file/show findings on PUBLIC repos; false = sensitive tracker
   "severity_floor": "medium",
   "e2e_minutes": 10,
   "prd_minutes": 25

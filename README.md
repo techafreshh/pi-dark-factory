@@ -68,8 +68,8 @@ evidence that shaped ordering and concurrency rules — is in
 ## Quickstart
 
 You need a VPS (Ubuntu + systemd is the tested shape), a GitHub account for the product repos,
-and LLM provider API keys. Optional: Docker (compose-mode repos), an InstaBox or boxd API key
-(machine-mode repos), a DNS domain (remote control over HTTPS).
+and LLM provider API keys. Optional: Docker (compose-mode repos), an InstaBox, boxd, Daytona,
+E2B or InstaVM API key (machine-mode repos), a DNS domain (remote control over HTTPS).
 
 ```sh
 ssh your-vps
@@ -109,7 +109,7 @@ bun src/foreman.ts status [--repo <slug>]       # ledger, laps, stages, worktree
 bun src/foreman.ts logs   [--repo <slug>] [--tail N]
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)
-bun src/foreman.ts bake <slug>                  # instabox: build the repo's golden snapshot
+bun src/foreman.ts bake <slug>                  # machine mode: build the repo's golden snapshot
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
 bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge
@@ -151,7 +151,7 @@ docs/                deep dives (below)
 |---|---|
 | [Design decisions](docs/design-decisions.md) | every failure class of the previous engine, answered structurally |
 | [Lap lifecycle](docs/lap-lifecycle.md) | the six stages of one lap, in detail |
-| [Execution modes](docs/execution-modes.md) | host · compose · instabox · boxd (disposable microVMs) |
+| [Execution modes](docs/execution-modes.md) | host · compose · instabox · boxd · daytona · e2b · instavm (where the work runs) |
 | [Docker install](docs/docker.md) | the factory on your own computer: Compose stack, auth, limits, updating |
 | [Operations](docs/operations.md) | guided install, remote clients, commands, state layout, models, safe deploys |
 | [Scenarios](docs/scenarios.md) | the black-box probe contract and its grammar |
@@ -172,7 +172,7 @@ docs/                deep dives (below)
 - Machine modes are bounded by your platform's cap (InstaBox entry tier ≈ 5 concurrent
   machines; boxd: your org's limit; Daytona Tier 1 ≈ 5 two-vCPU sandboxes; E2B Hobby: 10
   sandboxes at 1 h each; InstaVM Free: 5 VMs).
-- Browser acceptance (the PRD walk, the e2e regression) needs Chromium reachable from
+- Browser acceptance (the e2e verify gate, the PRD walk) needs Chromium reachable from
   wherever it runs; a platform whose egress allowlist blocks the browser installs fails its
   bake loudly — [docs/acceptance.md](docs/acceptance.md) explains the smoke and the lanes.
 - Lap and backlog mutations spend real provider tokens. Spend is bounded by per-stage timeouts,

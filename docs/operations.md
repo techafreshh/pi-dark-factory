@@ -10,8 +10,9 @@ Everything an operator touches day to day: the guided install, the remote client
 - A **GitHub account** — it hosts the product repos, issues and PRs the factory works on.
 - One or more **LLM provider API keys** (the stages' fuel; per-stage models and fallbacks
   are configured per repo).
-- Optional: **Docker** on the VPS for compose-mode repos; an **InstaBox** or **boxd API key**
-  for machine-mode repos; a **DNS domain** if you want remote control over HTTPS.
+- Optional: **Docker** on the VPS for compose-mode repos; an API key for a machine platform
+  (**InstaBox**, **boxd**, **Daytona**, **E2B** or **InstaVM**) for machine-mode repos; a
+  **DNS domain** if you want remote control over HTTPS.
 
 ### The guided install (on the server)
 
@@ -27,8 +28,8 @@ install into an agent walk-through instead of a script:
 
 - one **decision batch up front** (factory user name; GitHub auth style; the model lineup
   per stage with thinking levels and fallback chains; pi packages/extensions; remote
-  control + domain; optional ClinePass key router; container mode; InstaBox machine mode;
-  a first smoke lap), then no more surprises;
+  control + domain; optional ClinePass key router; container mode; a machine lane
+  (InstaBox, boxd, Daytona, E2B or InstaVM); a first smoke lap), then no more surprises;
 - `DEPLOYMENT.md` executed **phase by phase with a verify after each** — factory user,
   runtimes, `gh` + provider auth, full `~/.pi` provisioning (custom `models.json`
   providers, packages, every `provider/model:thinking` string smoke-tested against the
@@ -40,7 +41,7 @@ install into an agent walk-through instead of a script:
 **Done means**: `pi-factoryd` green with its scheduler on (`/health` shows
 `scheduler_minutes: 15`) behind Caddy with its API key in `factoryd.env` (600), every model string proven by a live
 smoke call, the laptop able to `doctor` in over HTTPS — and, if you opted in, Docker or
-the InstaBox / boxd key wired into the service environment.
+the machine-platform keys wired into the service environment.
 
 ### Day 2 — onboarding a project (back on your laptop)
 
@@ -61,7 +62,7 @@ the repo, writes the repo config (mode included) and real runtime/holdout scenar
 you, slices the PRD into the dependency-ordered backlog, and fires the first lap. From
 then on laps happen every 15 minutes without you; you read receipts in `laps.log` or on
 GitHub, and the only manual moment is answering a `factory:needs-info` question.
-InstaBox repos bake their golden snapshot once on the server (`foreman bake <slug>`) —
+Machine-mode repos bake their golden snapshot once on the server (`foreman bake <slug>`) —
 onboarding reminds you when.
 
 The manual alternative for all of the above is [`DEPLOYMENT.md`](../DEPLOYMENT.md) — the
@@ -76,7 +77,7 @@ bun src/foreman.ts logs   [--repo <slug>] [--tail N]
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)
                                                  #   [--max N] [--dry-run]
-bun src/foreman.ts bake <slug>                  # instabox: build the repo's golden snapshot
+bun src/foreman.ts bake <slug>                  # machine mode: build the repo's golden snapshot
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
 bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge
@@ -105,7 +106,7 @@ bun src/foreman.ts host-tools                   # install/verify the host browse
   worktrees/<slug>/issue-<n>/ # the only place agents ever work (host + compose modes)
 ```
 
-Machine-mode lap machines (instabox, boxd) are remote: the only local trace of one is its stage
+Machine-mode lap machines (instabox, boxd, daytona, e2b, instavm) are remote: the only local trace of one is its stage
 JSONLs in `issues/<n>/` — clones, sessions and the machine itself live and die on the
 platform's side.
 
@@ -189,7 +190,8 @@ inherit them:
 
 Per-repo priority, spill-over and parallel lanes are `scheduling` config keys
 ([parallel-mode.md](parallel-mode.md)). Set the dashboard's own copies
-(`DASHBOARD_POOL_INSTABOX` / `_BOXD`) only if the daemon is unreachable from it; otherwise
+(`DASHBOARD_POOL_INSTABOX`, `DASHBOARD_POOL_BOXD`, `DASHBOARD_POOL_DAYTONA`,
+`DASHBOARD_POOL_E2B`, `DASHBOARD_POOL_INSTAVM`) only if the daemon is unreachable from it; otherwise
 it reads the caps from `/health`.
 
 The older alternative is `pi-factory.timer`, a oneshot fleet tick every 15 minutes. systemd
