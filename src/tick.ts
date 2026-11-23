@@ -1251,6 +1251,23 @@ export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: T
 const AUTO_REVIVE_DAILY_CAP = 3;
 const STAGNATION_SAME = 2;
 
+/** The stagnation fuse compares a failure's CLASS, not its volatile envelope.
+ *  Provider errors carry a per-request id (DeepSeek `request_id`, InstaBox
+ *  `req_…`), the odd bare UUID, and timestamps; left in, two byte-identical
+ *  failures look different every round and the fuse never trips. Live case:
+ *  kvstore #19 / mdrender #11 ran 18 days of `402 Insufficient Balance`
+ *  because every request_id minted a fresh signature (Nov 2026). */
+export function failureSignature(lastError: string | null): string {
+  return (lastError ?? "unknown failure")
+    .replace(/request[_-]?id["']?\s*[:=]\s*["']?[A-Za-z0-9._:-]+/gi, "request_id=<id>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
+    .replace(/\breq_[A-Za-z0-9]+/g, "<req>")
+    .replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z?\b/g, "<ts>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+}
+
 export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger, gh?: GhApi): Promise<void> {
   const file = join(stateDir, "repos", cfg.slug, "revives.json");
   let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]>; epoch?: number; summarized?: Record<string, string> } = {
@@ -1282,7 +1299,7 @@ export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledge
 
   for (const row of ledger.listIssues(cfg.repo)) {
     if (row.state !== "blocked") continue;
-    const sig = (row.last_error ?? "unknown failure").replace(/\s+/g, " ").trim().slice(0, 140);
+    const sig = failureSignature(row.last_error);
     const sigs = rs.sigs[String(row.issue_number)] ?? [];
     if (sigs.length >= STAGNATION_SAME && sigs.slice(-STAGNATION_SAME).every((s) => s === sig)) {
       repoReceipt(

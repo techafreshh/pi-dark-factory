@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autoReviveBlocked, bumpInputsEpoch } from "../src/tick";
+import { autoReviveBlocked, bumpInputsEpoch, failureSignature } from "../src/tick";
 import type { RepoConfig } from "../src/types";
 
 interface Row {
@@ -49,6 +49,30 @@ const blocked = (last_error: string): Row => ({
   last_error,
 });
 
+const e402 = (requestId: string) =>
+  `plan stage failed: machine model produced no final text: 402: {"message":"Insufficient Balance (request_id": "${requestId}","type":"insufficient_balance_error","param":null,"code":"invalid_request_error"}`;
+
+describe("failureSignature (stagnation compares the failure class, not its envelope)", () => {
+  test("per-request ids, bare UUIDs and timestamps do not change the signature", () => {
+    const a = failureSignature(e402("08e0673b-725e-4955-bc5b-02780a698187"));
+    const b = failureSignature(e402("74f72ab6-a2b9-4d7e-8e1f-ba909c9902b5"));
+    expect(a).toBe(b);
+    expect(a).toContain("402");
+    expect(a).not.toContain("08e0673b");
+    const box = failureSignature("instabox 429 on /v1/machines: req_daucmcamcvyyq2n3cn6jj7w2vm at 2026-11-04T16:00:57.017Z");
+    expect(box).not.toContain("req_dauc");
+    expect(box).not.toContain("2026-11-04T16:00:57");
+  });
+
+  test("different failure classes keep different signatures", () => {
+    expect(failureSignature(e402("a15e3095-07ca-48c8-887c-d5ed64b1d602"))).not.toBe(
+      failureSignature(
+        `plan stage failed: machine model produced no final text: 401: {"message":"Authentication Fails, Your api key: ****543a is invalid (request_id": "2d94f6f6-2093-4dbb-8947-6f727841eace","type":"authentication_error"}`
+      )
+    );
+  });
+});
+
 describe("autoReviveBlocked (bounded self-heal of exhausted laps)", () => {
   test("a fresh blocker revives: row back to open lane, receipts explain", async () => {
     const dir = mkdtempSync(join(tmpdir(), "pdfrev-"));
@@ -77,6 +101,26 @@ describe("autoReviveBlocked (bounded self-heal of exhausted laps)", () => {
     led.rows[0] = blocked("implement stage failed: model produced no final text: Connection error.");
     await autoReviveBlocked(cfg, dir, led as any); // revive 2 (signature repeats once)
     led.rows[0] = blocked("implement stage failed: model produced no final text: Connection error.");
+    await autoReviveBlocked(cfg, dir, led as any); // stagnation → refuse
+    const revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
+    expect(revives).toBe(2);
+    expect(led.rows[0].state).toBe("blocked");
+  });
+
+  test("a provider error whose request id changes every round still trips stagnation", async () => {
+    // kvstore #19 / mdrender #11 (Nov 2026): every 402 carried a fresh
+    // request_id, so the old signature never repeated and the fuse never fired
+    const dir = mkdtempSync(join(tmpdir(), "pdfrevrid-"));
+    const ids = [
+      "08e0673b-725e-4955-bc5b-02780a698187",
+      "74f72ab6-a2b9-4d7e-8e1f-ba909c9902b5",
+      "a15e3095-07ca-48c8-887c-d5ed64b1d602",
+    ];
+    const led = fakeLedger([blocked(e402(ids[0]))]);
+    await autoReviveBlocked(cfg, dir, led as any); // revive 1
+    led.rows[0] = blocked(e402(ids[1]));
+    await autoReviveBlocked(cfg, dir, led as any); // revive 2 (signature repeats)
+    led.rows[0] = blocked(e402(ids[2]));
     await autoReviveBlocked(cfg, dir, led as any); // stagnation → refuse
     const revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
     expect(revives).toBe(2);
