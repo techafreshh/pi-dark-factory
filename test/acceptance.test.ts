@@ -1339,13 +1339,20 @@ describe("bakeBoxd (fake boxd org, real bootstrap over the exec wrapper)", () =>
     expect(cfgAfter.env.boxd.snapshot).toBe("boxy-base");
   });
 
-  test("a shared-base alias is refused before any machine is created", async () => {
+  slowTest("a shared-base alias is layered: boots it, saves <slug>-base, switches the config", async () => {
     const w = world({ snapshot: "browser-base" });
     writeFileSync(join(w.stateDir, "base-snapshot.json"), JSON.stringify({ "browser-base": { snapshot: "factory-base-r4-browser", bakedAt: "t", template: "t", contents: "c" } }));
     const client = fakeBoxd();
-    await expect(opsBake(w.stateDir, "boxy", { boxdClient: client as any })).rejects.toThrow(/is a base alias/);
+    const r = await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
+    expect(r.snapshot).toBe("boxy-base");
+    expect(r.config_updated).toBe(true);
+    expect(client._captures).toEqual(["boxy-base"]);
     expect(client._machines).toHaveLength(0);
-    expect(client._captures).toHaveLength(0);
+    const cfgAfter = JSON.parse(readFileSync(join(w.stateDir, "repos", "boxy", "config.json"), "utf8"));
+    expect(cfgAfter.env.boxd.snapshot).toBe("boxy-base");
+    const log = readFileSync(join(w.stateDir, "laps.log"), "utf8");
+    expect(log).toContain("booting boxd machine pdf-bake-boxy from snapshot factory-base-r4-browser");
+    expect(log).toContain("layering on the base — saves boxy-base");
   });
 
   slowTest("a failing toolchain smoke fails the bake loudly and deletes the machine", async () => {

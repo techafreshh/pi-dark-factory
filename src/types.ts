@@ -113,6 +113,8 @@ export interface RepoConfig {
       /** snapshot machines boot from; default factory-base-boxd-r1. The
        *  token "shared-base" resolves to this platform's fleet base. */
       snapshot?: string;
+      /** shell run on the bake machine after clone; empty = clone-only */
+      bake?: string;
       /** boxd region; default = the org's default region */
       region?: string;
     };

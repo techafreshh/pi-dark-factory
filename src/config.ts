@@ -67,6 +67,7 @@ const DEFAULTS = {
     boxd: {
       repo_dir: "/home/boxd/repo",
       snapshot: "factory-base-boxd-r1",
+      bake: "",
     },
     daytona: {
       repo_dir: "/home/daytona/repo",

@@ -248,8 +248,12 @@ export function startFactoryd(opts: FactorydOpts) {
         if (req.method === "POST" && tickEnd === undefined && path.endsWith("/bake")) {
           // per-repo golden snapshot, same detached-job model as /base/bake
           if (!slug) return fail(400, "usage: POST /repos/<slug>/bake");
+          const body = await readJson(req);
           try {
-            const r = spawnRepoBake(opts.stateDir, slug);
+            const r = spawnRepoBake(opts.stateDir, slug, {
+              from: typeof body.from === "string" ? body.from : undefined,
+              name: typeof body.name === "string" ? body.name : undefined,
+            });
             return respond({ started: r.started, reason: r.reason, status: r.status }, r.started ? 202 : 409);
           } catch (e: any) {
             const msg = e.message ?? String(e);

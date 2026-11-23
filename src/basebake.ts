@@ -36,7 +36,7 @@ import { pentheraSpec } from "./security";
 import { escapeSh, machineBash } from "./machine";
 import { readBases, setBasePlatform, SHARED_BASE_ALIAS } from "./sharedbase";
 import { receipt } from "./receipts";
-import { MACHINE_MODES } from "./types";
+import { MACHINE_MODES, type MachineMode } from "./types";
 
 export const BASE_PLATFORMS = ["instabox", "boxd", "daytona", "e2b"] as const;
 export type BasePlatform = (typeof BASE_PLATFORMS)[number];
@@ -192,6 +192,60 @@ export function summarizeBase(seed: BaseSeed, raw: string): string {
   ]
     .filter(Boolean)
     .join("; ");
+}
+
+export interface RepoBakeNames {
+  /** alias or literal to boot from; null = the platform's first-bake seed */
+  from: string | null;
+  /** physical snapshot/template name to save and to write into the config */
+  name: string;
+  /** name differs from the configured snapshot → write it back */
+  switchConfig: boolean;
+}
+
+/**
+ * How a per-repo bake relates to the configured snapshot:
+ *
+ *   "shared-base" (an alias) → boot from that base, save `<slug>-base`, and
+ *                              switch the repo to its own literal snapshot.
+ *                              The fleet base keeps serving every other repo;
+ *   "" (empty)               → boot the platform's first-bake seed, save
+ *                              `<slug>-base` (the pre-shared-base flow);
+ *   a literal                → enrich that repo-owned snapshot in place.
+ *
+ * The old behavior refused any alias outright, which meant a per-repo bake
+ * could only start from a bare platform seed — losing pi, go, gh and the e2e
+ * toolchain the shared base carries. A repo bake now layers on the base.
+ *
+ * The output name is guarded: an alias key, a physical snapshot owned by a
+ * shared alias, or the reserved shared token is refused, so a per-repo bake
+ * can never overwrite the fleet base.
+ */
+export function resolveRepoBakeNames(
+  stateDir: string,
+  slug: string,
+  platform: MachineMode,
+  current: string | undefined,
+  opts: { from?: string; name?: string; defaultLiteral?: string } = {}
+): RepoBakeNames {
+  const bases = readBases(stateDir);
+  const cur = (current ?? "").trim();
+  const curIsDefault = !!opts.defaultLiteral && cur === opts.defaultLiteral;
+  const isAlias = !!bases[cur];
+  const from = opts.from?.trim() || cur || null;
+  const name = opts.name?.trim() || (isAlias || !cur || curIsDefault ? `${sanitizeMachinePart(slug)}-base` : cur);
+  if (name === SHARED_BASE_ALIAS || bases[name])
+    throw new Error(`"${name}" is a base alias — a per-repo bake must save a literal snapshot name`);
+  if (opts.defaultLiteral && name === opts.defaultLiteral)
+    throw new Error(`"${name}" is the platform's shared default base — a per-repo bake must save its own literal name`);
+  for (const [alias, e] of Object.entries(bases)) {
+    const physical = e.platforms?.[platform]?.snapshot ?? e.snapshot;
+    if (physical && physical === name)
+      throw new Error(
+        `"${name}" is the physical snapshot of base alias "${alias}" — refusing to overwrite a shared base; pick a per-repo literal name`
+      );
+  }
+  return { from, name, switchConfig: name !== cur };
 }
 
 export interface BaseBakeResult {

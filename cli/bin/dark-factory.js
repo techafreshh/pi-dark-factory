@@ -52,7 +52,7 @@ const ISSUE_STATE_COLOR = {
 };
 const section = (P, label) => `\n\n${P.header(`── ${label} ` + "─".repeat(Math.max(2, 46 - label.length)))}`;
 
-const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format", "--platform", "--name", "--seed", "--seed-kind", "--alias"];
+const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format", "--platform", "--name", "--seed", "--seed-kind", "--alias", "--from"];
 const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--status", "--help", "-h", "--wait", "--yes"];
 
 export function parseArgs(argv) {
@@ -771,7 +771,10 @@ async function cmdBake(a, ctx) {
   const slug = a._[0];
   if (!slug) throw new Error("bake needs SLUG");
   const enc = encodeURIComponent(slug);
-  const { status, body } = await ctx.api("POST", `/repos/${enc}/bake`, {}, { allowStatus: [409] });
+  const req = {};
+  if (a.from !== undefined) req.from = a.from;
+  if (a.name !== undefined) req.name = a.name;
+  const { status, body } = await ctx.api("POST", `/repos/${enc}/bake`, req, { allowStatus: [409] });
   if (status === 409 || body.started === false)
     throw new Error(`bake NOT started: ${body.reason ?? "a bake is already live"} — watch: dark-factory logs --repo ${slug}`);
   ctx.out(`bake started for ${slug} — job running server-side`);
@@ -953,10 +956,14 @@ triggers it — the daemon runs a detached job (5–40 min) and the CLI polls
 with --wait. InstaVM is excluded (3 GiB snapshot build disk).
 base ensure is the "if needed" form: it exits 0 when shared-base already
 resolves the platform; otherwise it only bakes with --yes.`,
-  bake: `bake SLUG [--wait]
+  bake: `bake SLUG [--from BASE] [--name SNAPSHOT] [--wait]
 Start a server-side bake of the repo's own golden snapshot (same detached-job
-model as base bake; for repo-specific deps). Prefer a shared base — a repo on
-"snapshot": "shared-base" needs no per-repo bake. --wait polls until done.`,
+model as base bake; for repo-specific deps). A configured base alias is
+LAYERED on: the bake boots that base, runs env.<platform>.bake and saves
+<slug>-base (then switches the config to it). Empty snapshot = the platform
+seed; literal = enrich that repo-owned snapshot in place. --from overrides the
+boot base; --name overrides the output. Prefer the shared base for the
+toolchain; use this when this repo needs its own environment layer.`,
 };
 
 const USAGE = `dark-factory — drive a pi-dark-factory over HTTP(S) (Node >= 18, zero deps)
@@ -989,7 +996,7 @@ host-tools                       install/verify the host browser + scanner toolc
 base list                        shared base aliases → per-platform snapshots
 base bake --platform P --name N  start a server-side dev-base bake [--wait]
 base ensure --platform P [--yes] bake only if shared-base lacks the platform
-bake SLUG [--wait]               start a server-side per-repo golden-snapshot bake
+bake SLUG [--from BASE] [--name SNAPSHOT] [--wait]   start a server-side per-repo bake
 
 Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config;
 inline --url / --key override everything (resolution: flags > env > file).

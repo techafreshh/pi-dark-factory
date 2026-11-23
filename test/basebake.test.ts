@@ -12,6 +12,7 @@ import {
   isBasePlatform,
   opsBaseBake,
   opsBaseList,
+  resolveRepoBakeNames,
   seedFor,
   summarizeBase,
 } from "../src/basebake";
@@ -91,6 +92,63 @@ describe("the dev-base toolchain script", () => {
     expect(s).toContain("gh version 2.102.0");
     expect(s).toContain("pi 1.4.0");
     expect(s).toContain("/opt/pdf-e2e");
+  });
+});
+
+describe("per-repo bake layering", () => {
+  test("a base alias is layered: boot it, save <slug>-base, switch the config", () => {
+    writeFileSync(
+      join(tmp(), "base-snapshot.json"),
+      JSON.stringify({ "shared-base": { platforms: { instabox: { snapshot: "dev-ib-r1" } } } })
+    );
+    const names = resolveRepoBakeNames(dir!, "app", "instabox", "shared-base");
+    expect(names).toEqual({ from: "shared-base", name: "app-base", switchConfig: true });
+  });
+
+  test("empty snapshot = the platform seed; it still saves a per-repo <slug>-base", () => {
+    expect(resolveRepoBakeNames(tmp(), "app", "daytona", "")).toEqual({ from: null, name: "app-base", switchConfig: true });
+    expect(resolveRepoBakeNames(tmp(), "app", "daytona", undefined)).toEqual({ from: null, name: "app-base", switchConfig: true });
+  });
+
+  test("a literal snapshot is enriched in place (no config switch)", () => {
+    expect(resolveRepoBakeNames(tmp(), "app", "daytona", "app-base")).toEqual({
+      from: "app-base",
+      name: "app-base",
+      switchConfig: false,
+    });
+  });
+
+  test("boxd's literal default base counts as 'no per-repo snapshot yet'", () => {
+    expect(
+      resolveRepoBakeNames(tmp(), "app", "boxd", "factory-base-boxd-r1", { defaultLiteral: "factory-base-boxd-r1" })
+    ).toEqual({ from: "factory-base-boxd-r1", name: "app-base", switchConfig: true });
+    expect(() =>
+      resolveRepoBakeNames(tmp(), "app", "boxd", "factory-base-boxd-r1", {
+        defaultLiteral: "factory-base-boxd-r1",
+        name: "factory-base-boxd-r1",
+      })
+    ).toThrow(/shared default base/);
+  });
+
+  test("--from/--name override the boot base and the output name", () => {
+    writeFileSync(
+      join(tmp(), "base-snapshot.json"),
+      JSON.stringify({ "godot-base": { platforms: { instabox: { snapshot: "godot-r1" } } } })
+    );
+    expect(resolveRepoBakeNames(dir!, "app", "instabox", "shared-base", { from: "godot-base", name: "app-godot-r1" })).toEqual({
+      from: "godot-base",
+      name: "app-godot-r1",
+      switchConfig: true,
+    });
+  });
+
+  test("a per-repo bake can never overwrite an alias or a shared base's physical snapshot", () => {
+    writeFileSync(
+      join(tmp(), "base-snapshot.json"),
+      JSON.stringify({ "shared-base": { platforms: { instabox: { snapshot: "dev-ib-r1" } } } })
+    );
+    expect(() => resolveRepoBakeNames(dir!, "app", "instabox", "", { name: "shared-base" })).toThrow(/is a base alias/);
+    expect(() => resolveRepoBakeNames(dir!, "app", "instabox", "", { name: "dev-ib-r1" })).toThrow(/physical snapshot of base alias/);
   });
 });
 

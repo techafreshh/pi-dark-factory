@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { opsAcceptanceRun, opsBacklog, opsBake, opsCleanup, opsHostTools, opsLogs, opsOnboard, opsPrdSet, opsSecurityScan, opsStatus, opsUnblock } from "./ops";
 import { opsBaseBake, opsBaseList } from "./basebake";
 import { updateBakeStatus } from "./bakejobs";
-import { acquireBakeLock, releaseBakeLock } from "./lock";
+import { acquireBakeLock, releaseBakeLock, repoLockHeld } from "./lock";
 import { runTick } from "./tick";
 
 const HELP = `pi-dark-factory foreman — local CLI over the ops core
@@ -164,6 +164,9 @@ async function main() {
       const slug = pos[0];
       const statusFile = typeof flags["status-file"] === "string" ? flags["status-file"] : undefined;
       const lockKey = `repo-${slug}`;
+      // a bake mutates the repo's snapshot/config while a lap may be using
+      // the same checkout — same guard as the remote job
+      if (repoLockHeld(stateDir, slug)) throw new Error(`a tick is live for ${slug} — run the bake when the repo is idle`);
       // a remote job and a manual bake serialize on this pidfile; a loser
       // must not clobber the live job's status file
       if (!acquireBakeLock(stateDir, lockKey)) throw new Error(`a bake for ${slug} is already live (pidfile)`);
@@ -178,7 +181,10 @@ async function main() {
         });
       }
       try {
-        const r = await opsBake(stateDir, slug);
+        const r = await opsBake(stateDir, slug, {
+          from: typeof flags.from === "string" ? flags.from : undefined,
+          name: typeof flags.name === "string" ? flags.name : undefined,
+        });
         if (statusFile) {
           updateBakeStatus(statusFile, {
             state: "done",

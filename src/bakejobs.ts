@@ -21,6 +21,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync
 import { dirname, join } from "node:path";
 import { loadRepoConfig } from "./config";
 import { bakeLockHeld, pidAlive, repoLockHeld } from "./lock";
+import { BOXD_DEFAULT_SNAPSHOT } from "./machine-boxd";
 import { receipt } from "./receipts";
 import { SHARED_BASE_ALIAS } from "./sharedbase";
 import {
@@ -29,10 +30,12 @@ import {
   assertBaseName,
   assertNotAlias,
   isBasePlatform,
+  resolveRepoBakeNames,
   seedFor,
   type BasePlatform,
   type BaseSeedKind,
 } from "./basebake";
+import { isMachineMode } from "./types";
 
 const CHECKOUT = join(import.meta.dir, "..");
 const FOREMAN = join(import.meta.dir, "foreman.ts");
@@ -221,15 +224,26 @@ export function spawnBaseBake(
   }
 }
 
-/** Start a per-repo golden-snapshot bake server-side (same job model). */
+/** Start a per-repo golden-snapshot bake server-side (same job model). The
+ *  repo's configured snapshot decides what it layers on: an alias boots that
+ *  base and saves `<slug>-base`, an empty value boots the platform seed, and
+ *  a literal enriches that repo-owned snapshot in place. `from`/`name` are
+ *  the advanced overrides (`foreman bake --from/--name`). */
 export function spawnRepoBake(
   stateDir: string,
   slug: string,
-  deps: { spawnImpl?: typeof spawn } = {}
+  opts: { from?: string; name?: string; spawnImpl?: typeof spawn } = {}
 ): SpawnResult {
   const cfgPath = join(stateDir, "repos", slug, "config.json");
   if (!existsSync(cfgPath)) throw new Error(`repo ${slug} is not onboarded`);
-  loadRepoConfig(cfgPath); // surface a broken config as a client error, not a dead child
+  const cfg = loadRepoConfig(cfgPath); // surface a broken config as a client error, not a dead child
+  if (!isMachineMode(cfg.env.mode))
+    throw new Error(`bake applies to machine-mode repos (got env.mode "${cfg.env.mode}")`);
+  const current = (cfg.env as any)[cfg.env.mode]?.snapshot as string | undefined;
+  resolveRepoBakeNames(stateDir, slug, cfg.env.mode, current, {
+    ...opts,
+    defaultLiteral: cfg.env.mode === "boxd" ? BOXD_DEFAULT_SNAPSHOT : undefined,
+  }); // validate the output name before spawning
   const key = `repo-${slug}`;
   const path = repoStatusPath(stateDir, slug);
   const live = readRepoBakeStatus(stateDir, slug);
@@ -260,7 +274,10 @@ export function spawnRepoBake(
   });
   pending.add(key);
   try {
-    const pid = spawnDetached(stateDir, ["bake", slug, "--status-file", path], `bake ${slug}`, deps.spawnImpl);
+    const args = ["bake", slug, "--status-file", path];
+    if (opts.from) args.push("--from", opts.from);
+    if (opts.name) args.push("--name", opts.name);
+    const pid = spawnDetached(stateDir, args, `bake ${slug}`, opts.spawnImpl);
     if (typeof pid === "number") updateBakeStatus(path, { pid });
     return { started: true, status: readRepoBakeStatus(stateDir, slug) };
   } catch (e) {

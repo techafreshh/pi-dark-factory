@@ -96,7 +96,7 @@ describe("spawn validation (no child process)", () => {
         slug,
         models: { default: { provider: "x", model: "y" } },
         scenario: { ports: [] },
-        env: { mode: "host" },
+        env: { mode: "instabox", instabox: { snapshot: "app-base" } },
       })
     );
     writeFileSync(join(tmp(), `bake-repo-${slug}.lock`), `${process.pid}\n`);
@@ -116,7 +116,7 @@ describe("spawn validation (no child process)", () => {
         slug,
         models: { default: { provider: "x", model: "y" } },
         scenario: { ports: [] },
-        env: { mode: "host" },
+        env: { mode: "instabox", instabox: { snapshot: "app-base" } },
       })
     );
     writeFileSync(join(tmp(), "tick-busy.lock"), `${process.pid}\n`);
@@ -157,7 +157,7 @@ describe("spawn validation (no child process)", () => {
         slug,
         models: { default: { provider: "x", model: "y" } },
         scenario: { ports: [] },
-        env: { mode: "host" },
+        env: { mode: "instabox", instabox: { snapshot: "app-base" } },
       })
     );
     const calls: any[] = [];
@@ -165,10 +165,14 @@ describe("spawn validation (no child process)", () => {
       calls.push({ cmd, args, opts });
       return { pid: process.pid, on() {}, unref() {} };
     }) as any;
-    const r = spawnRepoBake(tmp(), slug, { spawnImpl });
+    const r = spawnRepoBake(tmp(), slug, { spawnImpl, from: "shared-base", name: "app-r2" });
     expect(r.started).toBe(true);
     expect(calls[0].args.slice(1, 3)).toEqual(["bake", "app"]);
     expect(calls[0].args).toContain("--status-file");
+    expect(calls[0].args).toContain("--from");
+    expect(calls[0].args).toContain("shared-base");
+    expect(calls[0].args).toContain("--name");
+    expect(calls[0].args).toContain("app-r2");
     expect(readRepoBakeStatus(tmp(), slug)?.state).toBe("running");
   });
 });
