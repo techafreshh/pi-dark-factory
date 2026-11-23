@@ -57,7 +57,9 @@ const DEFAULTS = {
     instabox: {
       api_base: "https://api.instabox.sh",
       api_key_env: "INSTABOX_API_KEY",
-      template: "basic",
+      // the current default template carries node/python/go/rust/java/bun/
+      // docker/gh/chrome (the old "basic" is no longer in the template list)
+      template: "agent-browser",
       snapshot: "",
       repo_dir: "/data/repo",
       bake: "",

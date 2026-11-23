@@ -52,8 +52,8 @@ const ISSUE_STATE_COLOR = {
 };
 const section = (P, label) => `\n\n${P.header(`── ${label} ` + "─".repeat(Math.max(2, 46 - label.length)))}`;
 
-const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format"];
-const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--status", "--help", "-h"];
+const VALUE_FLAGS = ["--repo", "--tail", "--issue", "--json", "--file", "--branch", "--prd-file", "--max", "--url", "--key", "--format", "--platform", "--name", "--seed", "--seed-kind", "--alias"];
+const BOOL_FLAGS = ["--raw", "--follow", "-f", "--think", "--lint", "--dump", "--test", "--create", "--prune", "--force", "--status", "--help", "-h", "--wait", "--yes"];
 
 export function parseArgs(argv) {
   const a = { _: [] };
@@ -206,11 +206,23 @@ export function formatDoctor(health, status, P = NO_PAINT) {
   if (Object.keys(bases).length) {
     for (const [alias, info] of Object.entries(bases)) {
       L.push(``);
-      L.push(`${P.cyan(alias)} → ${P.bold(info.snapshot)} ${P.gray(`· template ${info.template ?? "?"} · baked ${(info.bakedAt ?? "?").slice(0, 10)}`)}`);
-      if (info.contents) L.push(P.gray(`  contents: ${info.contents}`));
+      const platforms = info.platforms && typeof info.platforms === "object" ? Object.entries(info.platforms).filter(([, p]) => p && p.snapshot) : [];
+      if (platforms.length) {
+        L.push(`${P.cyan(alias)} →`);
+        for (const [mode, p] of platforms) {
+          L.push(`  ${P.bold(mode)}: ${P.bold(p.snapshot)} ${P.gray(`· baked ${(p.bakedAt ?? info.bakedAt ?? "?").slice(0, 10)}`)}`);
+          if (p.contents) L.push(P.gray(`    contents: ${p.contents}`));
+        }
+        if (info.contents) L.push(P.gray(`  contents: ${info.contents}`));
+      } else if (info.snapshot) {
+        L.push(`${P.cyan(alias)} → ${P.bold(info.snapshot)} ${P.gray(`· template ${info.template ?? "?"} · baked ${(info.bakedAt ?? "?").slice(0, 10)}`)}`);
+        if (info.contents) L.push(P.gray(`  contents: ${info.contents}`));
+      } else {
+        L.push(`${P.cyan(alias)} → ${P.yellow("no platform snapshots recorded yet")}`);
+      }
     }
   } else {
-    L.push(`${P.red("✘")} shared base: UNMAPPED — write state/base-snapshot.json on the VPS (instabox repos naming 'shared-base' cannot boot until then)`);
+    L.push(`${P.red("✘")} shared base: UNMAPPED — bake one on the VPS with: bun src/foreman.ts base bake --platform <instabox|boxd|daytona|e2b> --name <versioned-name>`);
   }
   const n = (status.repos ?? []).length;
   L.push(``);
@@ -448,6 +460,20 @@ async function cmdConfig(a, ctx) {
   const { body } = await ctx.api("POST", `/repos/${encodeURIComponent(slug)}/config`, patch);
   ctx.out("config updated: " + body.config_path);
   ctx.out(JSON.stringify(body.config ?? {}, null, 2));
+  // switching to a machine mode: tell the operator NOW if the fleet dev base
+  // for that platform is missing, instead of failing the first lap later
+  const mode = patch?.env?.mode;
+  if (["instabox", "boxd", "daytona", "e2b"].includes(mode)) {
+    try {
+      const bases = (await ctx.api("GET", "/bases")).body;
+      if (!bases?.bases?.["shared-base"]?.platforms?.[mode]?.snapshot)
+        ctx.out(
+          `\nwarn: shared-base has no ${mode} snapshot yet — bake it: dark-factory base ensure --platform ${mode} --yes --wait`
+        );
+    } catch {
+      // a base read must never fail the config write
+    }
+  }
   return 0;
 }
 
@@ -636,6 +662,126 @@ async function cmdHostTools(a, ctx) {
   return body.ok ? 0 : 1;
 }
 
+/* ── base snapshots + bakes (server-side detached jobs) ─────────────────── */
+
+const BAKE_POLL_MS = () => Math.max(200, Number(process.env.DARK_FACTORY_BAKE_POLL_MS ?? 10_000));
+
+async function pollBake(ctx, path, label) {
+  const started = Date.now();
+  for (;;) {
+    const { body } = await ctx.api("GET", path, undefined, { timeout: 15_000 });
+    const s = body.status;
+    if (!s) throw new Error(`no bake status at ${path}`);
+    if (s.state === "done") {
+      ctx.out(`${label} done — snapshot ${s.snapshot ?? "?"}`);
+      return 0;
+    }
+    if (s.state === "failed") throw new Error(`${label} FAILED: ${s.error ?? "unknown error"} — see logs --tail`);
+    if (Date.now() - started > 4 * 3_600_000)
+      throw new Error(`${label} still running after 4h — check logs --tail (the status may be stale)`);
+    ctx.out(`  … ${label} ${s.state}${s.started_at ? ` since ${s.started_at}` : ""}`);
+    await new Promise((r) => setTimeout(r, BAKE_POLL_MS()));
+  }
+}
+
+async function cmdBase(a, ctx) {
+  const sub = a._[0];
+  if (!sub || sub === "list") {
+    const { body } = await ctx.api("GET", "/bases");
+    const bases = body.bases ?? {};
+    if (!Object.keys(bases).length) {
+      ctx.out("no base aliases — bake one: dark-factory base bake --platform daytona --name factory-dev-daytona-r1");
+    } else {
+      for (const [alias, info] of Object.entries(bases)) {
+        ctx.out(`== ${alias} ==`);
+        const platforms =
+          info.platforms && typeof info.platforms === "object"
+            ? Object.entries(info.platforms).filter(([, p]) => p && p.snapshot)
+            : [];
+        if (platforms.length) {
+          for (const [p, e] of platforms) ctx.out(`  ${p}: ${e.snapshot}${e.bakedAt ? ` (${e.bakedAt})` : ""}`);
+        } else if (info.snapshot) {
+          ctx.out(`  (legacy/generic) ${info.snapshot}`);
+        }
+        if (info.contents) ctx.out(`  contents: ${info.contents}`);
+      }
+    }
+    const running = (body.jobs ?? []).filter((j) => j && j.state === "running");
+    if (running.length) {
+      ctx.out("");
+      for (const j of running) ctx.out(`baking ${j.platform}: ${j.name ?? "?"} — since ${j.started_at}`);
+    }
+    return 0;
+  }
+  if (sub === "bake") return cmdBaseBake(a, ctx);
+  if (sub === "ensure") return cmdBaseEnsure(a, ctx);
+  throw new Error(`base needs list | bake | ensure (got "${sub}")`);
+}
+
+async function cmdBaseBake(a, ctx) {
+  const platform = a.platform;
+  const name = a.name;
+  if (!platform || !name) throw new Error("base bake needs --platform <instabox|boxd|daytona|e2b> and --name <versioned-name>");
+  const req = { platform, name };
+  if (a.seed !== undefined) req.seed = a.seed;
+  if (a["seed-kind"] !== undefined) req.seedKind = a["seed-kind"];
+  if (a.alias !== undefined) req.alias = a.alias;
+  const { status, body } = await ctx.api("POST", "/base/bake", req, { allowStatus: [409] });
+  if (status === 409 || body.started === false)
+    throw new Error(`base bake NOT started: ${body.reason ?? "a bake is already live"} — watch: dark-factory base list`);
+  ctx.out(`base bake started: ${platform} ${name}${req.seed ? ` (seed ${req.seed})` : ""} — job running server-side`);
+  if (!a.wait) {
+    ctx.out("follow: dark-factory base list   (or re-run with --wait)");
+    return 0;
+  }
+  return pollBake(ctx, `/base/bake/${encodeURIComponent(platform)}`, `base bake ${platform}`);
+}
+
+async function cmdBaseEnsure(a, ctx) {
+  const platform = a.platform;
+  if (!platform) throw new Error("base ensure needs --platform <instabox|boxd|daytona|e2b>");
+  const { body } = await ctx.api("GET", "/bases");
+  const mapped = body.bases?.["shared-base"]?.platforms?.[platform]?.snapshot;
+  if (mapped) {
+    ctx.out(`shared-base already resolves ${platform} → ${mapped} — nothing to bake`);
+    return 0;
+  }
+  const name = a.name || `factory-dev-${platform}-r1`;
+  if (!a.yes) {
+    ctx.out(`shared-base has no ${platform} snapshot. Would bake ${name}.`);
+    ctx.out(`Re-run with --yes to spend the cloud time: dark-factory base ensure --platform ${platform} --yes${a.wait ? " --wait" : ""}`);
+    return 1;
+  }
+  const req = { platform, name };
+  if (a.seed !== undefined) req.seed = a.seed;
+  if (a["seed-kind"] !== undefined) req.seedKind = a["seed-kind"];
+  if (a.alias !== undefined) req.alias = a.alias;
+  const { status, body: resp } = await ctx.api("POST", "/base/bake", req, { allowStatus: [409] });
+  if (status === 409 || resp.started === false)
+    throw new Error(`base bake NOT started: ${resp.reason ?? "a bake is already live"} — watch: dark-factory base list`);
+  ctx.out(`base bake started: ${platform} ${name}${req.seed ? ` (seed ${req.seed})` : ""}`);
+  if (!a.wait) {
+    ctx.out("follow: dark-factory base list   (or re-run with --wait)");
+    return 0;
+  }
+  return pollBake(ctx, `/base/bake/${encodeURIComponent(platform)}`, `base bake ${platform}`);
+}
+
+async function cmdBake(a, ctx) {
+  const slug = a._[0];
+  if (!slug) throw new Error("bake needs SLUG");
+  const enc = encodeURIComponent(slug);
+  const { status, body } = await ctx.api("POST", `/repos/${enc}/bake`, {}, { allowStatus: [409] });
+  if (status === 409 || body.started === false)
+    throw new Error(`bake NOT started: ${body.reason ?? "a bake is already live"} — watch: dark-factory logs --repo ${slug}`);
+  ctx.out(`bake started for ${slug} — job running server-side`);
+  if (!a.wait) {
+    ctx.out(`follow: dark-factory logs --repo ${slug} --tail 50   (or re-run with --wait)`);
+    return 0;
+  }
+  return pollBake(ctx, `/repos/${enc}/bake`, `bake ${slug}`);
+}
+
 const VERBS = {
   health: { min: 0, fn: cmdHealth },
   doctor: { min: 0, fn: cmdDoctor },
@@ -658,6 +804,8 @@ const VERBS = {
   acceptance: { min: 1, fn: cmdAcceptance },
   "security-scan": { min: 1, fn: cmdSecurityScan },
   "host-tools": { min: 0, fn: cmdHostTools },
+  base: { min: 0, fn: cmdBase },
+  bake: { min: 1, fn: cmdBake },
   setup: { min: 2, fn: cmdSetup, noApi: true },
   where: { min: 0, fn: cmdWhere, noApi: true },
 };
@@ -798,6 +946,17 @@ laps then fix.`,
 Install/verify the HOST-side acceptance toolchain: Chromium, the e2e
 framework, agent-browser, penthera. Needed once per VPS for host/compose
 repos (machine-mode repos get the toolchain via a re-bake instead).`,
+  base: `base list | base bake --platform P --name N [--seed V] [--seed-kind template|snapshot|image] [--alias A] [--wait] | base ensure --platform P [--yes] [--wait]
+List the shared base aliases and their PER-PLATFORM snapshots, or start a
+server-side dev-base bake (instabox | boxd | daytona | e2b). The laptop only
+triggers it — the daemon runs a detached job (5–40 min) and the CLI polls
+with --wait. InstaVM is excluded (3 GiB snapshot build disk).
+base ensure is the "if needed" form: it exits 0 when shared-base already
+resolves the platform; otherwise it only bakes with --yes.`,
+  bake: `bake SLUG [--wait]
+Start a server-side bake of the repo's own golden snapshot (same detached-job
+model as base bake; for repo-specific deps). Prefer a shared base — a repo on
+"snapshot": "shared-base" needs no per-repo bake. --wait polls until done.`,
 };
 
 const USAGE = `dark-factory — drive a pi-dark-factory over HTTP(S) (Node >= 18, zero deps)
@@ -827,6 +986,10 @@ prd SLUG --prd-file F            store/replace the PRD the acceptance walks judg
 acceptance SLUG [--status]       run (or read) the drain-time PRD acceptance walk
 security-scan SLUG               penthera scan of merged main, findings become issues
 host-tools                       install/verify the host browser + scanner toolchain
+base list                        shared base aliases → per-platform snapshots
+base bake --platform P --name N  start a server-side dev-base bake [--wait]
+base ensure --platform P [--yes] bake only if shared-base lacks the platform
+bake SLUG [--wait]               start a server-side per-repo golden-snapshot bake
 
 Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config;
 inline --url / --key override everything (resolution: flags > env > file).

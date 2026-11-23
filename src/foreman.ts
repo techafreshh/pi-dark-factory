@@ -1,6 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { opsAcceptanceRun, opsBacklog, opsBake, opsCleanup, opsHostTools, opsLogs, opsOnboard, opsPrdSet, opsSecurityScan, opsStatus, opsUnblock } from "./ops";
+import { opsBaseBake, opsBaseList } from "./basebake";
+import { updateBakeStatus } from "./bakejobs";
+import { acquireBakeLock, releaseBakeLock } from "./lock";
 import { runTick } from "./tick";
 
 const HELP = `pi-dark-factory foreman — local CLI over the ops core
@@ -17,11 +20,14 @@ Commands:
   backlog <slug> --prd <path>         slice a PRD into ordered GitHub issues (dedup by title)
                                          [--max N] [--dry-run]
   bake <slug>                         build the repo's golden snapshot on its machine
-                                         platform (instabox machine flow; boxd shared-base
-                                         flow; daytona sandbox flow; e2b/instavm remote
-                                         builds) from the base snapshot/template + clone +
-                                         env.<platform>.bake script; sets
-                                         env.<platform>.snapshot in the config
+                                         platform (instabox/boxd machine flows; daytona
+                                         sandbox flow; e2b/instavm remote builds) from the
+                                         base snapshot/template + clone + env.<platform>.bake
+                                         script; sets env.<platform>.snapshot in the config.
+                                         A configured shared-base/stack alias is LAYERED on
+                                         (boot it, save <slug>-base, switch the config);
+                                         empty = platform seed; literal = enrich in place
+                                         [--from <alias|snapshot>] [--name <snapshot>]
   unblock <slug> <issue>              drop the ledger row so intake re-claims the issue
                                          [--prune] also close PR + delete branch + worktree
                                          [--force] override the in-progress guard (verify dead first)
@@ -33,6 +39,14 @@ Commands:
                                          (docs/acceptance.md; bypasses the daily cap)
   security-scan <slug>                penthera scan of merged main; findings file issues
   host-tools                          install/verify the host browser + scanner toolchain
+  base list                           shared base aliases and their per-platform snapshots
+  base bake --platform <p> --name <n> bake a shared DEV base on instabox | boxd | daytona |
+                                         e2b from the provider's richest stock image: node,
+                                         python, go, git, gh, bun, pi, Chromium + the e2e
+                                         toolchain and penthera; records it as
+                                         shared-base.platforms.<p>
+                                         [--seed <value>] [--seed-kind template|snapshot|image]
+                                         [--alias <alias>]
 
 Options:
   --state-dir <path>    default: $PI_FACTORY_STATE or ./state
@@ -147,12 +161,50 @@ async function main() {
     }
     case "bake": {
       if (!pos[0]) throw new Error("bake needs <slug>");
-      const r = await opsBake(stateDir, pos[0]);
-      console.log(`baked ${r.snapshot} (${r.snapshotId}) from machine ${r.machine}`);
-      if (r.rootSizeBytes !== undefined) {
-        console.log(`size: root ${Math.round(r.rootSizeBytes / 2 ** 30)} GiB${r.dataSizeBytes !== undefined ? `, data ${Math.round(r.dataSizeBytes / 2 ** 30)} GiB` : ""}`);
+      const slug = pos[0];
+      const statusFile = typeof flags["status-file"] === "string" ? flags["status-file"] : undefined;
+      const lockKey = `repo-${slug}`;
+      // a remote job and a manual bake serialize on this pidfile; a loser
+      // must not clobber the live job's status file
+      if (!acquireBakeLock(stateDir, lockKey)) throw new Error(`a bake for ${slug} is already live (pidfile)`);
+      if (statusFile) {
+        updateBakeStatus(statusFile, {
+          kind: "repo",
+          key: slug,
+          state: "running",
+          pid: process.pid,
+          started_at: new Date().toISOString(),
+          slug,
+        });
       }
-      if (r.config_updated) console.log(`config updated: env.${r.platform}.snapshot = "${r.snapshot}"`);
+      try {
+        const r = await opsBake(stateDir, slug);
+        if (statusFile) {
+          updateBakeStatus(statusFile, {
+            state: "done",
+            ended_at: new Date().toISOString(),
+            snapshot: r.snapshot,
+            snapshot_id: r.snapshotId,
+            platform: r.platform,
+          });
+        }
+        console.log(`baked ${r.snapshot} (${r.snapshotId}) from machine ${r.machine}`);
+        if (r.rootSizeBytes !== undefined) {
+          console.log(`size: root ${Math.round(r.rootSizeBytes / 2 ** 30)} GiB${r.dataSizeBytes !== undefined ? `, data ${Math.round(r.dataSizeBytes / 2 ** 30)} GiB` : ""}`);
+        }
+        if (r.config_updated) console.log(`config updated: env.${r.platform}.snapshot = "${r.snapshot}"`);
+      } catch (e) {
+        if (statusFile) {
+          updateBakeStatus(statusFile, {
+            state: "failed",
+            ended_at: new Date().toISOString(),
+            error: (e instanceof Error ? e.message : String(e)).slice(0, 800),
+          });
+        }
+        throw e;
+      } finally {
+        releaseBakeLock(stateDir, lockKey);
+      }
       break;
     }
     case "unblock": {
@@ -202,6 +254,81 @@ async function main() {
       for (const line of r.lines) console.log(`  ${line}`);
       console.log("host tools ready");
       break;
+    }
+    case "base": {
+      const sub = pos[0];
+      if (!sub || sub === "list") {
+        const bases = opsBaseList(stateDir);
+        if (bases.length === 0) {
+          console.log("no base aliases — bake one with: foreman base bake --platform daytona --name factory-dev-daytona-r1");
+          break;
+        }
+        for (const b of bases) {
+          console.log(`== ${b.alias} ==`);
+          if (b.snapshot) console.log(`  (legacy/generic snapshot) ${b.snapshot}`);
+          for (const p of b.platforms) console.log(`  ${p.platform}: ${p.snapshot}${p.bakedAt ? ` (${p.bakedAt})` : ""}`);
+          if (b.contents) console.log(`  contents: ${b.contents}`);
+        }
+        break;
+      }
+      if (sub === "bake") {
+        const platform = typeof flags.platform === "string" ? flags.platform : undefined;
+        const name = typeof flags.name === "string" ? flags.name : undefined;
+        if (!platform || !name)
+          throw new Error("base bake needs --platform <instabox|boxd|daytona|e2b> and --name <versioned-name>");
+        const statusFile = typeof flags["status-file"] === "string" ? flags["status-file"] : undefined;
+        const alias = typeof flags.alias === "string" ? flags.alias : undefined;
+        const lockKey = `base-${platform}`;
+        // a remote job and a manual bake serialize on this pidfile; a loser
+        // must not clobber the live job's status file
+        if (!acquireBakeLock(stateDir, lockKey)) throw new Error(`a base bake for ${platform} is already live (pidfile)`);
+        if (statusFile) {
+          updateBakeStatus(statusFile, {
+            kind: "base",
+            key: platform,
+            state: "running",
+            pid: process.pid,
+            started_at: new Date().toISOString(),
+            platform,
+            name,
+            alias,
+          });
+        }
+        try {
+          const r = await opsBaseBake(stateDir, platform, {
+            name,
+            seed: typeof flags.seed === "string" ? flags.seed : undefined,
+            seedKind: typeof flags["seed-kind"] === "string" ? (flags["seed-kind"] as any) : undefined,
+            alias,
+          });
+          if (statusFile) {
+            updateBakeStatus(statusFile, {
+              state: "done",
+              ended_at: new Date().toISOString(),
+              snapshot: r.snapshot,
+              snapshot_id: r.snapshotId,
+              contents: r.contents,
+            });
+          }
+          console.log(`\nbase baked: ${r.platform} ${r.snapshot} from ${r.seed}`);
+          console.log(`alias ${r.alias} now resolves ${r.platform} → ${r.snapshot}`);
+          if (r.sizeBytes) console.log(`size: ${(r.sizeBytes / 2 ** 30).toFixed(1)} GiB`);
+          console.log(`contents: ${r.contents}`);
+        } catch (e) {
+          if (statusFile) {
+            updateBakeStatus(statusFile, {
+              state: "failed",
+              ended_at: new Date().toISOString(),
+              error: (e instanceof Error ? e.message : String(e)).slice(0, 800),
+            });
+          }
+          throw e;
+        } finally {
+          releaseBakeLock(stateDir, lockKey);
+        }
+        break;
+      }
+      throw new Error(`unknown base command "${sub}" — use base list or base bake`);
     }
     default:
       console.log(`unknown command "${command}"\n`);

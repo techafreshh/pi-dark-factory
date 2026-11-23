@@ -109,7 +109,9 @@ bun src/foreman.ts status [--repo <slug>]       # ledger, laps, stages, worktree
 bun src/foreman.ts logs   [--repo <slug>] [--tail N]
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)
-bun src/foreman.ts bake <slug>                  # machine mode: build the repo's golden snapshot
+bun src/foreman.ts bake <slug>                  # machine repo: build its golden snapshot
+bun src/foreman.ts base bake --platform <p> --name <n>  # shared dev base (node/python/go/pi + e2e + penthera)
+bun src/foreman.ts base list                    # aliases → per-platform snapshots
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
 bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge

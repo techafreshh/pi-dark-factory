@@ -136,4 +136,38 @@ describe("factoryd (remote-control API)", () => {
     });
     expect(ghost.status).toBe(404);
   });
+
+  test("bases/bake routes validate before spending anything", async () => {
+    const h = { "x-api-key": "test-key", "content-type": "application/json" };
+    const bases = await fetch(base + "bases", { headers: h });
+    expect(bases.status).toBe(200);
+    expect(((await bases.json()) as any).bases).toEqual({});
+
+    const noBody = await fetch(base + "base/bake", { method: "POST", headers: h, body: "{}" });
+    expect(noBody.status).toBe(422);
+
+    const instavm = await fetch(base + "base/bake", {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ platform: "instavm", name: "factory-dev-instavm-r1" }),
+    });
+    expect(instavm.status).toBe(400);
+    expect(((await instavm.json()) as any).error).toContain("InstaVM is excluded");
+
+    const alias = await fetch(base + "base/bake", {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ platform: "daytona", name: "shared-base" }),
+    });
+    expect(alias.status).toBe(400);
+    expect(((await alias.json()) as any).error).toContain("base alias");
+
+    const status = await fetch(base + "base/bake/daytona", { headers: h });
+    expect(status.status).toBe(200);
+    expect(((await status.json()) as any).status).toBeNull();
+
+    const repo = await fetch(base + "repos/ghost/bake", { method: "POST", headers: h, body: "{}" });
+    expect(repo.status).toBe(404);
+    expect(((await repo.json()) as any).error).toContain("not onboarded");
+  });
 });

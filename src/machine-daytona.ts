@@ -155,7 +155,7 @@ export class DaytonaLapMachine implements LapMachineLike {
 
   private snapshotName(): string {
     const raw = this.cfg.env.daytona?.snapshot ?? "";
-    return this.stateDir ? resolveSnapshotName(this.stateDir, raw) : raw;
+    return this.stateDir ? resolveSnapshotName(this.stateDir, raw, "daytona") : raw;
   }
 
   private isQuota(e: any): boolean {

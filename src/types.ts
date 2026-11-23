@@ -61,10 +61,10 @@ export interface RepoConfig {
    * (product-owned compose file in the worktree) or a fallback `docker run`
    * image until the repo ships one — root inside, so pip/apt/go/npm install
    * anything freely; the host stays clean.
-   * "instabox" = implement+review run inside a disposable InstaBox microVM
-   * (https://instabox.sh) booted from the repo's golden snapshot; the plan
-   * stage stays host-side (read-only), and every scenario step runs in the
-   * box against its own loopback. The host needs no Docker at all.
+   * "instabox" = plan, implement and review run inside a disposable InstaBox
+   * microVM (https://instabox.sh) booted from the repo's golden snapshot, and
+   * every scenario step runs in the box against its own loopback. The host
+   * needs no Docker at all.
    * "boxd" = the same lap shape on boxd.sh microVMs (SDK lifecycle, exec
    * transport; see env.boxd below).
    * "daytona" = the same lap shape on Daytona cloud sandboxes
@@ -91,7 +91,9 @@ export interface RepoConfig {
       api_key_env: string;
       /** template machines boot from when no snapshot exists yet */
       template: string;
-      /** per-repo golden snapshot name (built by `foreman bake`); empty = template */
+      /** per-repo golden snapshot name (built by `foreman bake`); empty =
+       *  template. The token "shared-base" resolves per platform through
+       *  state/base-snapshot.json (foreman base bake). */
       snapshot: string;
       /** in-machine path the repo is cloned to */
       repo_dir: string;
@@ -108,7 +110,8 @@ export interface RepoConfig {
     boxd?: {
       /** in-machine path the repo is cloned to */
       repo_dir: string;
-      /** snapshot machines boot from; default factory-base-boxd-r1 */
+      /** snapshot machines boot from; default factory-base-boxd-r1. The
+       *  token "shared-base" resolves to this platform's fleet base. */
       snapshot?: string;
       /** boxd region; default = the org's default region */
       region?: string;
@@ -118,7 +121,9 @@ export interface RepoConfig {
     daytona?: {
       /** in-machine path the repo is cloned to (the sandbox user's home) */
       repo_dir: string;
-      /** snapshot sandboxes boot from; default factory-base-daytona-r1 */
+      /** snapshot sandboxes boot from; empty until a per-repo bake. The
+       *  token "shared-base" resolves to this platform's fleet base
+       *  (foreman base bake). */
       snapshot?: string;
       /** shell run on the bake sandbox after clone; empty = clone-only snapshot */
       bake?: string;
@@ -128,7 +133,8 @@ export interface RepoConfig {
     e2b?: {
       /** in-machine path the repo is cloned to (the sandbox user's home) */
       repo_dir: string;
-      /** template sandboxes boot from; default factory-base-e2b-r1 */
+      /** template sandboxes boot from; empty until a per-repo bake. The
+       *  token "shared-base" resolves to this platform's fleet base. */
       snapshot?: string;
       /** shell run in the template build after clone; empty = clone-only */
       bake?: string;
@@ -139,7 +145,9 @@ export interface RepoConfig {
       /** in-machine path the repo is cloned to (matches the snapshot
        *  builder's fixed /app/repo clone path) */
       repo_dir: string;
-      /** snapshot VMs boot from; default factory-base-instavm-r1 */
+      /** snapshot VMs boot from; empty until a per-repo bake. The token
+       *  "shared-base" resolves to this platform's fleet base (a giant dev
+       *  base does not fit InstaVM's 3 GiB snapshot build disk). */
       snapshot?: string;
       /** shell run in the snapshot build after the platform's clone */
       bake?: string;

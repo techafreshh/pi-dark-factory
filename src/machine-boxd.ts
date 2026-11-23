@@ -238,7 +238,7 @@ export class BoxdLapMachine implements LapMachineLike {
 
   private snapshotName(): string {
     const raw = this.bdx().snapshot ?? BOXD_DEFAULT_SNAPSHOT;
-    return this.stateDir ? resolveSnapshotName(this.stateDir, raw) : raw;
+    return this.stateDir ? resolveSnapshotName(this.stateDir, raw, "boxd") : raw;
   }
 
   async ensure(): Promise<any> {

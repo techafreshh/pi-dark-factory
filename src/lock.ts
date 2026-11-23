@@ -88,6 +88,30 @@ export function releaseRepoLock(stateDir: string, slug: string) {
   lockRelease(join(stateDir, repoLockName(slug)));
 }
 
+const bakeLockName = (key: string) => `bake-${key.replace(/[^a-z0-9-]+/g, "-")}.lock`;
+
+/** One bake per key (a base platform or a repo slug). The child process that
+ *  does the bake owns the lock, exactly like a scoped tick: the daemon only
+ *  reads it before spawning, so a manual `foreman base bake` and a remote
+ *  one arbitrate through the same pidfile. */
+export function acquireBakeLock(stateDir: string, key: string): boolean {
+  return lockAcquire(join(stateDir, bakeLockName(key)));
+}
+
+export function releaseBakeLock(stateDir: string, key: string) {
+  lockRelease(join(stateDir, bakeLockName(key)));
+}
+
+/** Read-only: is a live factory process baking this key? */
+export function bakeLockHeld(stateDir: string, key: string): boolean {
+  try {
+    const pid = parseInt(readFileSync(join(stateDir, bakeLockName(key)), "utf8").trim(), 10);
+    return Number.isFinite(pid) && isAlive(pid) && looksLikeFactory(pid);
+  } catch {
+    return false;
+  }
+}
+
 /** Read-only: is a live factory process holding this repo's tick lock? The
  *  scheduler asks before it spawns a tick process, and never writes the lock
  *  itself (the child acquires it). */

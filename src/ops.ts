@@ -28,7 +28,7 @@ import { acquireRepoLock, releaseRepoLock } from "./lock";
 import { loadScenario, type ScenarioResult } from "./scenario";
 import { buildSlicerPrompt, filterNew, graphProblems, parseSlicerOutput } from "./slicer";
 import { DISCOVERY_LABEL, MINOR_LABEL } from "./stages/intake";
-import { readBases, resolveSnapshotName } from "./sharedbase";
+import { readBases, resolveSnapshotName, type SharedBaseInfo } from "./sharedbase";
 import { receipt } from "./receipts";
 import { sh } from "./sh";
 import { bumpInputsEpoch, makeCallStage, openLapMachineFor } from "./tick"; // function-body use only — ops↔tick is a live-binding cycle
@@ -40,6 +40,11 @@ import { isMachineMode, type RepoConfig } from "./types";
 
 const repoCfgDir = (stateDir: string, slug: string) => join(stateDir, "repos", slug);
 const wtRoot = (stateDir: string, slug: string) => join(stateDir, "worktrees", slug);
+
+/** The physical snapshot an alias points at on one platform (for errors). */
+function aliasSnapshotLabel(cur: SharedBaseInfo | undefined, platform: string): string {
+  return cur?.platforms?.[platform as keyof NonNullable<SharedBaseInfo["platforms"]>]?.snapshot ?? cur?.snapshot ?? "UNMAPPED";
+}
 
 /** A repo slug is a GitHub repo name, and it becomes a path segment under
  *  state/repos — so anything else ("..", "a/b", a NUL) is refused at the
@@ -225,7 +230,7 @@ export async function opsOnboard(
   const ports = await pickPorts(stateDir);
   const cfg = {
     _readme:
-      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. trusted_authors: GitHub logins (besides the repo owner and the factory's own gh account, always trusted) whose issues intake may claim — anyone else's issue is skipped, because its text becomes agent prompts. limits.daily_attempts: implement attempts per repo per UTC day before the chain stops until tomorrow (0 = no ceiling). env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes.",
+      "pi-dark-factory repo config. models.default applies to every stage until overridden; stage keys: plan, implement, review. fallback entries are 'provider/model[:thinking]' strings tried in order on provider errors (timeouts are NOT retried on another model). required_checks: names of GitHub checks that must pass before merge; [\"*\"] (the onboard default) autodetects — every check the PR reports must pass, none = no CI gate; an empty list disables the CI gate. scenario.ports are RESERVED across all repos. trusted_authors: GitHub logins (besides the repo owner and the factory's own gh account, always trusted) whose issues intake may claim — anyone else's issue is skipped, because its text becomes agent prompts. limits.daily_attempts: implement attempts per repo per UTC day before the chain stops until tomorrow (0 = no ceiling). env: 'host' runs stages as plain processes; 'compose' runs every stage as root inside the product's own docker-compose worker (must publish the scenario ports on 127.0.0.1) or the fallback image with cache volumes. Machine modes: env.<platform>.snapshot defaults to the 'shared-base' alias, which resolves per platform to the fleet dev base (foreman base bake — node/python/go/pi + e2e Chromium + penthera); clear it to \"\" before a per-repo foreman bake <slug>.",
     repo: target,
     slug,
     default_branch: branch,
@@ -247,6 +252,14 @@ export async function opsOnboard(
       service: "worker",
       image: "ubuntu:24.04",
       pass_env: ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "ZAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"],
+      // the shared dev base token, ready for a mode switch: `shared-base`
+      // resolves per platform through state/base-snapshot.json (foreman base
+      // bake). Clear a platform's snapshot to "" before a per-repo
+      // `foreman bake <slug>`. InstaVM has no shared dev base (3 GiB cap).
+      instabox: { snapshot: "shared-base" },
+      boxd: { snapshot: "shared-base" },
+      daytona: { snapshot: "shared-base" },
+      e2b: { snapshot: "shared-base" },
     },
     pi: {
       binary: "pi",
@@ -285,7 +298,8 @@ export async function opsOnboard(
 }
 
 /**
- * Bake the repo's golden instabox snapshot: boot a machine from the template,
+ * Bake the repo's golden snapshot on its machine platform: boot from the
+ * configured snapshot (an enrichment) or the platform's first-bake base,
  * clone the repo, run the repo's `bake` shell (install deps...), snapshot it
  * as `<slug>-base`, and record the name in the repo config. Idempotent — the
  * old bake machine is rebuilt and the snapshot overwritten.
@@ -328,13 +342,13 @@ export async function opsBake(stateDir: string, slug: string, opts: { boxdClient
   if (readBases(stateDir)[ibx.snapshot]) {
     const cur = readBases(stateDir)[ibx.snapshot];
     throw new Error(
-      `"${ibx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `"${ibx.snapshot}" is a base alias (currently ${aliasSnapshotLabel(cur, "instabox")}). ` +
       `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
       `To upgrade a base: fresh-template bake → new versioned name → flip state/base-snapshot.json.`
     );
   }
   const baseSnap = ibx.snapshot
-    ? (await ib.listSnapshots()).find((s) => s.name === resolveSnapshotName(stateDir, ibx.snapshot))
+    ? (await ib.listSnapshots()).find((s) => s.name === resolveSnapshotName(stateDir, ibx.snapshot, "instabox"))
     : undefined;
   if (ibx.snapshot && !baseSnap) throw new Error(`instabox snapshot "${ibx.snapshot}" not found — bake it first: foreman bake ${slug}`);
 
@@ -529,7 +543,7 @@ async function bakeBoxd(stateDir: string, cfg: RepoConfig, slug: string, opts: {
   if (readBases(stateDir)[bdx.snapshot ?? ""]) {
     const cur = readBases(stateDir)[bdx.snapshot!];
     throw new Error(
-      `"${bdx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `"${bdx.snapshot}" is a base alias (currently ${aliasSnapshotLabel(cur, "boxd")}). ` +
       `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
       `To upgrade a base: bake the new versioned name platform-side, then flip state/base-snapshot.json.`
     );
@@ -541,7 +555,7 @@ async function bakeBoxd(stateDir: string, cfg: RepoConfig, slug: string, opts: {
   // (boxd re-saves version latest-only) and pollute every repo on that base.
   const firstBake = !bdx.snapshot || bdx.snapshot === BOXD_DEFAULT_SNAPSHOT;
   const snapName = firstBake ? `${sanitizeMachinePart(slug)}-base` : bdx.snapshot!;
-  const bootFrom = resolveSnapshotName(stateDir, firstBake ? BOXD_DEFAULT_SNAPSHOT : bdx.snapshot!);
+  const bootFrom = resolveSnapshotName(stateDir, firstBake ? BOXD_DEFAULT_SNAPSHOT : bdx.snapshot!, "boxd");
   receipt(stateDir, `bake ${slug}: booting boxd machine ${name} from snapshot ${bootFrom}${firstBake ? " (shared boxd base — first bake saves " + snapName + ")" : ""}`, slug);
   const stale = await (client.machines as any).list({ region: "all" })
     .then((l: any) => ((l.machines ?? l) as any[]).find((m) => m.name === name) ?? null)
@@ -598,7 +612,7 @@ async function bakeBoxd(stateDir: string, cfg: RepoConfig, slug: string, opts: {
 
 /**
  * Daytona bake: boot a sandbox (from the configured snapshot — an
- * ENRICHMENT, not a replacement — or ubuntu:24.04 for a repo's first
+ * ENRICHMENT, not a replacement — or node:22-bookworm for a repo's first
  * bake), clone, run the bake script, stop, snapshot-from-sandbox, delete.
  * Container snapshots require a stopped sandbox.
  */
@@ -613,12 +627,12 @@ async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Pro
   if (baseIsAlias) {
     const cur = dx.snapshot ? readBases(stateDir)[dx.snapshot] : undefined;
     throw new Error(
-      `"${dx.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `"${dx.snapshot}" is a base alias (currently ${aliasSnapshotLabel(cur, "daytona")}). ` +
       `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
       `To upgrade a base: bake the new versioned name platform-side, then flip state/base-snapshot.json.`
     );
   }
-  receipt(stateDir, `bake ${slug}: booting daytona sandbox ${name} from ${dx.snapshot ? `snapshot ${resolveSnapshotName(stateDir, dx.snapshot)}` : "node:22-bookworm"}`, slug);
+  receipt(stateDir, `bake ${slug}: booting daytona sandbox ${name} from ${dx.snapshot ? `snapshot ${resolveSnapshotName(stateDir, dx.snapshot, "daytona")}` : "node:22-bookworm"}`, slug);
   const labels = { factory: "1", bake: slug };
   // a previous failed bake's same-name sandbox lingers in a state where
   // get-by-name may still 404 while the NAME is already reserved (recorded:
@@ -634,7 +648,7 @@ async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Pro
     await new Promise((r) => setTimeout(r, 5000));
     try {
       sandbox = dx.snapshot
-        ? await client.create({ snapshot: resolveSnapshotName(stateDir, dx.snapshot), name, labels }, { timeout: 600 })
+        ? await client.create({ snapshot: resolveSnapshotName(stateDir, dx.snapshot, "daytona"), name, labels }, { timeout: 600 })
         : await client.create({ image: "node:22-bookworm", name, labels }, { timeout: 600 });
     } catch (e: any) {
       if (attempt === 2 || !/already exists|conflict|409/i.test(String(e?.message ?? e))) throw e;
@@ -674,9 +688,10 @@ async function bakeDaytona(stateDir: string, cfg: RepoConfig, slug: string): Pro
 /**
  * E2B bake: a definition-based remote template build (Build System 2.0 —
  * no runtime mutate-and-commit exists). First bake builds on node:22-bookworm
- * with bun + git + gh + python3 installed; an enrichment re-bake layers on
+ * with bun + git + curl + python3 installed; an enrichment re-bake layers on
  * the CURRENT template (fromTemplate), so the repo's own deps are preserved
- * the same way the instabox flow preserves them.
+ * the same way the instabox flow preserves them. A shared dev base
+ * (basebake.ts) starts from E2B's `base` image instead, which carries gh too.
  */
 async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise<{
   machine: string; snapshot: string; snapshotId: string; platform: "instabox" | "daytona" | "e2b" | "instavm" | "boxd"; rootSizeBytes?: number; dataSizeBytes?: number; config_updated: boolean;
@@ -688,7 +703,7 @@ async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise
   if (baseIsAlias) {
     const cur = ex.snapshot ? readBases(stateDir)[ex.snapshot] : undefined;
     throw new Error(
-      `"${ex.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `"${ex.snapshot}" is a base alias (currently ${aliasSnapshotLabel(cur, "e2b")}). ` +
       `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal template name. ` +
       `To upgrade a base: build the new versioned name platform-side, then flip state/base-snapshot.json.`
     );
@@ -697,7 +712,7 @@ async function bakeE2b(stateDir: string, cfg: RepoConfig, slug: string): Promise
   const cloneUrl = cfg.origin_url ?? `https://github.com/${cfg.repo}.git`;
   let t;
   if (ex.snapshot) {
-    t = Template().fromTemplate(resolveSnapshotName(stateDir, ex.snapshot));
+    t = Template().fromTemplate(resolveSnapshotName(stateDir, ex.snapshot, "e2b"));
   } else {
     // system installs run as root — the builder's default user cannot touch
     // /var/lib/apt (recorded: permission-denied lock, bake 2026-11-13)
@@ -750,7 +765,7 @@ async function bakeInstavm(stateDir: string, cfg: RepoConfig, slug: string): Pro
   if (baseIsAlias) {
     const cur = ix.snapshot ? readBases(stateDir)[ix.snapshot] : undefined;
     throw new Error(
-      `"${ix.snapshot}" is a base alias (currently ${cur?.snapshot ?? "UNMAPPED"}). ` +
+      `"${ix.snapshot}" is a base alias (currently ${aliasSnapshotLabel(cur, "instavm")}). ` +
       `A per-repo bake here would pollute every project of that stack — put repo deps in the scenario setup, or give this repo its own literal snapshot name. ` +
       `To upgrade a base: build the new versioned name platform-side, then flip state/base-snapshot.json.`
     );
@@ -1153,7 +1168,7 @@ export async function opsScenarioTest(
     try {
       snaps = await ib.listSnapshots();
     } catch {}
-    const snap = snaps.find((s) => s.name === resolveSnapshotName(stateDir, cfg.env.instabox!.snapshot));
+    const snap = snaps.find((s) => s.name === resolveSnapshotName(stateDir, cfg.env.instabox!.snapshot, "instabox"));
     const m = await ib.ensureRunning({
       name,
       templateId: snap ? undefined : cfg.env.instabox.template,

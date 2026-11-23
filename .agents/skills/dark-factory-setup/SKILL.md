@@ -116,9 +116,11 @@ Ask in one batch. The defaults hold on "just set it up".
    Caddy runs (host or container).
 5. **Lanes** for the repos planned now (default `instabox`, the fleet's main
    lane):
-   - `instabox` needs `INSTABOX_API_KEY` and a stack-base snapshot.
-   - `boxd` needs `BOXD_API_KEY` and the `factory-base-boxd-r1` snapshot in
-     the boxd org.
+   - `instabox` needs `INSTABOX_API_KEY` and the shared dev base
+     (`foreman base bake --platform instabox`).
+   - `boxd` needs `BOXD_API_KEY` and the shared dev base
+     (`foreman base bake --platform boxd`; a repo still on the literal
+     `factory-base-boxd-r1` lacks node and Chrome).
    - `daytona` needs `DAYTONA_API_KEY` **with the sandbox and snapshot
      write/delete scopes** (a create-only key 403s every delete; the janitor
      and the bake's snapshot step fail silently otherwise).
@@ -235,9 +237,9 @@ grounding, run Phase 5f's check as
 `docker compose exec -T factoryd sh -c 'pi --mode json --no-session --tools read,web_search,web_fetch --extension pi-extensions/pdf-tinyfish.ts -p "Call web_search with query \"tinyfish api\" and reply COUNT=<n> only."' | grep -o 'COUNT=[0-9]*'`.
 For a machine lane (InstaBox, boxd, Daytona, E2B or InstaVM), run Phase 5e's
 key and quota checks the same way, with the key read inside the container
-(`"$INSTABOX_API_KEY"` in a single-quoted `sh -c`). The stack-base snapshot file lives at
+(`"$INSTABOX_API_KEY"` in a single-quoted `sh -c`). The base-snapshot file lives at
 `/home/factory/state/base-snapshot.json` in the container, and
-`foreman bake` runs as `docker compose exec factoryd bun src/foreman.ts bake <slug>`.
+`foreman base bake` / `foreman bake` run as `docker compose exec factoryd bun src/foreman.ts ...`.
 
 **D6. Connect the CLI.** With Node 18 or newer on the host:
 
@@ -482,27 +484,44 @@ sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a
 
 - **Quota.** Tell the user the machine limit from `usage.limits`; it caps
   concurrent machine laps.
-- **Stack base.** Repos boot from an alias in
-  `/home/factory/state/base-snapshot.json`:
+- **Shared dev base.** Repos boot from an alias in
+  `/home/factory/state/base-snapshot.json`. The current schema is per
+  platform:
 
   ```json
-  {"shared-base": {"snapshot": "<snapshot-name>", "contents": "<what is installed>"}}
+  {
+    "shared-base": {
+      "platforms": {
+        "instabox": {"snapshot": "<snapshot>", "contents": "..."},
+        "boxd":     {"snapshot": "<snapshot>", "contents": "..."},
+        "daytona":  {"snapshot": "<snapshot>", "contents": "..."},
+        "e2b":      {"snapshot": "<snapshot>", "contents": "..."}
+      }
+    }
+  }
   ```
 
-  On a fresh install there is no base yet. Bake one from the smoke repo
-  (Phase 7):
-  1. Set its `env.instabox.snapshot` to `""`.
-  2. Set its `env.instabox.bake` to a script that installs what stages need
-     on top of the template. pi at least, e.g.
-     `sudo npm i -g @earendil-works/pi-coding-agent`.
-  3. Run `foreman bake <slug>`. It saves `<slug>-base` and writes that name
-     into the config.
-  4. Add a `shared-base` entry pointing at that snapshot, so other repos can
-     use the alias.
+  Bake the platforms the fleet uses, one versioned name each:
 
-*boxd:* `BOXD_API_KEY` is in `factoryd.env`, and the org must have the
-`factory-base-boxd-r1` snapshot (or a repo sets `env.boxd.snapshot`). The
-first smoke lap is the check.
+  ```sh
+  sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a
+    cd ~/pi-dark-factory && bun src/foreman.ts base bake --state-dir /home/factory/state \
+    --platform instabox --name factory-dev-instabox-r1'
+  # boxd / daytona / e2b likewise; InstaVM is excluded (3 GiB snapshot build disk)
+  sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts base list --state-dir /home/factory/state'
+  ```
+
+  Each bake seeds from the provider's richest stock image (`agent-browser` on
+  instabox, the default Ubuntu image on boxd, `daytona-medium` on Daytona,
+  `base` on E2B), then installs node, python3, go, git, gh, bun, pi, the
+  browser/e2e toolchain at `/opt/pdf-e2e` and penthera, and smokes every one.
+  A repo on `"snapshot": "shared-base"` gets that platform's base with no
+  per-repo bake; use a new `-r2` name for an upgrade and keep the old
+  snapshot for rollback.
+
+*boxd:* `BOXD_API_KEY` is in `factoryd.env`. A repo on `shared-base` boots the
+boxd dev base; a repo still on the literal `factory-base-boxd-r1` gets bun,
+git, gh and python3 but no node or Chrome. The first smoke lap is the check.
 
 **5f. Web grounding** (if `TINYFISH_API_KEY` is set):
 

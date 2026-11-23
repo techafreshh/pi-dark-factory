@@ -38,10 +38,12 @@ booted from the repo's snapshot — the compose-mode bargain (install anything, 
 perfect reproducibility instead of shared caches:
 
 - **One-time bake**: `foreman bake <slug>` boots a machine from the template (default
-  `basic`: docker, node, go, git, gh preinstalled), clones the repo, runs the repo's
+  `agent-browser`: node, python, go, rust, java, bun, docker, gh and Chrome preinstalled),
+  clones the repo, runs the repo's
   `env.instabox.bake` shell (install deps, warm caches), and snapshots it — every future
   stage boots from that snapshot, warm, byte-identical every lap. The snapshot name is
-  written back into the repo config.
+  written back into the repo config. A repo on the shared dev base (below) needs no
+  per-repo bake.
 - **The machine's clone IS the worktree.** The stage driver runs the same deterministic
   gates the host runs (clean tree, ≥1 real commit vs base) and pushes the branch itself;
   the foreman fetches the pushed branch and re-judges it from its own git truth. Every
@@ -116,8 +118,11 @@ officially Bun-supported):
   `foreman bake`; a `shared-base` alias resolves via `state/base-snapshot.json`). The only
   secret is `DAYTONA_API_KEY` in `factoryd.env`.
 - **Bake**: `foreman bake <slug>` boots a sandbox (from the current snapshot — an
-  enrichment — or `ubuntu:24.04` for the first bake), clones, runs `env.daytona.bake`,
-  stops the sandbox and snapshots it back under the same name.
+  enrichment — or `node:22-bookworm` for the first bake), clones, runs `env.daytona.bake`,
+  stops the sandbox and snapshots it back under the same name. The first bake is a
+  **baseline repo snapshot**, not a dev base: it carries node and git, and the repo's own
+  `env.daytona.bake` must install everything else it needs. Prefer a shared dev base (below)
+  and keep the per-repo bake for repo deps only.
 - **Deadlines are enforced in-box** by the same hardened exec wrapper boxd proved; the
   platform's own exec kill rides a few seconds behind as the margin. Daytona 0.231.x
   returns combined exec output in `result` (split stdout/stderr fields are not in a stable
@@ -141,8 +146,10 @@ officially Bun-supported):
   (empty until baked). The only secret is `E2B_API_KEY`.
 - **Bake is a definition build** (Build System 2.0 — E2B has no runtime
   mutate-and-commit): `foreman bake <slug>` builds a template from `node:22-bookworm`
-  (bun + git + gh + python3 installed), clones the repo and runs `env.e2b.bake` inside the
-  remote build; an enrichment re-bake layers `fromTemplate` on the current template.
+  (bun + git + curl + python3 installed), clones the repo and runs `env.e2b.bake` inside
+  the remote build; an enrichment re-bake layers `fromTemplate` on the current template.
+  The shared dev base (below) instead extends E2B's `base` image, which already carries
+  python, node, git and gh.
 - **The create TTL is the trap**: the API default is 300 seconds and the default expiry
   action is a silent KILL. Every create passes an explicit `PDF_E2B_TTL_MS` (default
   55 min) and every stage refreshes it. **Hobby plans cap continuous runtime at 1 hour** —
@@ -173,6 +180,36 @@ officially Bun-supported):
   **A card on file is REQUIRED even on Free** (recorded: VM *and* session creates both 403
   `card_required`, 2026-11-13) — until one is added, repos cannot use this mode.
 
+### Shared dev bases — bake once per platform
+
+`foreman base bake --platform <instabox|boxd|daytona|e2b> --name <versioned-name>` bakes a
+fleet dev base from the provider's richest stock image and records it under
+`shared-base.platforms.<platform>` in `state/base-snapshot.json`. From a laptop,
+`dark-factory base ensure --platform <p> --yes --wait` (or `dark-factory base bake`) starts
+the same job server-side; the daemon runs it detached and the CLI polls, so a long E2B or
+Daytona build never holds the connection open. A repo config says
+`"snapshot": "shared-base"`; resolution is **per platform**, so a snapshot name from one
+platform is never handed to another platform's API (the "snapshot not found" class).
+
+| platform | seed | what the bake adds |
+|---|---|---|
+| instabox | template `agent-browser` | pi; the template already has node/python/go/rust/java/bun/docker/gh/chrome |
+| boxd | default Ubuntu 24.04 image | pi + gh if absent; the image already has node/python/go/git/chrome |
+| daytona | snapshot `daytona-medium` | Go, gh, Bun, pi; the snapshot already has Python + Node |
+| e2b | `base` / `fromBaseImage()` | Go, Bun, pi; the base already has python/node/git/gh |
+
+Every base also gets the acceptance toolchain (`/opt/pdf-e2e`: Chromium, the `e2e` runner,
+agent-browser, with a headless launch smoke) and the pinned `penthera` scanner. The in-box
+smoke checks node, python3, go, git, gh, bun, pi and penthera, and the bake fails loudly
+(exit 32 for a missing tool, 31 for a browser) instead of snapshotting a half-provisioned
+box. InstaVM is excluded: its snapshot build disk is capped at 3 GiB, so that lane stays
+lean and per-repo.
+
+Bases are versioned: bake a new `...-r2`, verify it, then flip the alias. A running lap
+keeps the snapshot it booted from. Per-repo `foreman bake` remains for repo-specific deps;
+a base alias as the repo's own snapshot is refused so a per-repo bake cannot pollute the
+fleet base. `foreman base list` shows what each alias resolves to per platform.
+
 ### Gating smoke — before trusting a new platform
 
 `bin/smoke-machine-platforms.ts --platform <name>` runs the six cheap experiments that
@@ -187,5 +224,6 @@ Browser acceptance (docs/acceptance.md) rides the same gate: `foreman bake <slug
 repo with `acceptance.e2e`/`prd_check` installs the browser toolchain in-box and SMOKE-
 LAUNCHES Chromium before snapshotting — a platform whose egress allowlist blocks the
 apt/browser downloads fails the bake loudly (exit 31) instead of failing every future
-walk. InstaBox/boxd egress is unrestricted; Daytona Tier 1/2 and InstaVM Free are the
-ones to verify.
+walk. A shared dev base from `foreman base bake` always carries the toolchain, so repos on
+it need no per-repo browser bake. InstaBox/boxd egress is unrestricted; Daytona Tier 1/2
+and InstaVM Free are the ones to verify.

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { readBases, readSharedBase } from "./sharedbase";
 import { opsAcceptanceRun, opsBacklog, opsCleanup, opsDiscoveries, opsGetConfig, opsGetScenario, opsHostTools, opsLogs, opsModels, opsOnboard, opsPause, opsPrdSet, opsProveGates, opsScenarioLint, opsScenarioSet, opsScenarioTest, opsSecurityScan, opsStatus, opsUnblock, opsSetConfig, SAFE_SLUG } from "./ops";
+import { listBaseBakeStatuses, readBaseBakeStatus, readRepoBakeStatus, spawnBaseBake, spawnRepoBake } from "./bakejobs";
 import { repoLockHeld } from "./lock";
 import { spawnRepoTick, startAllocator, startScheduler } from "./scheduler";
 import { poolStatus } from "./allocator";
@@ -121,6 +122,36 @@ export function startFactoryd(opts: FactorydOpts) {
         if (req.method === "GET" && path === "/status") {
           return respond(await opsStatus(opts.stateDir, url.searchParams.get("slug") ?? undefined));
         }
+        if (req.method === "GET" && path === "/bases") {
+          // per-platform base aliases + the latest bake job per platform
+          return respond({ bases: readBases(opts.stateDir), jobs: listBaseBakeStatuses(opts.stateDir) });
+        }
+        if (req.method === "GET" && path === "/base/bakes") {
+          return respond({ jobs: listBaseBakeStatuses(opts.stateDir) });
+        }
+        if (req.method === "GET" && /^\/base\/bake\/[^/]+$/.test(path)) {
+          const platform = path.slice("/base/bake/".length);
+          return respond({ status: readBaseBakeStatus(opts.stateDir, platform) });
+        }
+        if (req.method === "POST" && path === "/base/bake") {
+          // long work: the child runs detached (src/bakejobs.ts); 202 = started,
+          // 409 = one is live, 400 = validation
+          const body = await readJson(req);
+          if (typeof body.platform !== "string" || !body.platform || typeof body.name !== "string" || !body.name)
+            return fail(422, "body must be {platform: 'instabox'|'boxd'|'daytona'|'e2b', name: '<versioned>', seed?, seedKind?, alias?}");
+          try {
+            const r = spawnBaseBake(opts.stateDir, {
+              platform: body.platform,
+              name: body.name,
+              seed: typeof body.seed === "string" ? body.seed : undefined,
+              seedKind: typeof body.seedKind === "string" ? body.seedKind : undefined,
+              alias: typeof body.alias === "string" ? body.alias : undefined,
+            });
+            return respond({ started: r.started, reason: r.reason, status: r.status }, r.started ? 202 : 409);
+          } catch (e: any) {
+            return fail(400, e.message ?? String(e));
+          }
+        }
         if (req.method === "GET" && path === "/logs") {
           return respond(
             opsLogs(opts.stateDir, {
@@ -213,6 +244,21 @@ export function startFactoryd(opts: FactorydOpts) {
         if (req.method === "GET" && tickEnd === undefined && path.endsWith("/scenario")) {
           const kind = url.searchParams.get("kind") === "holdout" ? "holdout" : "runtime";
           return respond(opsGetScenario(opts.stateDir, slug, kind));
+        }
+        if (req.method === "POST" && tickEnd === undefined && path.endsWith("/bake")) {
+          // per-repo golden snapshot, same detached-job model as /base/bake
+          if (!slug) return fail(400, "usage: POST /repos/<slug>/bake");
+          try {
+            const r = spawnRepoBake(opts.stateDir, slug);
+            return respond({ started: r.started, reason: r.reason, status: r.status }, r.started ? 202 : 409);
+          } catch (e: any) {
+            const msg = e.message ?? String(e);
+            return fail(/not onboarded/i.test(msg) ? 404 : 400, msg);
+          }
+        }
+        if (req.method === "GET" && tickEnd === undefined && path.endsWith("/bake")) {
+          if (!slug) return fail(400, "usage: GET /repos/<slug>/bake");
+          return respond({ status: readRepoBakeStatus(opts.stateDir, slug) });
         }
         if (req.method === "GET" && path === "/models") {
           // the LIVE provider roster (factory's ~/.pi/agent/models.json,

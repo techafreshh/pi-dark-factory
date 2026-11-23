@@ -193,7 +193,7 @@ export class E2bLapMachine implements LapMachineLike {
 
   private templateName(): string {
     const raw = this.cfg.env.e2b?.snapshot ?? "";
-    return this.stateDir ? resolveSnapshotName(this.stateDir, raw) : raw;
+    return this.stateDir ? resolveSnapshotName(this.stateDir, raw, "e2b") : raw;
   }
 
   private isQuota(e: any): boolean {
