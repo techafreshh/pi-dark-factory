@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoReviveBlocked, bumpInputsEpoch, failureSignature } from "../src/tick";
@@ -62,6 +62,12 @@ describe("failureSignature (stagnation compares the failure class, not its envel
     const box = failureSignature("instabox 429 on /v1/machines: req_daucmcamcvyyq2n3cn6jj7w2vm at 2026-11-04T16:00:57.017Z");
     expect(box).not.toContain("req_dauc");
     expect(box).not.toContain("2026-11-04T16:00:57");
+    // offset timestamps must normalize fully, not leave their offset behind
+    const offset = failureSignature("wrapped at 2026-11-04T16:00:57+00:00");
+    expect(offset).not.toContain("+00:00");
+    expect(offset).not.toContain("2026-11-04T16:00:57");
+    // other known volatile ids: OpenAI completion ids and trace ids
+    expect(failureSignature("trace_id=abc123 chatcmpl-XYZ")).toBe(failureSignature("trace_id=def456 chatcmpl-ABC"));
   });
 
   test("different failure classes keep different signatures", () => {
@@ -122,6 +128,30 @@ describe("autoReviveBlocked (bounded self-heal of exhausted laps)", () => {
     await autoReviveBlocked(cfg, dir, led as any); // revive 2 (signature repeats)
     led.rows[0] = blocked(e402(ids[2]));
     await autoReviveBlocked(cfg, dir, led as any); // stagnation → refuse
+    const revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
+    expect(revives).toBe(2);
+    expect(led.rows[0].state).toBe("blocked");
+  });
+
+  test("stale pre-normalization revives.json signatures are discarded once (sig version)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pdfrevver-"));
+    const rdir = join(dir, "repos", "app");
+    mkdirSync(rdir, { recursive: true });
+    const day = new Date().toISOString().slice(0, 10);
+    writeFileSync(
+      join(rdir, "revives.json"),
+      JSON.stringify({ day, counts: { "1": 0 }, sigs: { "1": ["old raw sig A", "old raw sig B"] } })
+    );
+    const err = e402("08e0673b-725e-4955-bc5b-02780a698187");
+    const led = fakeLedger([blocked(err)]);
+    await autoReviveBlocked(cfg, dir, led as any); // stale history discarded → revive 1
+    const state = JSON.parse(readFileSync(join(rdir, "revives.json"), "utf8"));
+    expect(state.sig_version).toBe(2);
+    expect(state.sigs["1"]).toEqual([failureSignature(err)]);
+    led.rows[0] = blocked(err);
+    await autoReviveBlocked(cfg, dir, led as any); // revive 2
+    led.rows[0] = blocked(err);
+    await autoReviveBlocked(cfg, dir, led as any); // stagnation
     const revives = led.patches.filter((p: any) => p.patch?.state === "in_progress").length;
     expect(revives).toBe(2);
     expect(led.rows[0].state).toBe("blocked");
