@@ -142,8 +142,9 @@ A spilled lap runs with a per-lap copy of the repo config whose `env.mode` is th
 platform. `repoDirFor`, `openMachine`, the runtime context and verify all branch on
 `cfg.env.mode`, so the copy is the whole change. It is rebuilt after `runChain`'s per-lap
 config reload. Before enabling spill-over on a repo, run `scenario --test` on every
-platform you spill to: snapshots differ in toolchain (the instabox base ships node, the
-boxd base ships bun; the daytona/e2b/instavm bases ship bun + node + git + gh + python3).
+platform you spill to: a `shared-base` alias resolves per platform, so the fleet dev base
+follows the spilled lap, but a repo pointing at a literal snapshot keeps that snapshot's
+toolchain — verify it carries the repo's runtime.
 
 The janitor buckets repos onto every machine platform, so a boxd-primary repo's spilled InstaBox
 machine would be reaped as "unknown repo" mid-lap. The janitor change: a slug known to any

@@ -60,9 +60,10 @@ is off; `acceptance.e2e_minutes` caps a run. The runner exports `CI=1`,
 which gives failed tests one automatic retry — a flaky test gets a second
 chance before it blocks a merge, but the contract is still deterministic
 suites: the prd-acceptance skill's authoring rules say so, and a suite that
-needs retries to stay green is a bug in the suite. Machine repos need the
-browser in their golden snapshot — a re-`bake` with the flag on (the bake
-smoke fails loudly when a platform cannot carry one).
+needs retries to stay green is a bug in the suite. Machine repos on the shared
+dev base already have the browser (`foreman base bake`); a per-repo golden
+snapshot needs a re-`bake` with the flag on (the bake smoke fails loudly when
+a platform cannot carry one).
 
 **The PR sees the evidence.** After every verify, the factory posts one
 report-only comment on the PR: the e2e verdict (✅/❌ with the failing
@@ -164,12 +165,15 @@ same thing:
 - **host/compose repos** — `foreman host-tools` (or `POST /host-tools`)
   installs under `~/.pdf/e2e-toolchain` (+ browsers beside it) and ends with
   a headless Chromium launch smoke. Once per VPS.
-- **machine repos** — `foreman bake <slug>` appends the toolchain to the
-  platform bake when either `e2e` or `prd_check` is on, then smokes an
-  in-box browser launch before snapshotting. **A bake whose browser cannot
-  launch fails loudly (exit 31)** — the egress caveat: instabox/boxd are
-  unrestricted, but Daytona Tier 1/2 and InstaVM Free run allowlists that may
-  block apt/browser CDNs. Run the bake per platform and trust the smoke.
+- **machine repos** — a shared dev base from `foreman base bake` always
+  carries the toolchain (`/opt/pdf-e2e` + Chromium + agent-browser +
+  penthera), so every repo on `"snapshot": "shared-base"` has it without a
+  per-repo bake. A per-repo `foreman bake <slug>` appends the toolchain only
+  when `e2e` or `prd_check` is on, then smokes an in-box browser launch
+  before snapshotting. **A bake whose browser cannot launch fails loudly
+  (exit 31)** — the egress caveat: instabox/boxd are unrestricted, but
+  Daytona Tier 1/2 and InstaVM Free run allowlists that may block
+  apt/browser CDNs. Run the bake per platform and trust the smoke.
 
 The agents get the `prd-acceptance` skill (pi-skills/) with the walk method
 and the output contract; agent-browser's own skill ships alongside.
@@ -220,9 +224,9 @@ create never loses the batch.
 ## Rollout checklist (per repo)
 
 1. Patch the config: `dark-factory config SLUG --json '{"acceptance":{"e2e":true,"prd_check":true,"security":true}}'`
-2. Provision: `dark-factory host-tools` (host/compose) or re-`bake` (machine
-   repos — the verify gate's in-box suite and the walk's machine both need
-   the browser in the golden snapshot).
+2. Provision: `dark-factory host-tools` (host/compose), or use the shared dev
+   base / re-`bake` a per-repo snapshot (machine repos — the verify gate's
+   in-box suite and the walk's machine both need the browser in the base).
 3. Store/refresh the contract: slicing a backlog does it; otherwise
    `dark-factory prd SLUG --prd-file PRD.md`.
 4. Walk once by hand: `dark-factory acceptance SLUG` — expect either a PASS

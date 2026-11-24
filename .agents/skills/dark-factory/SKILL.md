@@ -126,8 +126,8 @@ dark-factory doctor
 - **`doctor` reports:**
   - the daemon version;
   - web-tools readiness;
-  - which snapshot each stack base alias (`shared-base`, …) maps to, and its
-    contents;
+- which per-platform snapshot each base alias (`shared-base`, …) maps to,
+  and its contents;
   - onboarded repos.
 - **Errors.** A 401 means a wrong key. A connection error that is not a 401
   means the daemon or the edge proxy is down: hand it to the operator.
@@ -227,17 +227,18 @@ Decisions to walk with the user:
     insufficient_credits` with an untouched quota means the ids are on the
     wrong pool, so ask the operator.
 - **`env.mode`.**
-  - `instabox` (needs a stack base, see below).
-  - `boxd` (needs `env.boxd.repo_dir`; the default snapshot
-    `factory-base-boxd-r1` has bun, git, gh and python3, but no node or Chrome).
-  - `daytona` (needs `DAYTONA_API_KEY`; bake first — `env.daytona.snapshot`
-    is empty until `foreman bake` saves the golden snapshot, which the clone
-    and `env.daytona.bake` fill with the repo's deps).
-  - `e2b` (needs `E2B_API_KEY`; Hobby caps sandboxes at 1 h continuous and
-    10 concurrent, so keep `timeouts.stage_minutes` under ~50; bake is a
-    remote template build).
+  - `instabox` (use `"snapshot": "shared-base"`; the per-platform dev base already carries node/python/go/gh/pi/e2e).
+  - `boxd` (use `"snapshot": "shared-base"`. A repo still on the old literal
+    `factory-base-boxd-r1` gets bun, git, gh and python3 but no node or Chrome).
+  - `daytona` (needs `DAYTONA_API_KEY`; use `"snapshot": "shared-base"` — the
+    per-platform dev base. Without it, `foreman bake` builds a baseline from
+    `node:22-bookworm`, which has node and git but not the rest).
+  - `e2b` (needs `E2B_API_KEY`; use `"snapshot": "shared-base"`. Hobby caps
+    sandboxes at 1 h continuous and 10 concurrent, so keep
+    `timeouts.stage_minutes` under ~50).
   - `instavm` (needs `INSTAVM_API_KEY` **and a card on file even on Free**;
-    young platform — run the gating smoke before trusting it with laps).
+    no shared dev base — its snapshot build disk is capped at 3 GiB, so keep
+    it lean and per-repo; run the gating smoke before trusting it with laps).
   - `compose` (stages run as root in the repo's own `docker-compose.yml`
     worker; until one exists, `env.image` must carry the toolchain, e.g.
     `node:22`).
@@ -257,28 +258,28 @@ Decisions to walk with the user:
     foundation-issue rule to the slicer, so set it **before** `backlog`.
   - `spill_over: true`: when the repo's own platform pool is full, a lap may
     run on any other machine platform (instabox, boxd, daytona, e2b, instavm
-    — own mode first, then the rest in fleet order). Run
-    `scenario SLUG --test` on every platform you spill to first: snapshots
-    differ in toolchain (instabox bases ship node, boxd/daytona/e2b/instavm
-    bases ship bun + node + git + gh + python3), or spilled laps fail in
-    verify.
+    — own mode first, then the rest in fleet order). A `shared-base` alias
+    resolves per platform, so the dev base follows the spilled lap; run
+    `scenario SLUG --test` on every platform you spill to anyway, because a
+    repo may point at a literal snapshot whose toolchain differs.
 - **`discoveries.auto_file`.** On by default: reviewer findings become
   `[discovery]` issues. Set false for a quiet repo.
 - **`pi.web.search` / `pi.web.fetch`.** Web tools for the agent, on by default.
 - **`attempts`, `timeouts.stage_minutes`** (60), **`timeouts.readiness_seconds`**
   (120).
 
-**Stack bases.** `env.<platform>.snapshot` names a base alias
+**Base snapshots.** `env.<platform>.snapshot` names a base alias
 (`state/base-snapshot.json` resolves it per platform), and `doctor` prints
-what each alias contains. Compare the PRD's runtime needs against that list
-before the first lap. A missing toolchain doesn't fail at onboarding; it
-fails later as blocked laps. (daytona/e2b/instavm snapshots are empty until
-the repo's first `foreman bake`.)
+what each alias resolves to per platform. `shared-base` is the operator's
+shared dev base: node, python3, go, git, gh, bun, pi, Chromium + the e2e
+toolchain and penthera, baked once per platform with `foreman base bake`
+(instabox, boxd, daytona, e2b). A repo on `shared-base` needs **no bake**.
 - **Small extras:** install them in the scenario `setup` or the repo's own
   scripts.
-- **A real gap:** ask the operator for a new stack base (an operator bake).
-- **Never point a repo at a snapshot name that doesn't exist.** Laps and
-  `foreman bake` both fail on it.
+- **A repo with its own deps:** `foreman bake SLUG` builds a literal
+  `<slug>-base`; never point a repo at a snapshot name that doesn't exist.
+- **A real gap:** ask the operator for a new versioned base
+  (`foreman base bake`), never a per-repo fork of the shared alias.
 - **Never re-bake a shared alias for one repo.**
 
 ### 3. Scenarios (the acceptance contract)
@@ -388,6 +389,7 @@ and report.
 | repo paused with `billing hold: …` | every model failed on billing. Read which provider in `logs`. The operator tops up or fixes the key, or you switch models with `config`, then `unpause SLUG` |
 | `daily attempt ceiling reached` | the chain resumes after 00:00 UTC. To lift it, raise `limits.daily_attempts` with `config` (applies at once) |
 | `lap #N DEFERRED — platform unavailable` | the machine platform is down or at its cap. No attempt is spent; it self-heals. `pause SLUG` if you want quiet; report if it lasts > 1 h |
+| `snapshot … not found` / `base alias "shared-base" has no <platform> snapshot` | the repo points at `shared-base` but that platform's dev base was never baked, or a literal snapshot name is wrong | operator: `foreman base bake --platform <p> --name factory-dev-<p>-r1`, then `foreman base list`; for a one-off, point `env.<platform>.snapshot` at a literal snapshot |
 | only `[discovery]` issues running | policy: major discoveries drain first; minor ones wait for the roadmap. `gh issue list -R REPO --label discovery` shows the split. Discovery laps never file new discoveries |
 | reviewer findings not filed | `discoveries SLUG` lists them; `discoveries SLUG --file yes` files deduped issues (see CLI quirks) |
 | stop a repo | `pause SLUG`; an in-flight lap finishes. `unpause SLUG` to resume. A manual pause overwrites a billing-hold reason |
@@ -439,6 +441,10 @@ Every verb takes `--help`. Exit codes: 0 ok, 1 error or failed verdict, 2 usage.
 | `acceptance SLUG [--status]` | **spends tokens**: run the drain-time PRD walk now (files `[prd-gap]` issues); `--status` reads the verdicts |
 | `security-scan SLUG` | penthera scan of merged main; findings above the floor **file** `[security]` issues |
 | `host-tools` | install/verify the host browser + scanner toolchain (once per VPS) |
+| `base list` | shared base aliases → per-platform snapshots + live bake jobs |
+| `base bake --platform P --name N [--seed V] [--seed-kind K] [--alias A] [--wait]` | **spends cloud time**: start a server-side dev-base bake; `--wait` polls |
+| `base ensure --platform P [--alias A] [--name N] [--yes] [--wait]` | no-op when the alias (default `shared-base`) already maps P; otherwise explains and **only bakes with `--yes`** |
+| `bake SLUG [--wait]` | **spends cloud time**: server-side per-repo golden-snapshot bake |
 
 CLI quirks (v0.1.2):
 - **`-f` does not follow.** Use `--follow`.
@@ -457,9 +463,10 @@ details are in the repo's `docs/operations.md`.
 | provider keys, top-ups, new models | edit the factory user's `~/.pi/agent/models.json` / `auth.json`; check with `dark-factory models` |
 | GitHub, InstaBox, boxd, Daytona, E2B, InstaVM or TinyFish keys | `/home/factory/factoryd.env` (600), then restart `pi-factoryd`. Daytona keys need the sandbox+snapshot write/delete scopes (a create-only key 403s every delete and the janitor silently can't reap) |
 | ClinePass keys | `/home/factory/state/clinepass.keys`, one per line, live-reloaded |
-| bake a repo snapshot (machine repos) | `sudo -u factory -H bash -lc 'cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG'`. With `env.<platform>.snapshot` empty it builds the first golden snapshot (instabox: plain template machine; boxd: shared base → `<slug>-base`; daytona: `node:22-bookworm` sandbox; e2b/instavm: remote builds), clones, runs `env.<platform>.bake`, saves `<slug>-base` and writes the name into the config. With a repo-owned snapshot it re-bakes that one in place. It refuses base aliases |
-| upgrade a stack base | fresh-template bake under a new versioned name, then repoint the alias in `state/base-snapshot.json` |
+| bake a shared dev base (machine repos) | from the laptop: `dark-factory base ensure --platform <p> --yes --wait` (or `base bake --platform <p> --name factory-dev-<p>-r1 --wait`). Server-side fallback: `sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; cd ~/pi-dark-factory && bun src/foreman.ts base bake --state-dir /home/factory/state --platform <instabox\|boxd\|daytona\|e2b> --name factory-dev-<platform>-r1'`. Seeds from the provider's richest stock image (instabox `agent-browser`, boxd default Ubuntu, daytona `daytona-medium`, e2b `base`), installs node/python/go/git/gh/bun/pi plus Chromium + the e2e toolchain and penthera, smokes every one, then records the snapshot under `shared-base.platforms.<platform>`. Use a new versioned name per bake (r2, r3) and keep the old as rollback. InstaVM is excluded (3 GiB snapshot build disk) |
+| bake a repo snapshot (machine repos) | from the laptop: `dark-factory bake SLUG [--from BASE] [--name SNAPSHOT] --wait`. Server-side fallback: `sudo -u factory -H bash -lc 'set -a; . /home/factory/factoryd.env; set +a; cd ~/pi-dark-factory && bun src/foreman.ts bake SLUG --state-dir /home/factory/state'`. A per-repo bake **layers** the repo's `env.<platform>.bake` on the configured snapshot: a `shared-base` (or any base alias) boots that base, saves `<slug>-base` and switches the config to it; an empty snapshot boots the platform's first-bake seed; a literal enriches that repo-owned snapshot in place. It refuses to overwrite an alias or a shared base's physical snapshot. Prefer the shared base alone unless the repo needs its own environment layer |
+| upgrade a shared base | `foreman base bake --platform <p> --name factory-dev-<p>-r2` (new versioned name). The command flips `shared-base.platforms.<p>`; the old snapshot stays as a rollback alias |
 | `ui.enabled:false` or other non-allowlisted config | edit `state/repos/SLUG/config.json` |
 | offboard a repo | `pause` it, move `state/repos/SLUG` aside, `cleanup`. Ledger rows stay as history |
 | dashboard, backups, restore | `pi-factory-dashboard`, `pi-factory-backup.timer`, `bun bin/backup.ts list \| restore <id> <empty-dir>` |
-| browser acceptance (e2e verify gate / PRD walk / security audit) | patch the repo config `{"acceptance":{"e2e":true,"prd_check":true,"security":true}}`, run `host-tools` (host/compose repos) or re-`bake` the repo (machine repos — the toolchain rides into the snapshot, and the bake fails loudly when a platform cannot carry a browser), then `acceptance SLUG` to walk the PRD once. Backlog slicing stores the PRD automatically; `prd` updates it without re-slicing. Details: `docs/acceptance.md` |
+| browser acceptance (e2e verify gate / PRD walk / security audit) | patch the repo config `{"acceptance":{"e2e":true,"prd_check":true,"security":true}}`. A `shared-base` repo already has the toolchain (Chromium + e2e + penthera); a host/compose repo runs `host-tools`, and a per-repo machine snapshot needs a re-`bake`. Then `acceptance SLUG` to walk the PRD once. Backlog slicing stores the PRD automatically; `prd` updates it without re-slicing. Details: `docs/acceptance.md` |

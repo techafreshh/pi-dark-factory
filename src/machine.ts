@@ -665,7 +665,7 @@ export class LapMachine implements LapMachineLike {
       name: this.name,
       templateId: ibx.snapshot ? undefined : ibx.template,
       snapshotId: ibx.snapshot
-        ? await this.snapshotIdByName(this.stateDir ? resolveSnapshotName(this.stateDir, ibx.snapshot) : ibx.snapshot)
+        ? await this.snapshotIdByName(this.stateDir ? resolveSnapshotName(this.stateDir, ibx.snapshot, "instabox") : ibx.snapshot)
         : undefined,
       metadata: { factory: "1", repo: this.cfg.repo, issue: String(this.issue) },
     };

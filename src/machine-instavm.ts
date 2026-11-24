@@ -274,7 +274,7 @@ export class InstavmLapMachine implements LapMachineLike {
 
   private snapshotName(): string {
     const raw = this.cfg.env.instavm?.snapshot ?? "";
-    return this.stateDir ? resolveSnapshotName(this.stateDir, raw) : raw;
+    return this.stateDir ? resolveSnapshotName(this.stateDir, raw, "instavm") : raw;
   }
 
   private isQuota(e: any): boolean {

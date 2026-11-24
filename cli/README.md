@@ -69,6 +69,8 @@ is described in the factory repo's [`docs/docker.md`](https://github.com/techafr
 | | `prove-gates SLUG` · `discoveries SLUG [--file]` |
 | | `backlog SLUG --prd-file F [--max N] [--create]` |
 | | `unblock SLUG ISSUE [--prune] [--force]` · `cleanup` |
+| | `base list` · `base bake --platform P --name N [--wait]` · `base ensure --platform P [--alias A] [--yes] [--wait]` |
+| | `bake SLUG [--from BASE] [--name SNAPSHOT] [--wait]` (per-repo golden snapshot) |
 
 Every verb has its own, detailed manual: `dark-factory <verb> --help`.
 
@@ -95,4 +97,4 @@ dark-factory --url <factory-url> --key <api-key> tick my-app
 
 ## How it talks
 
-Plain HTTP(S): `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one.
+Plain HTTP(S): `/health` is open, every other call authenticates with `X-Api-Key`. Reads are GET; mutations are POST/PUT. The server arbitrates concurrent ticks, so firing a lap manually can never double-run one. `base bake` and `bake` start a **detached server-side job** and return immediately; `--wait` polls the job status endpoint, so a laptop sleep or a long E2B/Daytona build never holds the connection open.

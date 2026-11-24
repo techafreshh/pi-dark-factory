@@ -57,13 +57,18 @@ npx @techafresh/dark-factory doctor
 (The deprecated Python client `bin/factory-remote` still speaks the same API
 as an offline fallback, but the CLI above is the documented surface.)
 
+Machine images are remote too: `dark-factory base list`, `dark-factory base ensure
+--platform <p> --yes --wait`, `dark-factory base bake --platform <p> --name <versioned>
+--wait`, and `dark-factory bake SLUG --wait`. They start a detached server-side job and
+poll its status, so an E2B/Daytona build never holds the laptop's connection open.
+
 Then run the sibling **`dark-factory` skill** and say "onboard <owner/name>": it PRD-checks
 the repo, writes the repo config (mode included) and real runtime/holdout scenarios with
 you, slices the PRD into the dependency-ordered backlog, and fires the first lap. From
 then on laps happen every 15 minutes without you; you read receipts in `laps.log` or on
 GitHub, and the only manual moment is answering a `factory:needs-info` question.
-Machine-mode repos bake their golden snapshot once on the server (`foreman bake <slug>`) —
-onboarding reminds you when.
+Machine repos use the shared dev base (`foreman base bake`) or bake their own golden
+snapshot once (`foreman bake <slug>`) — onboarding reminds you when.
 
 The manual alternative for all of the above is [`DEPLOYMENT.md`](../DEPLOYMENT.md) — the
 runbook the setup skill executes.
@@ -77,7 +82,11 @@ bun src/foreman.ts logs   [--repo <slug>] [--tail N]
 bun src/foreman.ts onboard <owner/name>         # config + scenario templates + reserved ports
 bun src/foreman.ts backlog <slug> --prd <path>  # PRD → ordered GitHub issues (dedup by title)
                                                  #   [--max N] [--dry-run]
-bun src/foreman.ts bake <slug>                  # machine mode: build the repo's golden snapshot
+bun src/foreman.ts bake <slug>                  # machine repo: build its golden snapshot
+bun src/foreman.ts base bake --platform <p> --name <n>  # bake a shared DEV base (instabox |
+                                                 # boxd | daytona | e2b): node/python/go/pi +
+                                                 # e2e Chromium + penthera, recorded per platform
+bun src/foreman.ts base list                    # aliases and their per-platform snapshots
 bun src/foreman.ts unblock <slug> <issue>        # [--prune] drop the ledger row (± PR/branch/worktree)
 bun src/foreman.ts cleanup                      # dep caches, stale pi workers, orphaned machines, disk
 bun src/foreman.ts prd <slug> --prd <path>      # store/replace the PRD the acceptance walks judge
@@ -101,7 +110,11 @@ bun src/foreman.ts host-tools                   # install/verify the host browse
   repos/<slug>/paused        # present = ticks skip the repo; "<iso> <reason>" for a billing hold
   repos/<slug>/source/       # main checkout (fetch + hard reset each tick; agent never works here)
   repos/<slug>/issues/<n>/   # plan.md, findings.md, stage JSONLs, Pi sessions, discoveries
-  base-snapshot.json         # stack-base aliases (shared-base, …) → machine snapshots
+  base-snapshot.json         # base aliases → per-platform snapshots
+                             # (shared-base.platforms.<p>; foreman base bake)
+  base-bakes/<p>.json        # last server-side base bake job (CLI poll status)
+  bakes.err                  # stderr of a bake child that died before receipts
+  repos/<slug>/bake.json     # last server-side per-repo bake job
   backup.json                # last backup result (bin/backup.ts)
   worktrees/<slug>/issue-<n>/ # the only place agents ever work (host + compose modes)
 ```
@@ -109,6 +122,12 @@ bun src/foreman.ts host-tools                   # install/verify the host browse
 Machine-mode lap machines (instabox, boxd, daytona, e2b, instavm) are remote: the only local trace of one is its stage
 JSONLs in `issues/<n>/` — clones, sessions and the machine itself live and die on the
 platform's side.
+
+A shared dev base (`foreman base bake`) is recorded under
+`base-snapshot.json` → `shared-base.platforms.<platform>`; repos say
+`"snapshot": "shared-base"` and each platform resolves its own physical snapshot. The
+contents (node/python/go/pi, e2e Chromium, penthera) are summarized in the entry and shown
+by `foreman base list` / `dark-factory doctor`.
 
 ## Models
 

@@ -20,7 +20,7 @@ import { closeSync, existsSync, openSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Ledger } from "./ledger";
 import { grantPass } from "./allocator";
-import { repoLockHeld } from "./lock";
+import { bakeLockHeld, repoLockHeld } from "./lock";
 import { reapOrphanMachines } from "./ops";
 import { receipt } from "./receipts";
 
@@ -82,6 +82,12 @@ export async function schedulePass(
   for (const slug of slugs) {
     if (running.includes(slug)) {
       receipt(stateDir, `skipping ${slug}: its previous tick is still running (per-repo pidfile)`, slug);
+      continue;
+    }
+    // a repo bake mutates the config and snapshot; a lap starting mid-bake
+    // could boot the pre-switch snapshot
+    if (bakeLockHeld(stateDir, `repo-${slug}`)) {
+      receipt(stateDir, `skipping ${slug}: a bake is live for it (bake pidfile)`, slug);
       continue;
     }
     if (limit > 0 && running.length + started.length >= limit) {

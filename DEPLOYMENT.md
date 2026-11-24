@@ -78,15 +78,21 @@ If a project-trust prompt appears in headless runs, set default trust in
 `~/.pi/agent/settings.json` (or pass `--approve` via a repo's `pi.extra_args`). No unattended
 run may block on a question.
 
-**Machine lanes.**
-- **InstaBox:** needs `INSTABOX_API_KEY` in `factoryd.env`. Repos boot from a stack-base alias
-  in `state/base-snapshot.json` (`{"shared-base": {"snapshot": "<name>", "contents": "…"}}`),
-  or from a repo snapshot built with `foreman bake <slug>`.
-- **boxd:** needs `BOXD_API_KEY` and a `factory-base-boxd-r1` snapshot in the boxd org.
-- **Daytona:** needs `DAYTONA_API_KEY`; bake the fleet base once (`foreman bake` on a daytona-mode repo builds it) and record it under the shared alias in `state/base-snapshot.json`.
-- **E2B:** needs `E2B_API_KEY`; Hobby plans cap sandboxes at 1 h continuous and 10 concurrent — keep `timeouts.stage_minutes` under ~50 min.
-- **InstaVM:** needs `INSTAVM_API_KEY` **and a card on file even on the Free tier** (VM and session creates 403 `card_required` otherwise, recorded 2026-11-13); young platform — run `bin/smoke-machine-platforms.ts --platform instavm` first (Free-tier egress to github.com is UNVERIFIED).
-- No machine lane needs Docker on the VPS.
+**Machine lanes.** Each lane's dev base is baked once with
+`foreman base bake --platform <p> --name factory-dev-<p>-r1`; it records
+`shared-base.platforms.<p>` in `state/base-snapshot.json`, and repos on
+`"snapshot": "shared-base"` need no per-repo bake. A repo with its own deps
+still uses `foreman bake <slug>`.
+- **InstaBox:** needs `INSTABOX_API_KEY`; seeds from the `agent-browser` template.
+- **boxd:** needs `BOXD_API_KEY`; seeds from the default Ubuntu image. A repo still on the
+  literal `factory-base-boxd-r1` gets bun/git/gh/python3 but no node or Chrome.
+- **Daytona:** needs `DAYTONA_API_KEY`; seeds from the `daytona-medium` snapshot and adds
+  Go, gh, Bun and pi on top of its Python + Node.
+- **E2B:** needs `E2B_API_KEY`; seeds from the `base` image and adds Go, Bun and pi. Hobby
+  plans cap sandboxes at 1 h continuous and 10 concurrent — keep
+  `timeouts.stage_minutes` under ~50 min.
+- **InstaVM:** needs `INSTAVM_API_KEY` **and a card on file even on the Free tier** (VM and session creates 403 `card_required` otherwise, recorded 2026-11-13); young platform — run `bin/smoke-machine-platforms.ts --platform instavm` first (Free-tier egress to github.com is UNVERIFIED). No shared dev base: its snapshot build disk is capped at 3 GiB, so keep it lean and per-repo.
+- No lane needs Docker on the VPS.
 
 **Web grounding** (on by default for every repo) needs `TINYFISH_API_KEY` in `factoryd.env`.
 - **What it does:** the bundled `pi-extensions/pdf-tinyfish.ts` extension gives agents

@@ -250,6 +250,25 @@ describe("run (verbs over a mocked API)", () => {
     expect(err.join("")).toContain("--json is not valid JSON");
   });
 
+  test("a config write that switches to a machine mode warns when the dev base is missing", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      if (method === "POST")
+        return { status: 200, body: { config_path: "/x/config.json", config: { env: { mode: "daytona" } } } };
+      return { status: 200, body: { bases: {}, jobs: [] } };
+    };
+    const code = await run(["config", "app", "--json", '{"env":{"mode":"daytona"}}'], {
+      ...silence(),
+      out: (s) => out.push(String(s)),
+      api,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["POST /repos/app/config", "GET /bases"]);
+    expect(out.join("")).toContain("base ensure --platform daytona --yes --wait");
+  });
+
   test("session without --follow streams lines and ends clean", async () => {
     process.env.DARK_FACTORY_URL = "https://factory.example";
     process.env.DARK_FACTORY_API_KEY = "k";
@@ -375,5 +394,129 @@ describe("formatters", () => {
     });
     expect(s).toContain("acme · openai-completions · https://x");
     expect(s).toContain("reasoning=yes · ctx=128000 · thinking: low,high (NOT: max)");
+  });
+});
+
+describe("run (base + bake verbs)", () => {
+  const bases = () => ({
+    bases: {
+      "shared-base": {
+        platforms: {
+          instabox: { snapshot: "factory-dev-instabox-r1" },
+          daytona: { snapshot: "factory-dev-daytona-r1", bakedAt: "2026-11-24T00:00:00Z" },
+        },
+        contents: "node/python/go + e2e + penthera",
+      },
+    },
+    jobs: [{ platform: "e2b", name: "factory-dev-e2b-r1", state: "running", started_at: "2026-11-24T01:00:00Z" }],
+  });
+
+  test("base list renders per-platform snapshots and live jobs", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return { status: 200, body: bases() };
+    };
+    const code = await run(["base", "list"], { ...silence(), out: (s) => out.push(String(s)), api });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["GET /bases"]);
+    const text = out.join("");
+    expect(text).toContain("instabox: factory-dev-instabox-r1");
+    expect(text).toContain("daytona: factory-dev-daytona-r1");
+    expect(text).toContain("baking e2b: factory-dev-e2b-r1");
+  });
+
+  test("base ensure is a no-op when shared-base already maps the platform", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return { status: 200, body: bases() };
+    };
+    const code = await run(["base", "ensure", "--platform", "daytona"], { ...silence(), out: (s) => out.push(String(s)), api });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["GET /bases"]);
+    expect(out.join("")).toContain("nothing to bake");
+  });
+
+  test("base ensure honors --alias", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return {
+        status: 200,
+        body: { bases: { "godot-base": { platforms: { instabox: { snapshot: "factory-godot-r1" } } } }, jobs: [] },
+      };
+    };
+    const code = await run(["base", "ensure", "--platform", "instabox", "--alias", "godot-base"], {
+      ...silence(),
+      out: (s) => out.push(String(s)),
+      api,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["GET /bases"]);
+    expect(out.join("")).toContain("godot-base already resolves instabox");
+  });
+
+  test("base ensure without --yes explains and exits 1; it never spends silently", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return { status: 200, body: { bases: {}, jobs: [] } };
+    };
+    const code = await run(["base", "ensure", "--platform", "e2b"], { ...silence(), out: (s) => out.push(String(s)), api });
+    expect(code).toBe(1);
+    expect(calls).toEqual(["GET /bases"]);
+    expect(out.join("")).toContain("--yes");
+    expect(out.join("")).toContain("factory-dev-e2b-r1");
+  });
+
+  test("base bake starts a detached job and --wait follows it", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string, body: any) => {
+      calls.push(`${method} ${path}${body ? " " + JSON.stringify(body) : ""}`);
+      if (method === "POST") return { status: 202, body: { started: true, status: { state: "running" } } };
+      return { status: 200, body: { status: { state: "done", snapshot: "factory-dev-e2b-r1" } } };
+    };
+    const code = await run(["base", "bake", "--platform", "e2b", "--name", "factory-dev-e2b-r1", "--wait"], {
+      ...silence(),
+      out: (s) => out.push(String(s)),
+      api,
+    });
+    expect(code).toBe(0);
+    expect(calls[0]).toContain("POST /base/bake");
+    expect(calls[0]).toContain('"platform":"e2b"');
+    expect(calls[1]).toBe("GET /base/bake/e2b");
+    expect(out.join("")).toContain("snapshot factory-dev-e2b-r1");
+  });
+
+  test("bake SLUG starts a repo bake and --wait polls the repo status", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      if (method === "POST") return { status: 202, body: { started: true, status: { state: "running" } } };
+      return { status: 200, body: { status: { state: "done", snapshot: "app-base" } } };
+    };
+    const code = await run(["bake", "app", "--wait"], { ...silence(), out: (s) => out.push(String(s)), api });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["POST /repos/app/bake", "GET /repos/app/bake"]);
+    expect(out.join("")).toContain("snapshot app-base");
+  });
+
+  test("a 409 answers with the live-job reason, not a second bake", async () => {
+    const err: string[] = [];
+    const api = async () => ({ status: 409, body: { started: false, reason: "a base bake for daytona is already live (pid 42)" } });
+    const code = await run(["base", "bake", "--platform", "daytona", "--name", "factory-dev-daytona-r2"], {
+      ...silence(),
+      err: (s) => err.push(String(s)),
+      api,
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain("already live");
   });
 });
