@@ -1250,10 +1250,43 @@ export async function acquireLaneSlot(cfg: RepoConfig, stateDir: string, deps: T
  */
 const AUTO_REVIVE_DAILY_CAP = 3;
 const STAGNATION_SAME = 2;
+/** bump when failureSignature's normalization changes: revives.json entries
+ *  written by an older signature format must not be compared to new ones. */
+const SIGNATURE_VERSION = 2;
+
+/** The stagnation fuse compares a failure's CLASS, not its volatile envelope.
+ *  Provider errors carry a per-request id (DeepSeek `request_id`, InstaBox
+ *  `req_…`), the odd bare UUID, and timestamps; left in, two byte-identical
+ *  failures look different every round and the fuse never trips. Live case:
+ *  kvstore #19 / mdrender #11 ran 18 days of `402 Insufficient Balance`
+ *  because every request_id minted a fresh signature (Nov 2026).
+ *
+ *  The id list is deliberately incomplete: strip a pattern when a real fuse
+ *  defeat is observed, not speculatively — every strip removes evidence the
+ *  next operator may need (`chatcmpl-…` and `trace-id` came from that rule). */
+export function failureSignature(lastError: string | null): string {
+  return (lastError ?? "unknown failure")
+    .replace(/request[_-]?id["']?\s*[:=]\s*["']?[A-Za-z0-9._:-]+/gi, "request_id=<id>")
+    .replace(/\btrace[_-]?id["']?\s*[:=]\s*["']?[A-Za-z0-9._:-]+/gi, "trace_id=<id>")
+    .replace(/\bchatcmpl-[A-Za-z0-9]+/g, "<chatcmpl>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<uuid>")
+    .replace(/\breq_[A-Za-z0-9]+/g, "<req>")
+    .replace(/\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?\b/g, "<ts>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 140);
+}
 
 export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledger: Ledger, gh?: GhApi): Promise<void> {
   const file = join(stateDir, "repos", cfg.slug, "revives.json");
-  let rs: { day: string; counts: Record<string, number>; sigs: Record<string, string[]>; epoch?: number; summarized?: Record<string, string> } = {
+  let rs: {
+    day: string;
+    counts: Record<string, number>;
+    sigs: Record<string, string[]>;
+    epoch?: number;
+    summarized?: Record<string, string>;
+    sig_version?: number;
+  } = {
     day: "", counts: {}, sigs: {},
   };
   try {
@@ -1263,7 +1296,14 @@ export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledge
     rs = j;
   } catch {}
   const day = new Date().toISOString().slice(0, 10);
-  if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {}, epoch: rs.epoch };
+  if (rs.day !== day) rs = { day, counts: {}, sigs: rs.sigs ?? {}, epoch: rs.epoch, sig_version: rs.sig_version };
+  // pre-normalization files hold raw request-id signatures; comparing a
+  // normalized sig against them would give a stuck issue one or two extra
+  // revives before the fuse catches up. Discard that history once.
+  if (rs.sig_version !== SIGNATURE_VERSION) {
+    rs.sigs = {};
+    rs.sig_version = SIGNATURE_VERSION;
+  }
 
   // LOUD failure summary — once per issue per day, posted where a human
   // lives (the GitHub issue): distinct signatures, the latest verdict uncut,
@@ -1282,7 +1322,7 @@ export async function autoReviveBlocked(cfg: RepoConfig, stateDir: string, ledge
 
   for (const row of ledger.listIssues(cfg.repo)) {
     if (row.state !== "blocked") continue;
-    const sig = (row.last_error ?? "unknown failure").replace(/\s+/g, " ").trim().slice(0, 140);
+    const sig = failureSignature(row.last_error);
     const sigs = rs.sigs[String(row.issue_number)] ?? [];
     if (sigs.length >= STAGNATION_SAME && sigs.slice(-STAGNATION_SAME).every((s) => s === sig)) {
       repoReceipt(
