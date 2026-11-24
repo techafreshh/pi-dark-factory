@@ -3,7 +3,7 @@
  * host-mode repos (machine modes run every agent stage in the lap's box), the
  * docker client in compose mode, and scenario commands (setup/start/probes/teardown run
  * product code). An allowlist, not process.env: the factory's own service
- * env carries FACTORY_API_KEY, the laptop key, the InstaBox and boxd keys and
+ * env carries FACTORY_API_KEY, the laptop key, the machine-platform keys and
  * a GitHub token, and an agent that reads issue text or fetched web pages
  * must not be one `printenv` away from all of them.
  *

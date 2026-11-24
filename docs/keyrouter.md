@@ -26,4 +26,4 @@ factory user's `~/.pi/agent/models.json`, put your keys in the `CRPASS_KEYS_FILE
 repo configs at `provider: "clinepass-rotator"`. `host.docker.internal` resolves both on the
 host (the `dark-factory-setup` skill adds the `/etc/hosts` line) and inside containers (fallback
 mode adds it; compose mode uses `extra_hosts`). Remember: host-local, so machine-mode (instabox,
-boxd) stages bypass it.
+boxd, daytona, e2b, instavm) stages bypass it.

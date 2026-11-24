@@ -396,12 +396,12 @@ export interface MachineScenarioTarget {
 const b64s = (s: string) => Buffer.from(s, "utf8").toString("base64");
 
 /**
- * Machine-mode scenario (instabox and boxd): setup, the foreground `start`
- * server, readiness, probes and teardown ALL run inside the machine over its
- * exec/bash channel, against the machine's own 127.0.0.1 — that is where the
- * product and its dependencies live, and no port is forwarded (see the
- * bi-ai-ui note below). The server runs as a session leader whose whole
- * process group is killed on teardown.
+ * Machine-mode scenario (instabox, boxd, daytona, e2b, instavm): setup, the
+ * foreground `start` server, readiness, probes and teardown ALL run inside
+ * the machine over its exec/bash channel, against the machine's own
+ * 127.0.0.1 — that is where the product and its dependencies live, and no
+ * port is forwarded (see the bi-ai-ui note below). The server runs as a
+ * session leader whose whole process group is killed on teardown.
  */
 export async function runScenarioInMachine(
   spec: ScenarioSpec,

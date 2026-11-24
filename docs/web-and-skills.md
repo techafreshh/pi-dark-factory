@@ -16,7 +16,7 @@ memory (the failure that started this: an agent coded against a guessed endpoint
   tools are omitted and prompts fall back to the pre-grounding text.
 - **Delivery**: the checkout's extension files are synced into the factory user's
   `~/.pi/agent/extensions/` before each stage (host/compose) and base64-shipped inside
-  the machine env (instabox, boxd), so every mode shares one source of truth.
+  the machine env (instabox, boxd, daytona, e2b, instavm), so every mode shares one source of truth.
 - **Safety**: tools are read-only network calls; plan and review get no edit/write tools
   (they keep bash, and in machine mode the stage driver resets the clone after them),
   implement gets edit/write. Every tool result is wrapped in a
@@ -33,13 +33,14 @@ every mode sees the same tree:
 - **host + compose**: the stage wrapper re-syncs `pi-skills/` into `~/.pi/agent/skills`
   before every stage (hash-gated — an unchanged tree doesn't churn the install; compose
   containers see it through the `~/.pi` bind-mount).
-- **machine modes (instabox, boxd)**: every stage (plan, implement, review) ships the tree
+- **machine modes (instabox, boxd, daytona, e2b, instavm)**: every stage (plan, implement, review) ships the tree
   as a base64 tarball (`PDF_PI_SKILLS_B64`) and the driver wipes and re-unpacks
   `$AD/skills` before pi runs, so a reused machine never shows stale skills.
 
 Add a skill by dropping a directory in `pi-skills/` — the next stage carries it, no
 restart (the collector refuses payloads over 4 MiB of base64 rather than bloat every
-stage's payload (ssh stdin on instabox, the exec call on boxd), and loose `.md` files in the tree root load as skills too, so use
+stage's payload (ssh stdin on instabox; the exec call on boxd, daytona, e2b and
+instavm), and loose `.md` files in the tree root load as skills too, so use
 directories). The shipped skills today: `agent-browser` (visual/runtime UI verification),
 `ui` — the frontend router: before any component/page/block work, a lap must consult
 it and install from the approved shadcn-registry family (coss primitives, efferd blocks,

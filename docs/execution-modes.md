@@ -1,10 +1,8 @@
 # Execution modes — where the work runs
 
-Each repo picks one via `env.mode` in its config: host, compose, or one of the four machine platforms — instabox (disposable Firecracker machines), boxd (microVMs over the boxd SDK), daytona (Daytona cloud sandboxes), e2b (E2B Firecracker sandboxes) or instavm (InstaVM microVMs over raw REST).
+Each repo picks one via `env.mode` in its config: host, compose, or one of the five machine platforms — instabox (disposable Firecracker machines), boxd (microVMs over the boxd SDK), daytona (Daytona cloud sandboxes), e2b (E2B Firecracker sandboxes) or instavm (InstaVM microVMs over raw REST).
 
 ## Where the work runs — the execution modes
-
-Each repo picks one via `env.mode` in its config:
 
 ### `"host"` — plain processes (the default)
 

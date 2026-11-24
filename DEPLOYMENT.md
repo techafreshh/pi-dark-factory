@@ -9,7 +9,7 @@ Tested shape: an Ubuntu VPS with systemd and a dedicated `factory` user. Laps ru
 one at a time per repo (a tick chains up to 6 of them inside a 12-minute budget), and repos
 run in parallel with each other. Where agent stages run is chosen per repo (`env.mode`, see
 [docs/execution-modes.md](docs/execution-modes.md)):
-- `instabox` and `boxd` run them in a disposable machine per lap;
+- `instabox`, `boxd`, `daytona`, `e2b` and `instavm` run them in a disposable machine per lap;
 - `compose` runs them as root inside the product's own Docker environment;
 - `host` runs them as plain processes.
 
@@ -86,7 +86,7 @@ run may block on a question.
 - **Daytona:** needs `DAYTONA_API_KEY`; bake the fleet base once (`foreman bake` on a daytona-mode repo builds it) and record it under the shared alias in `state/base-snapshot.json`.
 - **E2B:** needs `E2B_API_KEY`; Hobby plans cap sandboxes at 1 h continuous and 10 concurrent — keep `timeouts.stage_minutes` under ~50 min.
 - **InstaVM:** needs `INSTAVM_API_KEY` **and a card on file even on the Free tier** (VM and session creates 403 `card_required` otherwise, recorded 2026-11-13); young platform — run `bin/smoke-machine-platforms.ts --platform instavm` first (Free-tier egress to github.com is UNVERIFIED).
-- Neither lane needs Docker on the VPS.
+- No machine lane needs Docker on the VPS.
 
 **Web grounding** (on by default for every repo) needs `TINYFISH_API_KEY` in `factoryd.env`.
 - **What it does:** the bundled `pi-extensions/pdf-tinyfish.ts` extension gives agents
@@ -132,6 +132,9 @@ TINYFISH_API_KEY=…        # web grounding
 # machine-slot pools (optional; defaults shown) — docs/parallel-mode.md
 # PDF_POOL_INSTABOX=5
 # PDF_POOL_BOXD=10
+# PDF_POOL_DAYTONA=5
+# PDF_POOL_E2B=10
+# PDF_POOL_INSTAVM=5
 # PDF_AGING_MINUTES=30
 # PDF_FLEET_DAILY_ATTEMPTS=0
 ```
@@ -163,7 +166,7 @@ WantedBy=multi-user.target
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now pi-factoryd
-curl -fsS http://127.0.0.1:8077/health     # ok:true, scheduler_minutes:15, pools: instabox 5, boxd 10
+curl -fsS http://127.0.0.1:8077/health     # ok:true, scheduler_minutes:15, pools: instabox 5, boxd 10, daytona 5, e2b 10, instavm 5
 ```
 
 How scheduling behaves:
@@ -184,7 +187,7 @@ From a laptop, use the `dark-factory` skill (§8). The same steps on the server:
 ```sh
 cd ~/pi-dark-factory
 bun src/foreman.ts onboard <owner>/<repo>
-# 1. edit ~/state/repos/<slug>/config.json: models, env.mode (+ env.instabox / env.boxd)
+# 1. edit ~/state/repos/<slug>/config.json: models, env.mode (+ the env block for that mode)
 # 2. edit ~/state/repos/<slug>/runtime.json and holdout.json: real setup/start/probes
 bun src/foreman.ts backlog <slug> --prd <path-to-PRD> --dry-run   # review the slice (runs the slicer)
 bun src/foreman.ts backlog <slug> --prd <path-to-PRD>             # create the issues
@@ -334,7 +337,7 @@ Route map. `GET /health` is open; everything else needs `X-Api-Key`.
 | `GET /status?slug=` · `GET /logs?slug=&tail=` · `GET /models` | read state, receipts, provider roster |
 | `GET /session/<slug>?issue=&think=1&follow=1` | rendered agent session, optionally streamed |
 | `POST /repos` `{repo}` | onboard |
-| `GET` / `POST /repos/<slug>/config` | read the effective config / deep-merge an allowlisted patch (`models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `trusted_authors`, `pi`, `discoveries`, `limits`), validated before it is written |
+| `GET` / `POST /repos/<slug>/config` | read the effective config / deep-merge an allowlisted patch (`models`, `env`, `timeouts`, `merge`, `default_branch`, `attempts`, `skip_labels`, `trusted_authors`, `pi`, `discoveries`, `limits`, `scheduling`, `acceptance`), validated before it is written |
 | `GET /repos/<slug>/scenario?kind=` · `PUT /repos/<slug>/scenario` `{kind, content, lint?}` | read / validate and write a scenario |
 | `POST /repos/<slug>/scenario/test` `{kind, branch?}` | run the stored scenario without a lap |
 | `POST /repos/<slug>/prove-gates` · `POST /repos/<slug>/discoveries` `{file}` | gate audit / harvested findings |

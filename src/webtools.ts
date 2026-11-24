@@ -10,9 +10,10 @@
  *   - host mode: ensureHostExtension() syncs it into ~/.pi/agent/extensions
  *     (pi auto-discovers user extensions there) — compose mode rides the same
  *     install because the stage container bind-mounts ~/.pi at /root/.pi
- *   - machine modes (instabox, boxd): machine.ts embeds the file base64 into
- *     the stage env channel; the stage driver materializes it under the
- *     box's $HOME, for plan, implement and review alike
+ *   - machine modes (instabox, boxd, daytona, e2b, instavm): machine.ts
+ *     embeds the file base64 into the stage env channel; the stage driver
+ *     materializes it under the box's $HOME, for plan, implement and review
+ *     alike
  *
  * stageTools() gates the tool names into the --tools allowlist on BOTH the
  * per-repo `pi.web` config and the extension's presence in the checkout — a

@@ -65,9 +65,8 @@ export function acceptanceRunningPath(stateDir: string, slug: string): string {
 
 /** Run `fn` under the walker's marker — the ONLY thing protecting a
  *  `pdf-<slug>-i0` machine from the janitor (a live pid; a dead runner's
- *  machine is a quota-eating stray). Every code path that boots an
- *  acceptance machine wraps its lifetime in this: the drain walk and the
- *  per-merge e2e regression alike. */
+ *  machine is a quota-eating stray). The drain-time PRD walk wraps its
+ *  machine lifetime in this. */
 export async function withAcceptanceMarker<T>(stateDir: string, slug: string, fn: () => Promise<T>): Promise<T> {
   writeFileSync(acceptanceRunningPath(stateDir, slug), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }) + "\n");
   try {

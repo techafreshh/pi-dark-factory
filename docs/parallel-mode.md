@@ -28,7 +28,7 @@ Parallel mode answers each failure with a structural rule:
 | Failure | Answer |
 |---|---|
 | Union-merges, stranded branches | Serial landing: one merge at a time per repo, each on a branch rebased onto the current main and re-verified there |
-| Cross-worktree contamination | Machine modes only (instabox, boxd): every lap has its own box and clone |
+| Cross-worktree contamination | Machine modes only (instabox, boxd, daytona, e2b, instavm): every lap has its own box and clone |
 | Independent issues touching the same files | Rebase conflict → one free repair round → second conflict re-plans on fresh main |
 
 The live ledger shows the width exists. On 2026-11-11, the `queued: … (N claimable behind it)`
@@ -53,7 +53,7 @@ Per repo, in `config.json` (patchable through `POST /repos/<slug>/config`):
 |---|---|---|
 | `priority` | `normal` | `high`, `normal` or `low`: the repo's place in the slot queue |
 | `spill_over` | `false` | when the repo's own platform pool is full, a lap may run on any other machine platform (instabox, boxd, daytona, e2b, instavm — own mode first, then the rest in fleet order). Every platform block carries defaults; point the target's `snapshot` at a baked base before relying on it |
-| `parallel` | `false` | run up to `max_lanes` laps at once. Requires `env.mode` `instabox` or `boxd` |
+| `parallel` | `false` | run up to `max_lanes` laps at once. Requires a machine `env.mode` (`instabox`, `boxd`, `daytona`, `e2b` or `instavm`) |
 | `max_lanes` | `3` | lanes per repo in parallel mode (1–10) |
 
 Fleet-wide, in `factoryd.env` (the daemon's children inherit it):

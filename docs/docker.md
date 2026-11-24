@@ -2,7 +2,7 @@
 
 The `docker/` directory runs the factory as a Docker Compose stack, so you need no VPS, no systemd and no Caddy. One image (Node 22, Bun, pi, gh, git, ssh) runs two services:
 
-- **`factoryd`**: the HTTP API and the built-in scheduler. Repos run in `host` mode inside this container, or on the cloud lanes (`instabox`, `boxd`).
+- **`factoryd`**: the HTTP API and the built-in scheduler. Repos run in `host` mode inside this container, or on the cloud lanes (`instabox`, `boxd`, `daytona`, `e2b`, `instavm`).
 - **`dashboard`**: the read-only telemetry UI, from the same image.
 
 Both ports are published on `127.0.0.1` only. State lives in two named volumes, so it survives `docker compose down` and works the same on Linux, macOS (Apple Silicon included) and Windows.
@@ -12,7 +12,7 @@ Both ports are published on `127.0.0.1` only. State lives in two named volumes, 
 - Docker with Compose. The Caddy override ([below](#running-on-a-vps-behind-caddy)) needs Compose 2.24 or newer.
 - A GitHub token that can read issues, push branches and open and merge PRs on your repos. A fine-grained token limited to those repos is the safer choice. A classic token needs the `repo` scope; adding `read:org` also lets `gh auth login` accept it, but the stack works without it (see the troubleshooting table).
 - One model provider key, or a pi OAuth login.
-- Optional: a TinyFish key (web grounding), an InstaBox or boxd key (cloud lanes).
+- Optional: a TinyFish key (web grounding), an InstaBox, boxd, Daytona, E2B or InstaVM key (cloud lanes).
 
 ## Quickstart
 
@@ -98,7 +98,7 @@ Edit `docker/.env`, then `docker compose up -d`.
 | `PI_FACTORY_CONCURRENCY` | 1 | Repos ticking at the same time. Host-mode laps are serial inside a repo. |
 | `PDF_SCHEDULER_MINUTES` | 15 | Minutes between scheduler passes, on the wall clock. |
 | `PDF_TICK_ON_START` | 1 | Also run one pass about 10 seconds after the stack starts. |
-| `PDF_POOL_INSTABOX` / `PDF_POOL_BOXD` | 5 / 10 | Concurrent cloud machines per platform ([parallel mode](parallel-mode.md)). Commented out in `.env.example`. |
+| `PDF_POOL_INSTABOX` / `PDF_POOL_BOXD` / `PDF_POOL_DAYTONA` / `PDF_POOL_E2B` / `PDF_POOL_INSTAVM` | 5 / 10 / 5 / 10 / 5 | Concurrent cloud machines per platform ([parallel mode](parallel-mode.md)). Commented out in `.env.example`. |
 | `FACTORYD_HOST_PORT` / `DASHBOARD_HOST_PORT` | 8077 / 8787 | Loopback ports on the host. Change them when something else holds the port. |
 | `FACTORY_CPUS` / `FACTORY_MEMORY` | unset | Set them in `.env`, then uncomment `cpus` and `mem_limit` in `compose.yml`. |
 
@@ -115,7 +115,7 @@ Stopping the container ends running laps. There is no equivalent of the VPS unit
 The image has Node, Python, git and common build tools. A repo that needs more has two options:
 
 - Build extra packages into the image: `docker compose build --build-arg FACTORY_IMAGE_EXTRA="apt-get install -y golang" factoryd`, then `docker compose up -d`. The argument is a shell snippet run as root after `apt-get update`.
-- Run the repo in a cloud lane (`instabox` or `boxd`), which brings its own machine.
+- Run the repo in a cloud lane (`instabox`, `boxd`, `daytona`, `e2b` or `instavm`), which brings its own machine.
 
 The per-repo `env.image` field belongs to compose mode and has no effect in host mode.
 

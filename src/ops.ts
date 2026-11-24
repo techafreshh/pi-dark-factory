@@ -1799,7 +1799,7 @@ export async function opsCleanup(stateDir: string): Promise<string[]> {
     }
   } catch {}
 
-  // machine janitor (instabox + boxd) — guarded: a LIVE lap's machine must
+  // machine janitor (every machine mode) — guarded: a LIVE lap's machine must
   // never be reaped (its clone is the worktree), so only machines whose issue
   // has no in_progress ledger row are deleted
   try {
