@@ -81,6 +81,9 @@ export const BASE_SEEDS: Record<BasePlatform, BaseSeed> = {
 /** Pinned so a base is reproducible; override with PDF_GO_VERSION. */
 export const BASE_GO_VERSION = process.env.PDF_GO_VERSION ?? "1.27.1";
 
+/** Pinned Node for seeds whose stock image is older than pi/e2e require. */
+export const BASE_NODE_VERSION = process.env.PDF_NODE_VERSION ?? "22.23.5";
+
 /** bash + node's npm global bin dirs cover every seed's PATH layout. */
 const DEV_TOOLS_INSTALL = [
   `set -u`,
@@ -93,13 +96,25 @@ const DEV_TOOLS_INSTALL = [
   `for t in git curl ca-certificates jq; do command -v "$t" >/dev/null 2>&1 || apt_install "$t"; done`,
   `command -v gcc >/dev/null 2>&1 || apt_install build-essential`,
   `command -v python3 >/dev/null 2>&1 || apt_install python3 python3-pip python3-venv`,
-  // a seed Node older than 22 cannot run pi; install NodeSource 22 in place
+  // a seed Node older than 22 cannot run pi/e2e. Install the official Node
+  // tarball under /usr/local rather than NodeSource+apt: on Debian the
+  // distro `npm` package conflicts with NodeSource `nodejs`, so the upgrade
+  // fails and the seed's Node 20 remains (daytona-medium, 2026-11-24).
   `NODE_MAJOR=0`,
   `command -v node >/dev/null 2>&1 && NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)`,
   `if [ "\${NODE_MAJOR:-0}" -lt 22 ]; then`,
-  `  echo "BASE_TOOLS: installing Node 22 (found \${NODE_MAJOR:-none})"`,
-  `  (curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO bash -) || true`,
-  `  apt_install nodejs npm`,
+  `  NARCH=$(uname -m); case "$NARCH" in aarch64|arm64) NARCH=arm64 ;; *) NARCH=x64 ;; esac`,
+  `  NODE_DIR=/usr/local/lib/nodejs/node-v${BASE_NODE_VERSION}-linux-\${NARCH}`,
+  `  echo "BASE_TOOLS: installing Node ${BASE_NODE_VERSION} ($NARCH, found \${NODE_MAJOR:-none})"`,
+  `  curl -fsSL "https://nodejs.org/dist/v${BASE_NODE_VERSION}/node-v${BASE_NODE_VERSION}-linux-\${NARCH}.tar.gz" -o /tmp/pdf-node.tgz`,
+  `  $SUDO mkdir -p /usr/local/lib/nodejs`,
+  `  $SUDO tar -xzf /tmp/pdf-node.tgz -C /usr/local/lib/nodejs`,
+  `  $SUDO ln -sf "$NODE_DIR/bin/node" /usr/local/bin/node`,
+  `  $SUDO ln -sf "$NODE_DIR/bin/npm" /usr/local/bin/npm`,
+  `  $SUDO ln -sf "$NODE_DIR/bin/npx" /usr/local/bin/npx`,
+  `  rm -f /tmp/pdf-node.tgz`,
+  `  hash -r 2>/dev/null || true`,
+  `  export NPM_CONFIG_PREFIX=/usr/local`,
   `fi`,
   `command -v npm >/dev/null 2>&1 || apt_install npm`,
   // gh: present on the instabox and e2b seeds; install from GitHub's own apt
@@ -128,18 +143,18 @@ const DEV_TOOLS_INSTALL = [
   // bun: the factory's e2e toolchain and several repos use it; npm's package
   // is the simplest system-wide install, the official script the fallback
   `if ! command -v bun >/dev/null 2>&1; then`,
-  `  npm i -g bun >/dev/null 2>&1 || $SUDO npm i -g bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash) || true`,
+  `  npm i -g bun >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash) || true`,
   `  [ -x "$HOME/.bun/bin/bun" ] && $SUDO ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun || true`,
   `fi`,
   // pi itself: every machine-mode stage execs $PI_BIN, and the stage driver
   // does not ship the binary — the snapshot is the only place it can live
   `if ! command -v pi >/dev/null 2>&1; then`,
-  `  npm i -g @earendil-works/pi-coding-agent >/dev/null 2>&1 || $SUDO npm i -g @earendil-works/pi-coding-agent || true`,
+  `  npm i -g @earendil-works/pi-coding-agent >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g @earendil-works/pi-coding-agent || true`,
   `fi`,
   // penthera: the per-merge scan runs host-side, but the base carries the
   // pinned scanner so in-box verification and a future box-side scan work
   `if ! command -v penthera >/dev/null 2>&1; then`,
-  `  npm i -g ${escapeSh(pentheraSpec())} >/dev/null 2>&1 || $SUDO npm i -g ${escapeSh(pentheraSpec())} || true`,
+  `  npm i -g ${escapeSh(pentheraSpec())} >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g ${escapeSh(pentheraSpec())} || true`,
   `fi`,
   `echo DEV_TOOLS_INSTALLED`,
 ].join("\n");
