@@ -339,8 +339,8 @@ export async function collectSuiteFromBox(machine: LapMachineLike, stateDir: str
 }
 
 /** Boot + bootstrap an acceptance machine at origin/main (the scenario-test
- *  bench's shape — NOT an issue branch). Shared by the drain walk and the
- *  per-merge e2e regression. Throws on transport/bootstrap failure. */
+ *  bench's shape — NOT an issue branch). Used by the drain-time PRD walk.
+ *  Throws on transport/bootstrap failure. */
 export async function bootAcceptanceMachine(cfg: RepoConfig, machine: LapMachineLike): Promise<void> {
   await machine.ensure();
   const envFile = buildMachineEnvFile(cfg, { gates: false, restore: false, branch: cfg.default_branch, base: cfg.default_branch });

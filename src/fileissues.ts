@@ -12,8 +12,8 @@ export const WONTFIX_LABEL = "wontfix";
 
 /**
  * The generic factory issue filer — one shape behind every class the factory
- * authors itself: reviewer discoveries (ops.ts fileDiscoveries), per-merge
- * e2e regressions and penthera security findings, drain-time PRD gaps. All
+ * authors itself: reviewer discoveries (ops.ts fileDiscoveries), penthera
+ * security findings and drain-time PRD gaps. All
  * of them are GitHub issues opened by the factory's own account, so intake
  * trusts them; dedupe (normalized title + heavy word overlap, src/dedupe.ts)
  * keeps a repeat scan from stacking identical issues.

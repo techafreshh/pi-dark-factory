@@ -146,9 +146,10 @@ repo's backlog is **drained** and `maybeDrainAcceptance` runs the walk
    the roadmap drains). A walk with no gaps records
    `last = {status: "pass", main_head, gen}`.
 
-**The loop:** gaps filed → laps build them → merges re-run the regression →
-drain again → the walk re-runs (a PASS is only skipped while main is exactly
-the sha it was recorded on and the generation is unchanged). A walk that
+**The loop:** gaps filed → laps build them → merges re-run the scenario
+regression (`runPostMergeRegression`) → drain again → the walk re-runs (a
+PASS is only skipped while main is exactly the sha it was recorded on and
+the generation is unchanged). A walk that
 fails WITHOUT filing anything (unparsable verdict, broken product) is capped
 at 2 automatic runs per UTC day so the loop cannot burn tokens forever;
 manual runs (`dark-factory acceptance SLUG`, `POST /repos/<slug>/acceptance/run`)

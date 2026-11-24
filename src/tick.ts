@@ -226,8 +226,8 @@ export interface TickDeps {
   ledger: Ledger;
   gh: GhApi;
   callStage: CallStageFn;
-  /** machine factory seam (tests): default opens an InstaBox or boxd lap
-   *  machine by cfg.env.mode */
+  /** machine factory seam (tests): default opens the lap machine for
+   *  cfg.env.mode */
   openMachine?: (cfg: RepoConfig, issue: number, log: (m: string) => void, lapId: number, stateDir: string) => LapMachineLike;
 }
 

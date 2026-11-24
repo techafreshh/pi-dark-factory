@@ -197,14 +197,15 @@ export interface RepoConfig {
     max_lanes?: number;
   };
   /** PRD-delivery acceptance (docs/acceptance.md). All opt-in, default off:
-   *  e2e runs the repo's authored browser suite against merged main after
-   *  every merge; prd_check walks the whole stored PRD against the live
-   *  product when the backlog drains (gaps become issues the laps fix);
-   *  security scans merged main with penthera per merge. e2e and prd_check
-   *  need a browser toolchain — host/compose repos via `foreman host-tools`,
-   *  machine repos via a re-`bake` (the toolchain rides into the snapshot). */
+   *  e2e is the verify-stage gate: the authored browser suite runs in the
+   *  lap's product-up window and blocks the merge on real test failures;
+   *  prd_check walks the whole stored PRD against the live product when the
+   *  backlog drains (gaps become issues the laps fix); security scans merged
+   *  main with penthera per merge. e2e and prd_check need a browser
+   *  toolchain — host/compose repos via `foreman host-tools`, machine repos
+   *  via a re-`bake` (the toolchain rides into the snapshot). */
   acceptance?: {
-    /** per-merge e2e regression suite on merged main */
+    /** verify-stage e2e gate (blocks the merge on real test failures) */
     e2e?: boolean;
     /** drain-time full PRD acceptance walk (files [prd-gap] issues) */
     prd_check?: boolean;

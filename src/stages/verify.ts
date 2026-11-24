@@ -115,7 +115,7 @@ export async function runVerify(
     issue: number;
     /** host/compose mode: the local worktree the change lives in */
     worktree?: string;
-    /** instabox/boxd machine mode: scenario setup/start run inside this machine */
+    /** any machine mode: scenario setup/start run inside this machine */
     machine?: { bash(script: string, opts?: { timeoutMs?: number }): Promise<import("../machine").ShRes> };
     pr: number | null;
     attempt?: number;
