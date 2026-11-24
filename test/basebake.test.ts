@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BASE_NODE_VERSION,
   BASE_PLATFORMS,
   BASE_SEEDS,
   assertBaseAlias,
@@ -54,7 +55,9 @@ describe("the dev-base toolchain script", () => {
   test("installs the dev tools the factory stages need", () => {
     expect(script).toContain("@earendil-works/pi-coding-agent");
     expect(script).toContain("go.dev/dl/go");
-    expect(script).toContain("https://deb.nodesource.com/setup_22.x");
+    expect(script).toContain("https://nodejs.org/dist/v");
+    expect(script).toContain(`node-v${BASE_NODE_VERSION}-linux-`);
+    expect(script).not.toContain("apt_install nodejs npm");
     expect(script).toContain("cli.github.com/packages");
     expect(script).toContain("bun.sh/install");
   });

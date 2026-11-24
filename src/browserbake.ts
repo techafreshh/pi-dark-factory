@@ -46,7 +46,7 @@ const TOOLCHAIN_INSTALL = [
   `cd ${BOX_TOOLCHAIN_DIR}`,
   `[ -f package.json ] || echo '{"name":"pdf-e2e-toolchain","private":true,"type":"module"}' > package.json`,
   `npm install --no-audit --no-fund --silent e2e @e2e-dev/web playwright-core || npm install --no-audit --no-fund e2e @e2e-dev/web playwright-core`,
-  `agent-browser --version >/dev/null 2>&1 || npm install --no-audit --no-fund --silent -g agent-browser || true`,
+  `agent-browser --version >/dev/null 2>&1 || npm install --no-audit --no-fund --silent -g agent-browser || sudo -n env NPM_CONFIG_PREFIX=/usr/local npm install --no-audit --no-fund --silent -g agent-browser || true`,
   `agent-browser install >/dev/null 2>&1 || true`,
   // the browsers MUST land where the runner looks: ${BOX_TOOLCHAIN_DIR}-browsers
   // (a bare install defaults to ~/.cache and the gate finds nothing)
