@@ -57,6 +57,21 @@ describe("bake job status", () => {
     expect(job?.error).toContain("is gone");
   });
 
+  test("a running job with no pid fails after the spawn grace window", () => {
+    const path = baseStatusPath(tmp(), "daytona");
+    updateBakeStatus(path, {
+      kind: "base",
+      key: "daytona",
+      state: "running",
+      started_at: "2026-01-01T00:00:00Z",
+      platform: "daytona",
+    });
+    expect(readBaseBakeStatus(tmp(), "daytona")?.state).toBe("failed");
+
+    updateBakeStatus(path, { state: "running", started_at: new Date().toISOString() });
+    expect(readBaseBakeStatus(tmp(), "daytona")?.state).toBe("running");
+  });
+
   test("listBaseBakeStatuses returns only platforms with a status file", () => {
     updateBakeStatus(baseStatusPath(tmp(), "instabox"), {
       kind: "base",
@@ -77,6 +92,13 @@ describe("spawn validation (no child process)", () => {
   test("instavm and alias targets are refused before spawning", () => {
     expect(() => spawnBaseBake(tmp(), { platform: "instavm", name: "factory-dev-instavm-r1" })).toThrow(/InstaVM is excluded/);
     expect(() => spawnBaseBake(tmp(), { platform: "daytona", name: "shared-base" })).toThrow(/base alias/);
+  });
+
+  test("a spawn that returns no pid fails the job immediately", () => {
+    const spawnImpl = (() => ({ pid: undefined, on() {}, unref() {} })) as any;
+    const r = spawnBaseBake(tmp(), { platform: "daytona", name: "factory-dev-daytona-r1" }, { spawnImpl });
+    expect(r.started).toBe(false);
+    expect(readBaseBakeStatus(tmp(), "daytona")?.state).toBe("failed");
   });
 
   test("a live bake lock answers started:false instead of double-spawning", () => {

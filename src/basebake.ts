@@ -232,6 +232,19 @@ export function resolveRepoBakeNames(
   const cur = (current ?? "").trim();
   const curIsDefault = !!opts.defaultLiteral && cur === opts.defaultLiteral;
   const isAlias = !!bases[cur];
+  // the remote job passes these through to foreman's argv — reject a value
+  // that would be read as another flag or a shell metacharacter
+  const safeRef = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,120}$/;
+  if (opts.name && !safeRef.test(opts.name))
+    throw new Error(`output snapshot name "${opts.name}" is invalid — it must start with a letter/digit and contain no whitespace or shell metacharacters`);
+  if (opts.from && !safeRef.test(opts.from))
+    throw new Error(`base reference "${opts.from}" is invalid — it must start with a letter/digit and contain no whitespace or shell metacharacters`);
+  if (cur === SHARED_BASE_ALIAS && !isAlias)
+    throw new Error(
+      platform === "instavm"
+        ? `"${cur}" is not mapped and InstaVM has no shared base — clear env.instavm.snapshot to bake a per-repo snapshot, or use a literal name`
+        : `"${cur}" is not mapped for ${platform} — bake the platform base first: foreman base bake --platform ${platform} --name <versioned-name>`
+    );
   const from = opts.from?.trim() || cur || null;
   const name = opts.name?.trim() || (isAlias || !cur || curIsDefault ? `${sanitizeMachinePart(slug)}-base` : cur);
   if (name === SHARED_BASE_ALIAS || bases[name])
@@ -304,6 +317,8 @@ export function seedFor(platform: BasePlatform, opts: BaseBakeOpts): BaseSeed {
   if (!allowed[platform].includes(kind))
     throw new Error(`base bake ${platform} cannot seed from a ${kind} — supported: ${allowed[platform].join(" | ")}`);
   if (kind === "snapshot" && !value) throw new Error(`--seed-kind snapshot needs a snapshot name`);
+  if (value && (value.startsWith("-") || /\s/.test(value)))
+    throw new Error(`seed "${value}" is invalid — it must not start with "-" or contain whitespace`);
   return { kind, value, label: value ? `${kind} ${value}` : base.label };
 }
 
@@ -536,7 +551,11 @@ async function bakeE2bBase(
   // own HOME untouched
   t = t.runCmd(script, { user: "root" });
   // the build log carries the in-box smoke markers; keep the tail for the
-  // contents line and for the error when the build dies
+  // contents line and for the error when the build dies. The E2B builder
+  // echoes RUN lines into its logs, so redact the factory's token like
+  // ops.ts's per-repo bake does.
+  const ghToken = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const redact = (line: string) => (ghToken ? line.split(ghToken).join("***GH_TOKEN***") : line);
   let buildLog = "";
   let info: any;
   try {
@@ -544,7 +563,7 @@ async function bakeE2bBase(
       cpuCount: 2,
       memoryMB: 4096,
       onBuildLogs: (chunk: any) => {
-        const line = String(chunk).trimEnd();
+        const line = redact(String(chunk).trimEnd());
         buildLog = (buildLog + "\n" + line).slice(-80_000);
         log(line.slice(0, 200));
       },

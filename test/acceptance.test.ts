@@ -1341,7 +1341,7 @@ describe("bakeBoxd (fake boxd org, real bootstrap over the exec wrapper)", () =>
 
   slowTest("a shared-base alias is layered: boots it, saves <slug>-base, switches the config", async () => {
     const w = world({ snapshot: "browser-base" });
-    writeFileSync(join(w.stateDir, "base-snapshot.json"), JSON.stringify({ "browser-base": { snapshot: "factory-base-r4-browser", bakedAt: "t", template: "t", contents: "c" } }));
+    writeFileSync(join(w.stateDir, "base-snapshot.json"), JSON.stringify({ "browser-base": { platforms: { boxd: { snapshot: "factory-base-r4-browser" } }, bakedAt: "t", template: "t", contents: "c" } }));
     const client = fakeBoxd();
     const r = await opsBake(w.stateDir, "boxy", { boxdClient: client as any });
     expect(r.snapshot).toBe("boxy-base");

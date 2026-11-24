@@ -133,7 +133,10 @@ describe("per-repo bake layering", () => {
   test("--from/--name override the boot base and the output name", () => {
     writeFileSync(
       join(tmp(), "base-snapshot.json"),
-      JSON.stringify({ "godot-base": { platforms: { instabox: { snapshot: "godot-r1" } } } })
+      JSON.stringify({
+        "shared-base": { platforms: { instabox: { snapshot: "dev-ib-r1" } } },
+        "godot-base": { platforms: { instabox: { snapshot: "godot-r1" } } },
+      })
     );
     expect(resolveRepoBakeNames(dir!, "app", "instabox", "shared-base", { from: "godot-base", name: "app-godot-r1" })).toEqual({
       from: "godot-base",
@@ -149,6 +152,17 @@ describe("per-repo bake layering", () => {
     );
     expect(() => resolveRepoBakeNames(dir!, "app", "instabox", "", { name: "shared-base" })).toThrow(/is a base alias/);
     expect(() => resolveRepoBakeNames(dir!, "app", "instabox", "", { name: "dev-ib-r1" })).toThrow(/physical snapshot of base alias/);
+  });
+
+  test("an unmapped shared-base names the missing base instead of pretending it is a literal", () => {
+    expect(() => resolveRepoBakeNames(tmp(), "app", "daytona", "shared-base")).toThrow(/bake the platform base first/);
+    expect(() => resolveRepoBakeNames(tmp(), "app", "instavm", "shared-base")).toThrow(/InstaVM has no shared base/);
+  });
+
+  test("output names and base references cannot be flag-like or contain whitespace", () => {
+    expect(() => resolveRepoBakeNames(tmp(), "app", "daytona", "", { name: "--evil" })).toThrow(/invalid/);
+    expect(() => resolveRepoBakeNames(tmp(), "app", "daytona", "", { from: "bad name" })).toThrow(/invalid/);
+    expect(() => seedFor("daytona", { name: "x", seed: "--evil", seedKind: "snapshot" })).toThrow(/invalid/);
   });
 });
 

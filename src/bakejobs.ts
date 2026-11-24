@@ -61,6 +61,9 @@ export interface BakeStatus {
 }
 
 const nowIso = () => new Date().toISOString();
+/** A running status has no pid until the spawner writes it; allow that write
+ *  a moment, then treat a pid-less job as dead. */
+const RUNNING_GRACE_MS = 60_000;
 
 export function baseStatusPath(stateDir: string, platform: string): string {
   return join(stateDir, "base-bakes", `${platform.replace(/[^a-z0-9-]+/g, "-")}.json`);
@@ -91,12 +94,26 @@ export function readBakeStatus(path: string): BakeStatus | null {
   } catch {
     return null;
   }
-  if (job?.state === "running" && typeof job.pid === "number" && !pidAlive(job.pid)) {
-    job = updateBakeStatus(path, {
-      state: "failed",
-      ended_at: nowIso(),
-      error: `bake process ${job.pid} is gone (daemon restart or crash) — see laps.log for the last receipt`,
-    });
+  if (job?.state === "running") {
+    if (typeof job.pid === "number") {
+      if (!pidAlive(job.pid)) {
+        job = updateBakeStatus(path, {
+          state: "failed",
+          ended_at: nowIso(),
+          error: `bake process ${job.pid} is gone (daemon restart or crash) — see laps.log for the last receipt`,
+        });
+      }
+    } else {
+      const startedMs = job.started_at ? Date.parse(job.started_at) : NaN;
+      const age = Number.isFinite(startedMs) ? Date.now() - startedMs : Infinity;
+      if (age > RUNNING_GRACE_MS) {
+        job = updateBakeStatus(path, {
+          state: "failed",
+          ended_at: nowIso(),
+          error: "bake job is marked running but never recorded a pid — the spawn or the daemon died; see laps.log/bakes.err",
+        });
+      }
+    }
   }
   return job;
 }
@@ -213,7 +230,12 @@ export function spawnBaseBake(
   pending.add(key);
   try {
     const pid = spawnDetached(stateDir, args, `base bake ${opts.platform}`, deps.spawnImpl);
-    if (typeof pid === "number") updateBakeStatus(path, { pid });
+    if (typeof pid !== "number") {
+      const error = `base bake ${opts.platform} spawned without a pid — see bakes.err`;
+      updateBakeStatus(path, { state: "failed", ended_at: nowIso(), error });
+      return { started: false, reason: error, status: readBaseBakeStatus(stateDir, opts.platform) };
+    }
+    updateBakeStatus(path, { pid });
     return { started: true, status: readBaseBakeStatus(stateDir, opts.platform) };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
@@ -278,7 +300,12 @@ export function spawnRepoBake(
     if (opts.from) args.push("--from", opts.from);
     if (opts.name) args.push("--name", opts.name);
     const pid = spawnDetached(stateDir, args, `bake ${slug}`, opts.spawnImpl);
-    if (typeof pid === "number") updateBakeStatus(path, { pid });
+    if (typeof pid !== "number") {
+      const error = `bake ${slug} spawned without a pid — see bakes.err`;
+      updateBakeStatus(path, { state: "failed", ended_at: nowIso(), error });
+      return { started: false, reason: error, status: readRepoBakeStatus(stateDir, slug) };
+    }
+    updateBakeStatus(path, { pid });
     return { started: true, status: readRepoBakeStatus(stateDir, slug) };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

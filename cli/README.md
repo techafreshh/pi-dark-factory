@@ -69,7 +69,7 @@ is described in the factory repo's [`docs/docker.md`](https://github.com/techafr
 | | `prove-gates SLUG` · `discoveries SLUG [--file]` |
 | | `backlog SLUG --prd-file F [--max N] [--create]` |
 | | `unblock SLUG ISSUE [--prune] [--force]` · `cleanup` |
-| | `base list` · `base bake --platform P --name N [--wait]` · `base ensure --platform P [--yes] [--wait]` |
+| | `base list` · `base bake --platform P --name N [--wait]` · `base ensure --platform P [--alias A] [--yes] [--wait]` |
 | | `bake SLUG [--from BASE] [--name SNAPSHOT] [--wait]` (per-repo golden snapshot) |
 
 Every verb has its own, detailed manual: `dark-factory <verb> --help`.

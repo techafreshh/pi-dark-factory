@@ -740,15 +740,16 @@ async function cmdBaseBake(a, ctx) {
 async function cmdBaseEnsure(a, ctx) {
   const platform = a.platform;
   if (!platform) throw new Error("base ensure needs --platform <instabox|boxd|daytona|e2b>");
+  const alias = a.alias || "shared-base";
   const { body } = await ctx.api("GET", "/bases");
-  const mapped = body.bases?.["shared-base"]?.platforms?.[platform]?.snapshot;
+  const mapped = body.bases?.[alias]?.platforms?.[platform]?.snapshot;
   if (mapped) {
-    ctx.out(`shared-base already resolves ${platform} → ${mapped} — nothing to bake`);
+    ctx.out(`${alias} already resolves ${platform} → ${mapped} — nothing to bake`);
     return 0;
   }
   const name = a.name || `factory-dev-${platform}-r1`;
   if (!a.yes) {
-    ctx.out(`shared-base has no ${platform} snapshot. Would bake ${name}.`);
+    ctx.out(`${alias} has no ${platform} snapshot. Would bake ${name}.`);
     ctx.out(`Re-run with --yes to spend the cloud time: dark-factory base ensure --platform ${platform} --yes${a.wait ? " --wait" : ""}`);
     return 1;
   }
@@ -949,7 +950,7 @@ laps then fix.`,
 Install/verify the HOST-side acceptance toolchain: Chromium, the e2e
 framework, agent-browser, penthera. Needed once per VPS for host/compose
 repos (machine-mode repos get the toolchain via a re-bake instead).`,
-  base: `base list | base bake --platform P --name N [--seed V] [--seed-kind template|snapshot|image] [--alias A] [--wait] | base ensure --platform P [--yes] [--wait]
+  base: `base list | base bake --platform P --name N [--seed V] [--seed-kind template|snapshot|image] [--alias A] [--wait] | base ensure --platform P [--alias A] [--name N] [--yes] [--wait]
 List the shared base aliases and their PER-PLATFORM snapshots, or start a
 server-side dev-base bake (instabox | boxd | daytona | e2b). The laptop only
 triggers it — the daemon runs a detached job (5–40 min) and the CLI polls
@@ -995,7 +996,7 @@ security-scan SLUG               penthera scan of merged main, findings become i
 host-tools                       install/verify the host browser + scanner toolchain
 base list                        shared base aliases → per-platform snapshots
 base bake --platform P --name N  start a server-side dev-base bake [--wait]
-base ensure --platform P [--yes] bake only if shared-base lacks the platform
+base ensure --platform P [--alias A] [--yes] bake only if the alias lacks the platform
 bake SLUG [--from BASE] [--name SNAPSHOT] [--wait]   start a server-side per-repo bake
 
 Env DARK_FACTORY_URL / DARK_FACTORY_API_KEY override the stored config;

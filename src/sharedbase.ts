@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { acquireBakeLock, releaseBakeLock } from "./lock";
 import { MACHINE_MODES, type MachineMode } from "./types";
 
 /**
@@ -120,30 +121,32 @@ export function readSharedBase(stateDir: string): SharedBaseInfo | null {
  */
 export function resolveSnapshotName(stateDir: string, name: string, platform?: MachineMode): string {
   const entry = readBases(stateDir)[name];
+  const missing = (p: MachineMode) =>
+    p === "instavm"
+      ? `InstaVM has no shared base — use a literal env.instavm.snapshot (or empty to bake a per-repo snapshot) and install deps in env.instavm.bake`
+      : `base alias "${name}" has no ${p} snapshot — bake one first: ` +
+        `foreman base bake --platform ${p} --name <versioned-name>, or point env.${p}.snapshot at a literal snapshot name.`;
   if (!entry) {
     // the reserved shared token with no mapping is a missing BASE, not a
     // literal snapshot name — say so, or the platform answers "snapshot not
     // found" and the operator tries the same bake again
-    if (platform && name === SHARED_BASE_ALIAS)
-      throw new Error(
-        `base alias "${name}" has no ${platform} snapshot — bake one first: ` +
-          `foreman base bake --platform ${platform} --name <versioned-name>, or point env.${platform}.snapshot at a literal snapshot name.`
-      );
+    if (platform && name === SHARED_BASE_ALIAS) throw new Error(missing(platform));
     return name;
   }
   if (entry.platforms) {
     if (platform) {
       const hit = entry.platforms[platform];
       if (hit?.snapshot) return hit.snapshot;
-      throw new Error(
-        `base alias "${name}" has no ${platform} snapshot — bake one first: ` +
-          `foreman base bake --platform ${platform} --name <versioned-name>, or point env.${platform}.snapshot at a literal snapshot name.`
-      );
+      throw new Error(missing(platform));
     }
     // no platform: a legacy top-level snapshot is still a safe answer; an
     // entry that only exists per platform cannot resolve without one
     return entry.snapshot || name;
   }
+  // A flat entry predates the platforms map: it was written for InstaBox (the
+  // only machine lane then). Never hand it to another platform — that is the
+  // "snapshot not found" class this schema exists to kill.
+  if (platform && platform !== "instabox") throw new Error(missing(platform));
   return entry.snapshot || name;
 }
 
@@ -153,12 +156,24 @@ export function basePlatforms(entry: SharedBaseInfo): MachineMode[] {
   return [];
 }
 
+/** A tiny synchronous sleep for the state-file lock (the caller is a bake
+ *  child about to write; there is no event loop to yield to). */
+function sleepSync(ms: number) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * Record one platform's physical snapshot under an alias. Read-modify-write
  * of the small state file; preserves every other alias and field. A legacy
  * flat entry gains a `platforms` map while keeping its original `snapshot`
  * as the generic fallback, so old readers and the original instabox config
  * keep working.
+ *
+ * The write is serialized (a base-snapshot pidfile) and atomic (temp file +
+ * rename): two bakes finishing together cannot lose one platform's entry,
+ * and a lap reading mid-write sees the old or new file, never a half one.
+ * An unparseable existing file is an operator problem — throw instead of
+ * silently replacing every alias with the new one.
  */
 export function setBasePlatform(
   stateDir: string,
@@ -167,42 +182,68 @@ export function setBasePlatform(
   entry: BaseEntry
 ): SharedBaseInfo {
   const path = sharedBasePath(stateDir);
-  let raw: any = {};
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch {}
-  // normalize the original single-base root shape into an alias map
-  if (usableSnapshot(raw?.snapshot) && !raw[alias]) {
-    raw = { [SHARED_BASE_ALIAS]: { ...raw } };
+  const lockKey = "base-snapshot";
+  const deadline = Date.now() + 10_000;
+  while (!acquireBakeLock(stateDir, lockKey)) {
+    if (Date.now() > deadline) throw new Error("another bake is updating state/base-snapshot.json — retry in a moment");
+    sleepSync(100);
   }
-  const current: any = raw[alias] ?? {};
-  const platforms: Partial<Record<MachineMode, BaseEntry>> = { ...(current.platforms ?? {}) };
-  // the pre-platform flat schema was written for InstaBox (the only machine
-  // lane then). Keep that snapshot bootable after the map appears, or a repo
-  // already on the alias would fail the moment another platform's base is
-  // recorded.
-  if (!current.platforms && usableSnapshot(current.snapshot) && !platforms.instabox) {
-    platforms.instabox = {
-      snapshot: current.snapshot,
+  try {
+    let raw: any = {};
+    if (existsSync(path)) {
+      const text = readFileSync(path, "utf8");
+      if (text.trim()) {
+        try {
+          raw = JSON.parse(text);
+        } catch (e: any) {
+          throw new Error(`state/base-snapshot.json is unreadable (${e?.message ?? e}); refusing to overwrite it — fix that file first`);
+        }
+      }
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      throw new Error("state/base-snapshot.json must be a JSON object of alias → base entries");
+    // normalize the original single-base root shape into an alias map
+    if (usableSnapshot(raw?.snapshot) && !raw[alias]) {
+      raw = { [SHARED_BASE_ALIAS]: { ...raw } };
+    }
+    const current: any = raw[alias] ?? {};
+    const platforms: Partial<Record<MachineMode, BaseEntry>> = { ...(current.platforms ?? {}) };
+    // the pre-platform flat schema was written for InstaBox (the only machine
+    // lane then). Keep that snapshot bootable after the map appears, or a repo
+    // already on the alias would fail the moment another platform's base is
+    // recorded.
+    if (!current.platforms && usableSnapshot(current.snapshot) && !platforms.instabox) {
+      platforms.instabox = {
+        snapshot: current.snapshot,
+        ...(current.bakedAt ? { bakedAt: current.bakedAt } : {}),
+        ...(current.template ? { template: current.template } : {}),
+        ...(current.contents ? { contents: current.contents } : {}),
+      };
+    }
+    platforms[platform] = { ...entry };
+    const next: SharedBaseInfo = {
+      ...(usableSnapshot(current.snapshot) ? { snapshot: current.snapshot } : {}),
       ...(current.bakedAt ? { bakedAt: current.bakedAt } : {}),
       ...(current.template ? { template: current.template } : {}),
       ...(current.contents ? { contents: current.contents } : {}),
-    };
+      platforms,
+      // the alias map itself carries the freshest summary; per-platform
+      // entries keep their own bake metadata
+      ...(entry.contents ? { contents: entry.contents } : {}),
+      ...(entry.template ? { template: entry.template } : {}),
+      ...(entry.bakedAt ? { bakedAt: entry.bakedAt } : {}),
+    } as SharedBaseInfo;
+    raw[alias] = next;
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp-${process.pid}`;
+    try {
+      writeFileSync(tmp, JSON.stringify(raw, null, 2) + "\n");
+      renameSync(tmp, path);
+    } finally {
+      rmSync(tmp, { force: true });
+    }
+    return next;
+  } finally {
+    releaseBakeLock(stateDir, lockKey);
   }
-  platforms[platform] = { ...entry };
-  const next: SharedBaseInfo = {
-    ...(usableSnapshot(current.snapshot) ? { snapshot: current.snapshot } : {}),
-    ...(current.bakedAt ? { bakedAt: current.bakedAt } : {}),
-    ...(current.template ? { template: current.template } : {}),
-    ...(current.contents ? { contents: current.contents } : {}),
-    platforms,
-    // the alias map itself carries the freshest summary; per-platform
-    // entries keep their own bake metadata
-    ...(entry.contents ? { contents: entry.contents } : {}),
-    ...(entry.template ? { template: entry.template } : {}),
-    ...(entry.bakedAt ? { bakedAt: entry.bakedAt } : {}),
-  } as SharedBaseInfo;
-  raw[alias] = next;
-  writeFileSync(path, JSON.stringify(raw, null, 2) + "\n");
-  return next;
 }

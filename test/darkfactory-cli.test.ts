@@ -440,6 +440,26 @@ describe("run (base + bake verbs)", () => {
     expect(out.join("")).toContain("nothing to bake");
   });
 
+  test("base ensure honors --alias", async () => {
+    const out: string[] = [];
+    const calls: string[] = [];
+    const api = async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return {
+        status: 200,
+        body: { bases: { "godot-base": { platforms: { instabox: { snapshot: "factory-godot-r1" } } } }, jobs: [] },
+      };
+    };
+    const code = await run(["base", "ensure", "--platform", "instabox", "--alias", "godot-base"], {
+      ...silence(),
+      out: (s) => out.push(String(s)),
+      api,
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual(["GET /bases"]);
+    expect(out.join("")).toContain("godot-base already resolves instabox");
+  });
+
   test("base ensure without --yes explains and exits 1; it never spends silently", async () => {
     const out: string[] = [];
     const calls: string[] = [];

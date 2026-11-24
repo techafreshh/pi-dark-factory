@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBases, readSharedBase, resolveSnapshotName, setBasePlatform, SHARED_BASE_ALIAS } from "../src/sharedbase";
@@ -83,10 +83,18 @@ describe("per-platform base aliases", () => {
     expect(resolveSnapshotName(dir!, "shared-base")).toBe("shared-base");
   });
 
-  test("a legacy flat entry keeps resolving for backward compatibility", () => {
+  test("a legacy flat entry resolves only on InstaBox — never another platform", () => {
     writeFileSync(join(tmp(), "base-snapshot.json"), JSON.stringify({ snapshot: "factory-base-r3" }));
     expect(resolveSnapshotName(dir!, "shared-base", "instabox")).toBe("factory-base-r3");
-    expect(resolveSnapshotName(dir!, "shared-base", "daytona")).toBe("factory-base-r3");
+    expect(() => resolveSnapshotName(dir!, "shared-base", "daytona")).toThrow(/has no daytona snapshot/);
+    expect(() => resolveSnapshotName(dir!, "shared-base", "instavm")).toThrow(/InstaVM has no shared base/);
+  });
+
+  test("setBasePlatform refuses to overwrite an unreadable state file", () => {
+    const path = join(tmp(), "base-snapshot.json");
+    writeFileSync(path, "{ this is not json");
+    expect(() => setBasePlatform(dir!, "shared-base", "daytona", { snapshot: "factory-dev-daytona-r1" })).toThrow(/unreadable/);
+    expect(readFileSync(path, "utf8")).toBe("{ this is not json");
   });
 
   test("setBasePlatform records one platform, preserves the other aliases and the legacy flat snapshot", () => {

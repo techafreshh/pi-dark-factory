@@ -443,7 +443,7 @@ Every verb takes `--help`. Exit codes: 0 ok, 1 error or failed verdict, 2 usage.
 | `host-tools` | install/verify the host browser + scanner toolchain (once per VPS) |
 | `base list` | shared base aliases → per-platform snapshots + live bake jobs |
 | `base bake --platform P --name N [--seed V] [--seed-kind K] [--alias A] [--wait]` | **spends cloud time**: start a server-side dev-base bake; `--wait` polls |
-| `base ensure --platform P [--name N] [--yes] [--wait]` | no-op when `shared-base` already maps P; otherwise explains and **only bakes with `--yes`** |
+| `base ensure --platform P [--alias A] [--name N] [--yes] [--wait]` | no-op when the alias (default `shared-base`) already maps P; otherwise explains and **only bakes with `--yes`** |
 | `bake SLUG [--wait]` | **spends cloud time**: server-side per-repo golden-snapshot bake |
 
 CLI quirks (v0.1.2):

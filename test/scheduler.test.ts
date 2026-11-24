@@ -48,6 +48,15 @@ describe("schedulePass (one tick process per idle repo)", () => {
     expect(spawned).toEqual(["alpha"]);
   });
 
+  test("a live repo bake holds the repo out of the tick pass", async () => {
+    const st = stateWith(["alpha", "beta"]);
+    writeFileSync(join(st, "bake-repo-alpha.lock"), `${process.pid}\n`);
+    const spawned: string[] = [];
+    await schedulePass(st, { gapMs: 0, spawnTick: (_s, slug) => (spawned.push(slug), 1) });
+    expect(spawned).toEqual(["beta"]);
+    expect(readFileSync(join(st, "laps.log"), "utf8")).toContain("skipping alpha: a bake is live");
+  });
+
   test("the concurrency cap counts the ticks already running", async () => {
     const st = stateWith(["alpha", "beta", "gamma"]);
     holdLock(st, "alpha");
