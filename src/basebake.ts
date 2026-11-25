@@ -93,6 +93,22 @@ const DEV_TOOLS_INSTALL = [
   `if [ "$(id -u)" -ne 0 ] && sudo -n true 2>/dev/null; then SUDO="sudo -n"; fi`,
   `export DEBIAN_FRONTEND=noninteractive`,
   `apt_install() { if command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq >/dev/null 2>&1 || true; $SUDO apt-get install -y "$@" >/dev/null 2>&1 || $SUDO apt-get install -y "$@"; fi; }`,
+  // npm globals must land on the PATH the stage shell uses. On boxd the
+  // image's node is nvm-managed: a plain `npm i -g` installs into
+  // /home/boxd/.nvm/.../bin, which is NOT on that PATH — the install exits 0
+  // and pi/penthera are still invisible at smoke time (2026-11-25). Install
+  // to /usr/local first, keep the user-level install as the no-sudo fallback,
+  // and link the npm prefix's binary when the fallback is what worked.
+  `install_global() {`,
+  `  pkg="$1"; bin="$2"`,
+  `  command -v "$bin" >/dev/null 2>&1 && return 0`,
+  `  $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g "$pkg" >/dev/null 2>&1 || npm i -g "$pkg" >/dev/null 2>&1 || true`,
+  `  if ! command -v "$bin" >/dev/null 2>&1; then`,
+  `    GP=$(npm prefix -g 2>/dev/null || true)`,
+  `    if [ -n "$GP" ] && [ -x "$GP/bin/$bin" ]; then $SUDO ln -sf "$GP/bin/$bin" "/usr/local/bin/$bin" 2>/dev/null || true; fi`,
+  `  fi`,
+  `  command -v "$bin" >/dev/null 2>&1`,
+  `}`,
   `for t in git curl ca-certificates jq; do command -v "$t" >/dev/null 2>&1 || apt_install "$t"; done`,
   `command -v gcc >/dev/null 2>&1 || apt_install build-essential`,
   `command -v python3 >/dev/null 2>&1 || apt_install python3 python3-pip python3-venv`,
@@ -143,19 +159,15 @@ const DEV_TOOLS_INSTALL = [
   // bun: the factory's e2e toolchain and several repos use it; npm's package
   // is the simplest system-wide install, the official script the fallback
   `if ! command -v bun >/dev/null 2>&1; then`,
-  `  npm i -g bun >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g bun >/dev/null 2>&1 || (curl -fsSL https://bun.sh/install | bash) || true`,
+  `  install_global bun bun || (curl -fsSL https://bun.sh/install | bash) || true`,
   `  [ -x "$HOME/.bun/bin/bun" ] && $SUDO ln -sf "$HOME/.bun/bin/bun" /usr/local/bin/bun || true`,
   `fi`,
   // pi itself: every machine-mode stage execs $PI_BIN, and the stage driver
   // does not ship the binary — the snapshot is the only place it can live
-  `if ! command -v pi >/dev/null 2>&1; then`,
-  `  npm i -g @earendil-works/pi-coding-agent >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g @earendil-works/pi-coding-agent || true`,
-  `fi`,
+  `install_global @earendil-works/pi-coding-agent pi`,
   // penthera: the per-merge scan runs host-side, but the base carries the
   // pinned scanner so in-box verification and a future box-side scan work
-  `if ! command -v penthera >/dev/null 2>&1; then`,
-  `  npm i -g ${escapeSh(pentheraSpec())} >/dev/null 2>&1 || $SUDO env NPM_CONFIG_PREFIX=/usr/local npm i -g ${escapeSh(pentheraSpec())} || true`,
-  `fi`,
+  `install_global ${escapeSh(pentheraSpec())} penthera`,
   `echo DEV_TOOLS_INSTALLED`,
 ].join("\n");
 

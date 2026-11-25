@@ -62,6 +62,16 @@ describe("the dev-base toolchain script", () => {
     expect(script).toContain("bun.sh/install");
   });
 
+  test("global npm tools install to /usr/local, not a package-local prefix", () => {
+    // boxd's nvm prefix is off the stage PATH; an install that "succeeds"
+    // there leaves pi/penthera missing at smoke time (2026-11-25)
+    expect(script).toContain(`NPM_CONFIG_PREFIX=/usr/local npm i -g "$pkg"`);
+    expect(script).toContain(`GP=$(npm prefix -g`);
+    expect(script).toContain(`ln -sf "$GP/bin/$bin" "/usr/local/bin/$bin"`);
+    expect(script).toContain("install_global @earendil-works/pi-coding-agent pi");
+    expect(script).toContain("install_global bun bun");
+  });
+
   test("bakes in the acceptance toolchain and the pinned security scanner", () => {
     expect(script).toContain("/opt/pdf-e2e");
     expect(script).toContain("CHROME_OK");
